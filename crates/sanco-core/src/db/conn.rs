@@ -286,7 +286,7 @@ impl Db {
         })
     }
 
-    fn call<T, F>(&self, f: F) -> Result<T>
+    pub(crate) fn call<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut Writer) -> Result<T> + Send + 'static,
@@ -320,6 +320,15 @@ impl Db {
             pool.push(conn);
         }
         out
+    }
+}
+
+impl std::fmt::Debug for Db {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("path", &self.path)
+            .field("site_id", &self.site_id)
+            .finish_non_exhaustive()
     }
 }
 

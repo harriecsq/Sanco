@@ -30,7 +30,8 @@ pub enum Error {
     #[error("{table} row `{id}` is deleted")]
     Deleted { table: String, id: String },
 
-    #[error("peer clock is {ahead_ms} ms ahead of this PC")]
+    /// `ahead_ms` is negative when the peer is behind.
+    #[error("peer clock is {} s {} this PC (limit 2 minutes)", ahead_ms.abs() / 1000, if *ahead_ms < 0 { "behind" } else { "ahead of" })]
     ClockSkew { ahead_ms: i64 },
     #[error("schema mismatch: this PC has v{ours}, peer has v{theirs}")]
     SchemaMismatch { ours: u32, theirs: u32 },
@@ -44,6 +45,11 @@ pub enum Error {
     OwnSite,
     #[error("malformed row from peer: {0}")]
     Malformed(String),
+
+    #[error("this database already belongs to a workspace")]
+    WorkspaceExists,
+    #[error("this PC is not set up yet: create or join a workspace")]
+    NoWorkspace,
 
     #[error("peer {0} is unreachable")]
     PeerUnreachable(String),

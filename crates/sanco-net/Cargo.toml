@@ -1,0 +1,26 @@
+[package]
+name = "sanco-net"
+description = "Peer-to-peer sync transport: HTTP server, client and sync loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sanco-core = { path = "../sanco-core" }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+# Plain HTTP: Tailscale (WireGuard) already encrypts and authenticates the link.
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tokio = { version = "1.54.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+hkdf = "0.13.0"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid = { version = "1.28.0", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.0", features = ["signal"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tempfile = "3.27.0"

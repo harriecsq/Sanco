@@ -15,8 +15,11 @@ tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
 sanco-core = { path = "../crates/sanco-core" }
+sanco-net = { path = "../crates/sanco-net" }
 serde.workspace = true
 serde_json.workspace = true
+# `log` feature: forward sanco-core/sanco-net tracing events to tauri-plugin-log.
+tracing = { workspace = true, features = ["log"] }
 log = "0.4"
 tauri = { version = "2.12.4", features = [] }
 tauri-plugin-log = "2"

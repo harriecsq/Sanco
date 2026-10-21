@@ -4,6 +4,63 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
-	greet: (name: string) => __TAURI_INVOKE<string>("greet", { name }),
+	workspaceStatus: () => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("workspace_status")),
+	/**  Makes this PC the first one of a new workspace. */
+	createWorkspace: (name: string) => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("create_workspace", { name })),
+	/**  Joins an existing workspace with a code from a PC that is already in it. */
+	joinWorkspace: (code: string) => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("join_workspace", { code })),
+	/**  Code another PC enters to join. It contains the workspace sync key. */
+	inviteCode: () => typedError<string, string>(__TAURI_INVOKE("invite_code")),
+	syncStatus: () => typedError<PeerInfo[], string>(__TAURI_INVOKE("sync_status")),
+	/**  Pulls from every peer now. */
+	syncNow: () => typedError<PeerInfo[], string>(__TAURI_INVOKE("sync_now")),
+	devNotes: () => typedError<DevNote[], string>(__TAURI_INVOKE("dev_notes")),
+	devAddNote: (title: string) => typedError<null, string>(__TAURI_INVOKE("dev_add_note", { title })),
 };
+
+/* Types */
+export type DevNote = {
+	id: string,
+	title: string,
+	created_at: number,
+	/**  Site that last wrote the note. */
+	site: string,
+};
+
+export type PeerInfo = {
+	addr: string,
+	name: string | null,
+	site: string | null,
+	app_version: string | null,
+	/**  unknown | online | offline | blocked */
+	state: string,
+	error: string | null,
+	last_pull_ms: number | null,
+	last_accepted: number,
+	last_conflicts: number,
+};
+
+export type WorkspaceStatus = {
+	/**  This PC belongs to a workspace and sync is running. */
+	ready: boolean,
+	workspace: string | null,
+	pc_name: string,
+	site_id: string | null,
+	/**  `host:port` peers use for this PC. */
+	addr: string | null,
+	port: number,
+	data_dir: string,
+	/**  Why sync isn't running, if it failed. */
+	error: string | null,
+};
+
+/* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
 
