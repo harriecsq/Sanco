@@ -41,10 +41,11 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 ```
 
 ## Architecture rules
-- **One write path.** All writes go through `sanco-core/src/repo.rs`. It stamps the HLC, bumps `row_versions`, writes `audit_log` and emits `db-changed` so the UI refetches.
+- **One write path.** All writes go through `sanco-core/src/repo.rs` (`db.write(actor, |tx| tx.insert/update/upsert/delete(...))`). It stamps the HLC and `_vv`, bumps `row_versions`, writes `audit_log` and fires the change listener (`ChangeEvent`, origin Local/Remote) so the shell can emit `db-changed` and poke peers.
 - **No stored derived values.** Stock on hand, receivables, PO receiving status and landed cost are SQL views or computed values, never columns.
-- **Generated child rows** use deterministic IDs: `UUIDv5(source_id, kind)`. Client-item rates use `v5(client, item)`.
-- **No SQLite foreign keys** on replicated tables, because rows can arrive out of order.
+- **Generated child rows** use deterministic IDs: `ids::derived_id(source_id, kind)` (UUIDv5). Client-item rates use `derived_id(client, item)`. Deletes always win the merge, so a derived-id row can never come back once deleted: clear it (e.g. null price) instead of deleting it.
+- **No SQLite foreign keys or UNIQUE constraints** on replicated tables (only the `id` primary key), because rows can arrive out of order. Duplicates are flagged by invariant checks instead.
+- **New replicated table:** add it to `db/registry.rs` and a new migration, with the standard meta columns first (`id, _hlc, _site, _vv, _deleted, created_at, created_by, updated_by`). `registry_matches_schema` in `tests/repo.rs` checks they agree. Columns are TEXT or INTEGER only.
 - **Units:**
   - Money is `i64` centavos (minor units for foreign currency).
   - FX rates are decimal text (`rust_decimal`).
@@ -60,13 +61,14 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Permissions (RBAC)** are checked in Rust on every command, not just hidden in the UI. Roles are admin-editable: per module × action (view/create/edit/delete/approve), plus sensitive fields (costs, margins).
 
 ## Sync
-- **Merge:** whole-row last-writer-wins on `(hlc, site)`. Deletes win. A `_base_hlc` mismatch means a concurrent edit: the losing version goes to `conflicts` and is shown on the Dashboard.
+- **Merge:** whole-row, keep the greatest `(deleted, hlc, site)`, so deletes win, then last writer. Each row carries a version vector `_vv` (site → last HLC it wrote). If neither side's `_vv` covers the other, the edits were concurrent: the losing version goes to `conflicts` (deterministic id and HLC taken from the lost version, so every PC records the same row) and is shown on the Dashboard.
+- **HLC** = `millis * 1000 + counter`, below 2^53 so the frontend can read it as a number.
 - **Delta pull:** rows by `row_versions.ver > watermark`. Accepted rows bump the local version, so changes relay through intermediate PCs.
 - **Transport:** axum on `0.0.0.0:PORT`.
   - Only Tailscale ranges are accepted (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`).
   - Requests carry a bearer token derived by HKDF from the workspace sync key.
   - Peers get a `POST /poke` after commits. Every PC also pulls every 30 s.
-- **Handshake** rejects: schema mismatch, clock skew over 2 minutes, a known site with a different epoch (restored or copied database).
+- **Handshake** rejects: schema mismatch, clock skew over 2 minutes, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
 - **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type. A number is claimed with reachable peers before use. On a clash after an offline period, the earlier `(hlc, site)` keeps the number and the later one is renumbered.
 
 ## Business rules
