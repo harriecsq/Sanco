@@ -7,7 +7,9 @@
 //! - every peer holds exactly the same rows, meta columns included;
 //! - quiescence: a final full round accepts nothing;
 //! - no edit vanishes silently: each version ever written is the final row,
-//!   was seen by a later surviving version, or is recorded in `conflicts`.
+//!   was seen by a later surviving version, or is recorded in `conflicts`;
+//! - document numbers are unique once clashes are resolved (after restores,
+//!   extra holders may remain only if no peer owns their site any more).
 //!
 //! `SANCO_SIM_SEED=<n>` runs a single seed (handy for reproducing a failure).
 
@@ -22,13 +24,15 @@ use sanco_core::ids::derived_id;
 use sanco_core::rng::Rng64;
 use sanco_core::sync::hlc::ManualClock;
 use sanco_core::sync::merge::{VersionVector, dominates};
-use sanco_core::{Actor, Db, OpenOptions, Row};
+use sanco_core::sync::numbering::{self, ClaimReply, NumberClaim, NumberPeer};
+use sanco_core::{Actor, Db, Error, OpenOptions, Result, Row};
 use serde_json::{Value, json};
 
 const PEERS: usize = 4;
 const STEPS: usize = 1500;
 const MAX_SKEW_MS: u64 = 40_000;
 const SETTING_KEYS: u64 = 3;
+const SERIES: [&str; 2] = [numbering::series::DR, numbering::series::CLIENT];
 
 struct Peer {
     name: String,
@@ -42,6 +46,22 @@ struct Peer {
 impl Peer {
     fn db(&self) -> &Db {
         self.db.as_ref().expect("peer is open")
+    }
+}
+
+/// Another peer as seen through the (possibly partitioned) network.
+struct Link<'a> {
+    db: &'a Db,
+    up: bool,
+}
+
+impl NumberPeer for Link<'_> {
+    fn claim(&self, claim: &NumberClaim) -> Result<ClaimReply> {
+        if self.up {
+            self.db.claim_number(claim.clone())
+        } else {
+            Err(Error::PeerUnreachable(self.db.site_id().to_string()))
+        }
     }
 }
 
@@ -60,6 +80,8 @@ struct Stats {
     restarts: usize,
     restores: usize,
     conflicts: usize,
+    numbered: usize,
+    renumbered: usize,
     rows: usize,
 }
 
@@ -161,6 +183,14 @@ impl Sim {
                         self.restart(p, true);
                     }
                 }
+                93..98 => {
+                    let p = self.pick_peer();
+                    self.numbered_write(p);
+                }
+                98..100 => {
+                    let p = self.pick_peer();
+                    self.resolve_clashes(p);
+                }
                 _ => {}
             }
         }
@@ -241,6 +271,56 @@ impl Sim {
         }
     }
 
+    /// The other peers, up or down as the network currently is for `p`.
+    fn links(&self, p: usize) -> Vec<Link<'_>> {
+        (0..PEERS)
+            .filter(|&q| q != p)
+            .map(|q| Link {
+                db: self.peers[q].db(),
+                up: self.linked[p][q],
+            })
+            .collect()
+    }
+
+    /// Creates a todo numbered like a document, as the app would.
+    fn numbered_write(&mut self, p: usize) {
+        let series = SERIES[self.rng.below(SERIES.len() as u64) as usize];
+        let actor = Actor::user(self.peers[p].name.clone());
+        let db = self.peers[p].db();
+        let id = db.new_id().unwrap();
+        let res = {
+            let links = self.links(p);
+            let peers: Vec<&dyn NumberPeer> = links.iter().map(|l| l as &dyn NumberPeer).collect();
+            numbering::reserve(db, &peers, series, &id).unwrap()
+        };
+        let todo = id.clone();
+        db.write(actor, move |tx| {
+            tx.insert("todos", json!({ "id": todo, "title": res.no, "done": 0 }))?;
+            numbering::assign(tx, &res, "todos")
+        })
+        .unwrap();
+        let row = load(db, "todos", &id);
+        self.written.push(Written {
+            tbl: "todos",
+            id: id.clone(),
+            vv: vv_of(&row),
+            deleted: false,
+        });
+        self.todo_ids.push(id);
+        self.stats.writes += 1;
+        self.stats.numbered += 1;
+    }
+
+    fn resolve_clashes(&mut self, p: usize) -> usize {
+        let links = self.links(p);
+        let peers: Vec<&dyn NumberPeer> = links.iter().map(|l| l as &dyn NumberPeer).collect();
+        let n = numbering::resolve_clashes(self.peers[p].db(), &peers)
+            .unwrap()
+            .len();
+        self.stats.renumbered += n;
+        n
+    }
+
     fn sync_once(&mut self) {
         let (a, b) = (self.pick_peer(), self.pick_peer());
         if a == b || !self.linked[a][b] {
@@ -284,6 +364,41 @@ impl Sim {
         for row in &mut self.linked {
             row.fill(true);
         }
+        self.sync_until_quiet();
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            assert!(rounds < 10, "seed {}: clashes keep coming back", self.seed);
+            let fixed: usize = (0..PEERS).map(|p| self.resolve_clashes(p)).sum();
+            if fixed == 0 {
+                break;
+            }
+            self.sync_until_quiet();
+        }
+
+        let reference = self.peers[0].db().dump().unwrap();
+        for p in &self.peers[1..] {
+            let dump = p.db().dump().unwrap();
+            for (table, rows) in &reference {
+                assert!(
+                    rows == &dump[table],
+                    "seed {}: table {table} differs between {} and {}",
+                    self.seed,
+                    self.peers[0].name,
+                    p.name
+                );
+            }
+        }
+        self.stats.conflicts = reference["conflicts"].len();
+        self.stats.rows = reference.values().map(Vec::len).sum();
+
+        self.check_numbers(&reference);
+        if !self.with_restores {
+            self.check_no_silent_loss(&reference);
+        }
+    }
+
+    fn sync_until_quiet(&mut self) {
         let mut rounds = 0;
         loop {
             rounds += 1;
@@ -304,25 +419,62 @@ impl Sim {
                 break;
             }
         }
+    }
 
-        let reference = self.peers[0].db().dump().unwrap();
-        for p in &self.peers[1..] {
-            let dump = p.db().dump().unwrap();
-            for (table, rows) in &reference {
+    /// Every number has one holder. After restores, extra holders may remain
+    /// only if they were assigned by a site no peer owns any more.
+    fn check_numbers(&self, dump: &BTreeMap<String, Vec<Row>>) {
+        let mut owned: Vec<String> = Vec::new();
+        for p in &self.peers {
+            owned.push(p.db().site_id().to_string());
+            owned.extend(p.db().previous_sites().unwrap());
+        }
+        let str_of = |r: &Row, c: &str| r[c].as_str().unwrap().to_string();
+        assert!(
+            dump["conflicts"]
+                .iter()
+                .all(|c| c["tbl"] != json!("doc_numbers")),
+            "seed {}: renumbering produced a concurrent edit",
+            self.seed
+        );
+        let mut holders: BTreeMap<(String, String, i64), Vec<&Row>> = BTreeMap::new();
+        let mut nos: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for r in dump["doc_numbers"]
+            .iter()
+            .filter(|r| r["_deleted"] == json!(0))
+        {
+            let key = (
+                str_of(r, "series"),
+                str_of(r, "period"),
+                r["seq"].as_i64().unwrap(),
+            );
+            holders.entry(key).or_default().push(r);
+            *nos.entry((str_of(r, "series"), str_of(r, "no")))
+                .or_default() += 1;
+            assert!(
+                dump["todos"].iter().any(|t| t["id"] == r["ref_id"]),
+                "seed {}: number for a missing document",
+                self.seed
+            );
+        }
+        for (key, mut rows) in holders {
+            rows.sort_by_key(|r| (r["assigned_at"].as_i64(), str_of(r, "id")));
+            for extra in &rows[1..] {
+                let site = extra["site"].as_str().unwrap();
                 assert!(
-                    rows == &dump[table],
-                    "seed {}: table {table} differs between {} and {}",
+                    self.with_restores && !owned.iter().any(|s| s == site),
+                    "seed {}: number {key:?} has {} holders",
                     self.seed,
-                    self.peers[0].name,
-                    p.name
+                    rows.len()
                 );
             }
         }
-        self.stats.conflicts = reference["conflicts"].len();
-        self.stats.rows = reference.values().map(Vec::len).sum();
-
         if !self.with_restores {
-            self.check_no_silent_loss(&reference);
+            assert!(
+                nos.values().all(|&n| n == 1),
+                "seed {}: duplicate formatted number",
+                self.seed
+            );
         }
     }
 
@@ -397,14 +549,16 @@ fn seeds(default: std::ops::RangeInclusive<u64>) -> Vec<u64> {
 
 #[test]
 fn peers_converge_without_losing_edits() {
-    let mut conflicts = 0;
+    let (mut conflicts, mut renumbered) = (0, 0);
     for seed in seeds(1..=6) {
         let stats = Sim::new(seed, false).run();
         eprintln!("seed {seed}: {stats:?}");
         assert!(stats.writes > 300 && stats.syncs > 150, "{stats:?}");
         conflicts += stats.conflicts;
+        renumbered += stats.renumbered;
     }
     assert!(conflicts > 0, "simulation never produced a concurrent edit");
+    assert!(renumbered > 0, "simulation never produced a number clash");
 }
 
 #[test]

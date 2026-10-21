@@ -13,7 +13,10 @@ use rusqlite::Connection;
 
 use crate::error::{Error, Result};
 
-const MIGRATIONS: &[&str] = &[include_str!("0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("0001_init.sql"),
+    include_str!("0002_numbering.sql"),
+];
 
 /// Schema version this build writes. Peers must match it to sync.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

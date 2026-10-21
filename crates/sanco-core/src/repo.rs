@@ -145,6 +145,11 @@ impl WriteTx<'_> {
         self.clock.now_ms()
     }
 
+    /// This PC's site id.
+    pub fn site(&self) -> &str {
+        self.site
+    }
+
     pub fn new_id(&mut self) -> String {
         ids::new_v7(self.clock.now_ms(), self.rng)
     }

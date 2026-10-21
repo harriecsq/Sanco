@@ -45,6 +45,11 @@ pub enum Error {
     #[error("malformed row from peer: {0}")]
     Malformed(String),
 
+    #[error("peer {0} is unreachable")]
+    PeerUnreachable(String),
+    #[error("no free {series} number after {rounds} tries")]
+    NumberUnavailable { series: String, rounds: usize },
+
     #[error("database writer stopped")]
     WriterGone,
 }

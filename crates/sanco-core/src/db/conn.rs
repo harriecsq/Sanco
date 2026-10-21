@@ -16,6 +16,7 @@ use crate::ids;
 use crate::repo::{Actor, Listener, WriteTx, Writer};
 use crate::rng::Rng64;
 use crate::sync::hlc::{Clock, Hlc, HlcState, SystemClock};
+use crate::sync::numbering::{self, ClaimReply, NumberClaim};
 use crate::sync::protocol::{ApplyReport, ChangeBatch, WireRow};
 use crate::sync::versions;
 
@@ -57,6 +58,7 @@ pub struct Db {
     thread: Option<JoinHandle<()>>,
     readers: Mutex<Vec<Connection>>,
     path: PathBuf,
+    clock: Arc<dyn Clock>,
     site_id: String,
     epoch: String,
 }
@@ -103,9 +105,19 @@ impl Db {
 
         let (site_id, epoch) = match stored {
             Some((site, epoch, fp, ..)) if fp == fingerprint && !opts.new_identity => (site, epoch),
-            Some(_) => {
+            Some((old_site, ..)) => {
                 let (site, epoch) = (ids::new_random(&mut rng), ids::new_random(&mut rng));
                 tracing::warn!(%site, "database copied or restored: new site id");
+                if opts.new_identity {
+                    // Restored backup: this PC takes over the old site's numbers.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO previous_sites (site_id, retired_at) VALUES (?1, ?2)",
+                        (&old_site, now),
+                    )?;
+                } else {
+                    // A copy (e.g. a join snapshot): the old site lives on elsewhere.
+                    conn.execute("DELETE FROM previous_sites", [])?;
+                }
                 conn.execute(
                     "UPDATE meta SET site_id = ?1, epoch = ?2, fingerprint = ?3 WHERE id = 1",
                     (&site, &epoch, &fingerprint),
@@ -123,10 +135,11 @@ impl Db {
             }
         };
 
+        let clock = opts.clock;
         let mut writer = Writer {
             conn,
             site: site_id.clone(),
-            clock: opts.clock,
+            clock: clock.clone(),
             rng,
             hlc: HlcState::new(Hlc(last_hlc)),
             ver,
@@ -146,6 +159,7 @@ impl Db {
             thread: Some(thread),
             readers: Mutex::new(Vec::new()),
             path,
+            clock,
             site_id,
             epoch,
         })
@@ -161,6 +175,36 @@ impl Db {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
+    }
+
+    /// A fresh row id, for callers that need it before the write (e.g. to
+    /// reserve a document number first).
+    pub fn new_id(&self) -> Result<String> {
+        self.call(|w| Ok(ids::new_v7(w.clock.now_ms(), &mut w.rng)))
+    }
+
+    /// Answers a number claim from a reservation on this PC or a peer.
+    pub fn claim_number(&self, claim: NumberClaim) -> Result<ClaimReply> {
+        self.call(move |w| {
+            let now = w.clock.now_ms();
+            let tx = w.conn.transaction()?;
+            let reply = numbering::handle_claim(&tx, &claim, now)?;
+            tx.commit()?;
+            Ok(reply)
+        })
+    }
+
+    /// Site ids this database used before it was restored from a backup.
+    pub fn previous_sites(&self) -> Result<Vec<String>> {
+        self.read(|c| {
+            let mut stmt = c.prepare("SELECT site_id FROM previous_sites ORDER BY site_id")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
     }
 
     /// Runs `f` in one write transaction on the writer thread.

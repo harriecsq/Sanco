@@ -69,7 +69,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Requests carry a bearer token derived by HKDF from the workspace sync key.
   - Peers get a `POST /poke` after commits. Every PC also pulls every 30 s.
 - **Handshake** rejects: schema mismatch, clock skew over 2 minutes, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
-- **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type. A number is claimed with reachable peers before use. On a clash after an offline period, the earlier `(hlc, site)` keeps the number and the later one is renumbered.
+- **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`numbering::reserve`, then `numbering::assign` inside the document's write). Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
 
 ## Business rules
 - **Margin is margin on price:** `price = cost ÷ (1 − margin%)`. ₱100 at 20% → ₱125.

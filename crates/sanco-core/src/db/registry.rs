@@ -61,6 +61,7 @@ pub const META_COLS: &[Col] = &[
 
 pub const AUDIT_LOG: &str = "audit_log";
 pub const CONFLICTS: &str = "conflicts";
+pub const DOC_NUMBERS: &str = "doc_numbers";
 
 pub static TABLES: &[TableDef] = &[
     TableDef {
@@ -127,6 +128,21 @@ pub static TABLES: &[TableDef] = &[
     TableDef {
         name: "settings",
         cols: &[text("key"), text("value")],
+    },
+    TableDef {
+        name: DOC_NUMBERS,
+        cols: &[
+            text("series"),
+            text("period"),
+            int("seq"),
+            text("no"),
+            text("ref_tbl"),
+            text("ref_id"),
+            text("site"),
+            int("assigned_at"),
+            text("prev_no"),
+            int("confirmed"),
+        ],
     },
 ];
 

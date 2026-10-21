@@ -7,6 +7,7 @@ pub mod ids;
 pub mod repo;
 pub mod rng;
 pub mod sync;
+pub mod time;
 
 pub use db::registry::Row;
 pub use db::{Db, OpenOptions};
