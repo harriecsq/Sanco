@@ -1,0 +1,26 @@
+[package]
+name = "sanco"
+description = "Sanco Medical Supply desktop app"
+authors = ["Sanco"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "sanco_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.3", features = [] }
+
+[dependencies]
+sanco-core = { path = "../crates/sanco-core" }
+serde.workspace = true
+serde_json.workspace = true
+log = "0.4"
+tauri = { version = "2.12.4", features = [] }
+tauri-plugin-log = "2"
+# Pinned exactly: these release candidates must move together.
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+specta = { version = "=2.0.0-rc.25" }
+specta-typescript = "=0.0.12"

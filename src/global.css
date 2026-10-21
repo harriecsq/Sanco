@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Sanco theme, taken from the Sanco Medical Supply logo.
+ * White is the main surface; teal-green is for interactive elements.
+ */
+@theme {
+  --color-brand-50: #e8f5f1;
+  --color-brand-100: #c9e9df;
+  --color-brand-200: #97d3c1;
+  --color-brand-300: #5fb99f;
+  --color-brand-400: #2f9e82;
+  --color-brand-500: #13876f;
+  --color-brand-600: #0f735e;
+  --color-brand-700: #0c5d4c;
+  --color-brand-800: #0a4a3d;
+  --color-brand-900: #083b31;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f7faf9;
+  --color-ink: #1f2937;
+  --color-ink-muted: #6b7280;
+  --color-line: #e5e7eb;
+
+  --color-danger: #dc2626;
+  --color-warning: #d97706;
+
+  --font-sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+    height: 100%;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-500;
+  }
+}
