@@ -3,12 +3,15 @@
 use std::sync::Arc;
 
 use sanco_core::Db;
+use sanco_core::domain::auth::{self, SessionUser};
+use sanco_core::domain::users::{self, NewUser};
 use sanco_net::{LocalChanges, Node, PeerState};
 use serde::Serialize;
 use specta::Type;
 use tauri::State;
 
-use crate::state::{AppState, JOIN_TIMEOUT};
+use crate::commands::{blocking, require_admin, signed_in};
+use crate::state::{AppState, JOIN_TIMEOUT, set_aside_db};
 
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WorkspaceStatus {
@@ -21,8 +24,15 @@ pub struct WorkspaceStatus {
     pub addr: Option<String>,
     pub port: u16,
     pub data_dir: String,
+    pub app_version: String,
     /// Why sync isn't running, if it failed.
     pub error: Option<String>,
+    /// The workspace has no users yet: create the first admin.
+    pub needs_admin: bool,
+    /// An admin removed this PC from the workspace.
+    pub removed: bool,
+    /// Still opening the database at startup.
+    pub starting: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -56,19 +66,38 @@ pub async fn db(state: &AppState) -> Result<Arc<Db>, String> {
 }
 
 async fn status(state: &AppState) -> WorkspaceStatus {
-    let node = state.node.lock().await;
-    let ws = node
-        .as_ref()
-        .and_then(|n| n.db().workspace().ok().flatten());
+    let (ws, site_id, addr, port, db) = {
+        let node = state.node.lock().await;
+        match node.as_ref() {
+            Some(n) => (
+                n.db().workspace().ok().flatten(),
+                Some(n.db().site_id().to_string()),
+                n.addr(),
+                n.port(),
+                Some(n.db().clone()),
+            ),
+            None => (None, None, None, state.port, None),
+        }
+    };
+    let needs_admin = match db {
+        Some(db) => !blocking(move || db.read(users::any_user))
+            .await
+            .unwrap_or(true),
+        None => false,
+    };
     WorkspaceStatus {
-        ready: node.is_some(),
+        ready: site_id.is_some(),
         workspace: ws.map(|w| w.name),
         pc_name: state.name.clone(),
-        site_id: node.as_ref().map(|n| n.db().site_id().to_string()),
-        addr: node.as_ref().and_then(|n| n.addr()),
-        port: node.as_ref().map_or(state.port, |n| n.port()),
+        site_id,
+        addr,
+        port,
         data_dir: state.data_dir.display().to_string(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
         error: state.error(),
+        needs_admin,
+        removed: state.is_removed(),
+        starting: !state.started.load(std::sync::atomic::Ordering::SeqCst),
     }
 }
 
@@ -78,29 +107,34 @@ pub async fn workspace_status(state: State<'_, AppState>) -> Result<WorkspaceSta
     Ok(status(&state).await)
 }
 
-/// Makes this PC the first one of a new workspace.
+/// Makes this PC the first one of a new workspace, with its first admin,
+/// who is then signed in.
 #[tauri::command]
 #[specta::specta]
 pub async fn create_workspace(
     state: State<'_, AppState>,
     name: String,
-) -> Result<WorkspaceStatus, String> {
+    admin: NewUser,
+) -> Result<SessionUser, String> {
     if name.trim().is_empty() {
         return Err("enter a workspace name".into());
     }
+    auth::check_password(&admin.password).map_err(|e| e.to_string())?;
+    users::check_username(&admin.username).map_err(|e| e.to_string())?;
     ensure_not_set_up(&state).await?;
     let changes = LocalChanges::new();
     let opts = state.open_options(&changes);
-    let db = tauri::async_runtime::spawn_blocking(move || -> sanco_core::Result<Db> {
+    let (db, user) = blocking(move || {
         let db = Db::open(opts)?;
         db.create_workspace(&name)?;
-        Ok(db)
+        let user = users::create_first_admin(&db, admin)?;
+        Ok((db, user))
     })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .await?;
     state.start(db, changes).await?;
-    Ok(status(&state).await)
+    state.set_session(Some(user.id.clone()));
+    enable_autostart(&state);
+    Ok(user)
 }
 
 /// Joins an existing workspace with a code from a PC that is already in it.
@@ -111,20 +145,23 @@ pub async fn join_workspace(
     code: String,
 ) -> Result<WorkspaceStatus, String> {
     ensure_not_set_up(&state).await?;
-    set_aside_unused_db(&state)?;
+    set_aside_db(&state.db_path(), "unused")?;
     let changes = LocalChanges::new();
     let opts = state.open_options(&changes);
     let db = sanco_net::join(&code, opts, JOIN_TIMEOUT)
         .await
         .map_err(|e| e.to_string())?;
     state.start(db, changes).await?;
+    enable_autostart(&state);
     Ok(status(&state).await)
 }
 
-/// Code another PC enters to join. It contains the workspace sync key.
+/// Code another PC enters to join. It contains the workspace sync key, so
+/// only admins see it.
 #[tauri::command]
 #[specta::specta]
 pub async fn invite_code(state: State<'_, AppState>) -> Result<String, String> {
+    require_admin(&state).await?;
     with_node(&state, |n| n.invite_code())
         .await?
         .map_err(|e| e.to_string())
@@ -133,6 +170,7 @@ pub async fn invite_code(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_status(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, String> {
+    signed_in(&state).await?;
     with_node(&state, |n| n.peers().into_iter().map(peer_info).collect()).await
 }
 
@@ -140,10 +178,27 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, St
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_now(state: State<'_, AppState>) -> Result<Vec<PeerInfo>, String> {
+    signed_in(&state).await?;
     let node = state.node.lock().await;
     let node = node.as_ref().ok_or("this PC is not set up yet")?;
     node.sync_now().await;
     Ok(node.peers().into_iter().map(peer_info).collect())
+}
+
+/// Tries to start sync again after it failed (e.g. the port was in use).
+#[tauri::command]
+#[specta::specta]
+pub async fn retry_sync(state: State<'_, AppState>) -> Result<WorkspaceStatus, String> {
+    state.resume().await;
+    Ok(status(&state).await)
+}
+
+/// After this PC was removed: sets its database aside so it can join again.
+#[tauri::command]
+#[specta::specta]
+pub async fn leave_workspace(state: State<'_, AppState>) -> Result<WorkspaceStatus, String> {
+    state.leave().await?;
+    Ok(status(&state).await)
 }
 
 fn peer_info(p: sanco_net::PeerStatus) -> PeerInfo {
@@ -166,22 +221,32 @@ fn peer_info(p: sanco_net::PeerStatus) -> PeerInfo {
     }
 }
 
+/// Release builds start with Windows from the first setup on, so the PC
+/// keeps syncing. Can be turned off in Settings → This PC.
+fn enable_autostart(state: &AppState) {
+    if cfg!(debug_assertions) || state.extra_instance {
+        return;
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    if let Err(e) = state.app.autolaunch().enable() {
+        log::warn!("could not enable autostart: {e}");
+    }
+}
+
 async fn ensure_not_set_up(state: &AppState) -> Result<(), String> {
     if state.node.lock().await.is_some() {
         return Err("this PC is already set up".into());
+    }
+    if state.is_removed() {
+        return Err("this PC was removed; leave the workspace first".into());
     }
     let path = state.db_path();
     if path.exists() {
         let changes = LocalChanges::new();
         let opts = state.open_options(&changes);
-        let has_workspace = tauri::async_runtime::spawn_blocking(move || {
-            Db::open(opts)
-                .and_then(|db| db.workspace())
-                .map(|w| w.is_some())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        let has_workspace =
+            blocking(move || Db::open(opts).and_then(|db| db.workspace()).map(|w| w.is_some()))
+                .await?;
         if has_workspace {
             return Err(format!(
                 "{} already holds a workspace, but sync did not start: {}",
@@ -189,24 +254,6 @@ async fn ensure_not_set_up(state: &AppState) -> Result<(), String> {
                 state.error().unwrap_or_default()
             ));
         }
-    }
-    Ok(())
-}
-
-/// A database without a workspace holds nothing yet; move it out of the way
-/// (instead of deleting it) so a join snapshot can take its place.
-fn set_aside_unused_db(state: &AppState) -> Result<(), String> {
-    let path = state.db_path();
-    if !path.exists() {
-        return Ok(());
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let dest = path.with_extension(format!("unused-{stamp}.db"));
-    std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
-    for ext in ["db-wal", "db-shm"] {
-        let _ = std::fs::remove_file(path.with_extension(ext));
     }
     Ok(())
 }

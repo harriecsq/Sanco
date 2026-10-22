@@ -14,15 +14,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
-sanco-core = { path = "../crates/sanco-core" }
+sanco-core = { path = "../crates/sanco-core", features = ["specta"] }
 sanco-net = { path = "../crates/sanco-net" }
 serde.workspace = true
 serde_json.workspace = true
 # `log` feature: forward sanco-core/sanco-net tracing events to tauri-plugin-log.
 tracing = { workspace = true, features = ["log"] }
 log = "0.4"
-tauri = { version = "2.12.4", features = [] }
+tauri = { version = "2.12.4", features = ["tray-icon"] }
 tauri-plugin-log = "2"
+tauri-plugin-autostart = "2.7.0"
+tauri-plugin-notification = "2.7.0"
+tauri-plugin-single-instance = "2.5.4"
+tauri-plugin-window-state = "2.5.0"
+tokio = { version = "1.54.0", features = ["time"] }
 # Pinned exactly: these release candidates must move together.
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta = { version = "=2.0.0-rc.25" }

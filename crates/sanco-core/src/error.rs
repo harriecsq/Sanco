@@ -58,4 +58,14 @@ pub enum Error {
 
     #[error("database writer stopped")]
     WriterGone,
+
+    #[error("please sign in")]
+    NotSignedIn,
+    #[error("wrong username or password")]
+    BadLogin,
+    #[error("you don't have permission to {0}")]
+    Forbidden(String),
+    /// A user-facing validation message.
+    #[error("{0}")]
+    Invalid(String),
 }

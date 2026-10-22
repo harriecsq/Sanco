@@ -5,26 +5,177 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	workspaceStatus: () => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("workspace_status")),
-	/**  Makes this PC the first one of a new workspace. */
-	createWorkspace: (name: string) => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("create_workspace", { name })),
+	/**
+	 *  Makes this PC the first one of a new workspace, with its first admin,
+	 *  who is then signed in.
+	 */
+	createWorkspace: (name: string, admin: NewUser) => typedError<SessionUser, string>(__TAURI_INVOKE("create_workspace", { name, admin })),
 	/**  Joins an existing workspace with a code from a PC that is already in it. */
 	joinWorkspace: (code: string) => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("join_workspace", { code })),
-	/**  Code another PC enters to join. It contains the workspace sync key. */
+	/**
+	 *  Code another PC enters to join. It contains the workspace sync key, so
+	 *  only admins see it.
+	 */
 	inviteCode: () => typedError<string, string>(__TAURI_INVOKE("invite_code")),
 	syncStatus: () => typedError<PeerInfo[], string>(__TAURI_INVOKE("sync_status")),
 	/**  Pulls from every peer now. */
 	syncNow: () => typedError<PeerInfo[], string>(__TAURI_INVOKE("sync_now")),
-	devNotes: () => typedError<DevNote[], string>(__TAURI_INVOKE("dev_notes")),
-	devAddNote: (title: string) => typedError<null, string>(__TAURI_INVOKE("dev_add_note", { title })),
+	/**  Tries to start sync again after it failed (e.g. the port was in use). */
+	retrySync: () => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("retry_sync")),
+	/**  After this PC was removed: sets its database aside so it can join again. */
+	leaveWorkspace: () => typedError<WorkspaceStatus, string>(__TAURI_INVOKE("leave_workspace")),
+	/**  The signed-in user, or `None` (show the sign-in screen). */
+	sessionInfo: () => typedError<{
+	id: string,
+	username: string,
+	display_name: string,
+	roles: string[],
+	perms: Perms,
+} | null, string>(__TAURI_INVOKE("session_info")),
+	login: (username: string, password: string) => typedError<SessionUser, string>(__TAURI_INVOKE("login", { username, password })),
+	logout: () => typedError<null, string>(__TAURI_INVOKE("logout")),
+	/**
+	 *  Creates the first admin of a new workspace and signs them in. Only
+	 *  allowed while the workspace has no users.
+	 */
+	createFirstAdmin: (user: NewUser) => typedError<SessionUser, string>(__TAURI_INVOKE("create_first_admin", { user })),
+	changePassword: (current: string, password: string) => typedError<null, string>(__TAURI_INVOKE("change_password", { current, password })),
+	permCatalog: () => __TAURI_INVOKE<PermCatalog>("perm_catalog"),
+	listUsers: () => typedError<UserInfo[], string>(__TAURI_INVOKE("list_users")),
+	createUser: (user: NewUser) => typedError<string, string>(__TAURI_INVOKE("create_user", { user })),
+	updateUser: (user: UserUpdate) => typedError<null, string>(__TAURI_INVOKE("update_user", { user })),
+	/**  Sets a new password for someone who forgot theirs. */
+	resetPassword: (userId: string, password: string) => typedError<null, string>(__TAURI_INVOKE("reset_password", { userId, password })),
+	listRoles: () => typedError<RoleInfo[], string>(__TAURI_INVOKE("list_roles")),
+	saveRole: (role: RoleInput) => typedError<string, string>(__TAURI_INVOKE("save_role", { role })),
+	deleteRole: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_role", { id })),
+	/**  Every user's name, active or not, for pickers and filters. */
+	userOptions: () => typedError<UserOption[], string>(__TAURI_INVOKE("user_options")),
+	listDevices: () => typedError<DeviceInfo[], string>(__TAURI_INVOKE("list_devices")),
+	/**  Removes another PC from the workspace. It stops syncing once it hears. */
+	removeDevice: (site: string) => typedError<null, string>(__TAURI_INVOKE("remove_device", { site })),
+	listConflicts: (includeResolved: boolean) => typedError<ConflictInfo[], string>(__TAURI_INVOKE("list_conflicts", { includeResolved })),
+	/**  Marks a conflict reviewed; with `restore`, puts the lost values back. */
+	resolveConflict: (id: string, restore: boolean) => typedError<null, string>(__TAURI_INVOKE("resolve_conflict", { id, restore })),
+	listBackups: () => typedError<Backups, string>(__TAURI_INVOKE("list_backups")),
+	backupNow: () => typedError<string, string>(__TAURI_INVOKE("backup_now")),
+	/**
+	 *  Replaces this PC's database with a backup. Sync restarts with a new site
+	 *  id; anything newer comes back from the other PCs.
+	 */
+	restoreBackup: (name: string) => typedError<null, string>(__TAURI_INVOKE("restore_backup", { name })),
+	auditLog: (filter: AuditFilter) => typedError<AuditEntry[], string>(__TAURI_INVOKE("audit_log", { filter })),
+	/**  Table names, for the audit log filter. */
+	auditTables: () => __TAURI_INVOKE<string[]>("audit_tables"),
+	pcSettings: () => typedError<PcSettings, string>(__TAURI_INVOKE("pc_settings")),
+	setAutostart: (enabled: boolean) => typedError<null, string>(__TAURI_INVOKE("set_autostart", { enabled })),
 };
 
 /* Types */
-export type DevNote = {
+export type Action = "view" | "create" | "edit" | "delete" | "approve";
+
+export type AuditEntry = {
 	id: string,
-	title: string,
-	created_at: number,
-	/**  Site that last wrote the note. */
+	at: number,
+	user_id: string | null,
+	/**  Display name, or `None` for system work (sync, numbering). */
+	user_name: string | null,
+	/**  insert | update | delete | login | logout */
+	action: string,
+	tbl: string,
+	row_id: string,
+	/**  JSON: new values for inserts, `{col: [old, new]}` for updates. */
+	changes_json: string,
+};
+
+export type AuditFilter = {
+	/**  Matches the row id, action or changed values. */
+	q: string | null,
+	user_id: string | null,
+	tbl: string | null,
+	/**  Manila dates, inclusive. */
+	from: string | null,
+	to: string | null,
+	/**  Defaults to and is capped at [`MAX_ENTRIES`]. */
+	limit: number | null,
+};
+
+export type BackupFile = {
+	name: string,
+	size: number,
+	/**  File modification time (UTC ms). */
+	modified_ms: number,
+	/**  daily | manual | before-restore | pre-migration | other */
+	kind: string,
+};
+
+export type Backups = {
+	dir: string,
+	files: BackupFile[],
+	keep_daily: number,
+};
+
+export type ConflictInfo = {
+	id: string,
+	tbl: string,
+	row_id: string,
+	/**  When the lost edit was made (UTC ms). */
+	lost_at: number,
+	/**  Who made the lost edit. */
+	lost_by: string | null,
+	resolved: boolean,
+	resolved_by: string | null,
+	/**  The row was deleted, so the lost values can't be put back. */
+	row_deleted: boolean,
+	/**  Columns where the lost version differs from the current row. */
+	fields: FieldDiff[],
+};
+
+export type DeviceInfo = {
+	/**  The device's site id. */
 	site: string,
+	name: string | null,
+	host: string | null,
+	port: number | null,
+	app_version: string | null,
+	schema_version: number | null,
+	/**  When the device last refreshed its row (about hourly while running). */
+	last_seen: number | null,
+	this_pc: boolean,
+};
+
+/**  Values only some roles may see. */
+export type Field = 
+/**  Supplier prices, FX, charges and landed cost. */
+"costs" | 
+/**  Margin percentages and margin amounts. */
+"margins";
+
+export type FieldDiff = {
+	column: string,
+	lost: string,
+	current: string,
+};
+
+export type Labeled<T> = {
+	id: T,
+	label: string,
+};
+
+export type Module = "dashboard" | "bd" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
+
+export type NewUser = {
+	username: string,
+	display_name: string,
+	password: string,
+	role_ids: string[],
+};
+
+export type PcSettings = {
+	/**  Start Sanco (hidden in the tray) when someone signs in to Windows. */
+	autostart: boolean,
+	/**  Test instances started with `--data-dir` can't change autostart. */
+	autostart_available: boolean,
 };
 
 export type PeerInfo = {
@@ -40,6 +191,69 @@ export type PeerInfo = {
 	last_conflicts: number,
 };
 
+/**  Modules, actions and sensitive fields, for the role editor. */
+export type PermCatalog = {
+	modules: Labeled<Module>[],
+	actions: Labeled<Action>[],
+	fields: Labeled<Field>[],
+};
+
+/**  What a role grants, stored as `roles.perms_json`. */
+export type Perms = {
+	/**
+	 *  Everything, including modules added later. Also required for users,
+	 *  roles, join codes and restores.
+	 */
+	admin?: boolean,
+	modules?: Partial<{ [key in Module]: Action[] }>,
+	fields?: Field[],
+};
+
+export type RoleInfo = {
+	id: string,
+	name: string,
+	perms: Perms,
+	/**  Active users that have this role. */
+	user_count: number,
+};
+
+export type RoleInput = {
+	/**  `None` creates a new role. */
+	id: string | null,
+	name: string,
+	perms: Perms,
+};
+
+/**  The signed-in user, with permissions as of now. */
+export type SessionUser = {
+	id: string,
+	username: string,
+	display_name: string,
+	roles: string[],
+	perms: Perms,
+};
+
+export type UserInfo = {
+	id: string,
+	username: string,
+	display_name: string,
+	active: boolean,
+	role_ids: string[],
+	created_at: number,
+};
+
+export type UserOption = {
+	id: string,
+	name: string,
+};
+
+export type UserUpdate = {
+	id: string,
+	display_name: string,
+	active: boolean,
+	role_ids: string[],
+};
+
 export type WorkspaceStatus = {
 	/**  This PC belongs to a workspace and sync is running. */
 	ready: boolean,
@@ -50,8 +264,15 @@ export type WorkspaceStatus = {
 	addr: string | null,
 	port: number,
 	data_dir: string,
+	app_version: string,
 	/**  Why sync isn't running, if it failed. */
 	error: string | null,
+	/**  The workspace has no users yet: create the first admin. */
+	needs_admin: boolean,
+	/**  An admin removed this PC from the workspace. */
+	removed: boolean,
+	/**  Still opening the database at startup. */
+	starting: boolean,
 };
 
 /* Tauri Specta runtime */

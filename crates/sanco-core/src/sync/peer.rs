@@ -252,6 +252,35 @@ impl Db {
         })
     }
 
+    /// Whether an admin removed this PC (its `devices` row is deleted).
+    pub fn is_removed(&self) -> Result<bool> {
+        let site = self.site_id().to_string();
+        self.read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND _deleted = 1)",
+                [&site],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// Removes another PC from the workspace. Peers stop syncing with it,
+    /// and it stops syncing once it learns of the removal. It can't come
+    /// back with the same database (deletes always win); it has to join
+    /// again, which gives it a new site id.
+    pub fn remove_device(&self, actor: Actor, site: &str) -> Result<()> {
+        if site == self.site_id() {
+            return Err(Error::Invalid("this PC can't remove itself".into()));
+        }
+        let site = site.to_string();
+        self.write(actor, move |tx| {
+            if tx.get(DEVICES, &site)?.is_none() {
+                return Err(Error::Invalid("that PC is already removed".into()));
+            }
+            tx.delete(DEVICES, &site)
+        })
+    }
+
     /// Writes this PC's `devices` row if anything changed or `last_seen` is
     /// older than [`DEVICE_REFRESH_MS`], and removes the rows of sites this
     /// database was restored from. Returns whether anything was written.

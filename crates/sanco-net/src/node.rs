@@ -129,6 +129,9 @@ pub enum NodeEvent {
     PeersChanged,
     /// Documents this PC numbered lost a clash and got new numbers.
     Renumbered(Vec<Renumbered>),
+    /// An admin removed this PC from the workspace. The shell should stop
+    /// the node; this PC can only come back by joining again.
+    Removed,
 }
 
 pub type EventFn = Arc<dyn Fn(NodeEvent) + Send + Sync>;
@@ -365,6 +368,7 @@ impl Inner {
             Ok(_) => {}
             Err(Error::Core(sanco_core::Error::Deleted { .. })) => {
                 tracing::warn!("this PC was removed from the workspace's devices");
+                self.emit(NodeEvent::Removed);
             }
             Err(e) => tracing::error!(error = %e, "could not register this device"),
         }
@@ -469,6 +473,9 @@ impl Inner {
                 Ok((hello, report, numbers)) => {
                     if report.accepted > 0 {
                         self.poke.notify_one();
+                    }
+                    if report.accepted > 0 && self.db.is_removed().unwrap_or(false) {
+                        self.emit(NodeEvent::Removed);
                     }
                     self.record_ok(addr, &hello, report);
                     numbers
