@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod clients;
 pub mod config;
+pub mod inventory;
 pub mod items;
 pub mod locations;
 pub mod settings;

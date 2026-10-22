@@ -61,6 +61,23 @@ export const formatMinor = (minor: number | null | undefined, currency: string) 
         minimumFractionDigits: 2,
       }).format(minor / 100);
 
+const dayFmt = new Intl.DateTimeFormat("en-PH", { timeZone: "UTC", dateStyle: "medium" });
+
+/** A calendar date `YYYY-MM-DD` as "Oct 21, 2026". */
+export const formatDay = (date: string | null | undefined) => {
+  if (!date) return "—";
+  const [y, m, d] = date.split("-").map(Number);
+  return Number.isFinite(d) ? dayFmt.format(Date.UTC(y, m - 1, d)) : date;
+};
+
+/** Today's date in Manila, `YYYY-MM-DD`. */
+export const todayManila = () =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(Date.now());
+
+/** A quantity with its unit: "1,200 box". */
+export const formatQty = (qty: number, unit?: string | null) =>
+  `${qty.toLocaleString("en-PH")}${unit ? ` ${unit}` : ""}`;
+
 /** Thrown by the parsers below; the message is shown to the user. */
 export class InputError extends Error {}
 
@@ -92,6 +109,14 @@ export function parseCount(text: string, what = "number"): number | null {
   const t = text.trim().replace(/,/g, "");
   if (!t) return null;
   if (!/^\d+$/.test(t)) throw new InputError(`“${text.trim()}” is not a valid ${what}`);
+  return Number(t);
+}
+
+/** Whole number that may be signed ("+5", "-3", "−3"), blank → null. */
+export function parseSigned(text: string, what = "quantity"): number | null {
+  const t = text.trim().replace(/,/g, "").replace("−", "-");
+  if (!t) return null;
+  if (!/^[+-]?\d+$/.test(t)) throw new InputError(`“${text.trim()}” is not a valid ${what}`);
   return Number(t);
 }
 

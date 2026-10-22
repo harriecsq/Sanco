@@ -156,7 +156,11 @@ impl Perms {
     }
 
     pub fn can(&self, module: Module, action: Action) -> bool {
-        self.admin || self.modules.get(&module).is_some_and(|a| a.contains(&action))
+        self.admin
+            || self
+                .modules
+                .get(&module)
+                .is_some_and(|a| a.contains(&action))
     }
 
     pub fn sees(&self, field: Field) -> bool {
@@ -249,7 +253,10 @@ pub fn load_user(conn: &Connection, user_id: &str) -> Result<Option<SessionUser>
     let mut roles = Vec::new();
     let mut perms = Perms::default();
     let rows = stmt.query_map([user_id], |r| {
-        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+        Ok((
+            r.get::<_, Option<String>>(0)?,
+            r.get::<_, Option<String>>(1)?,
+        ))
     })?;
     for row in rows {
         let (name, json) = row?;
@@ -279,12 +286,13 @@ pub fn login(db: &Db, username: &str, password: &str) -> Result<SessionUser> {
     // Usernames can repeat after an offline merge; take the one that matches.
     let id = candidates
         .into_iter()
-        .find(|(_, hash)| hash.as_deref().is_some_and(|h| verify_password(password, h)))
+        .find(|(_, hash)| {
+            hash.as_deref()
+                .is_some_and(|h| verify_password(password, h))
+        })
         .map(|(id, _)| id)
         .ok_or(Error::BadLogin)?;
-    let user = db
-        .read(|c| load_user(c, &id))?
-        .ok_or(Error::BadLogin)?;
+    let user = db.read(|c| load_user(c, &id))?.ok_or(Error::BadLogin)?;
     let row_id = id.clone();
     db.write(user.actor(), move |tx| {
         tx.log_event("login", "users", &row_id, json!({}))
@@ -365,7 +373,10 @@ mod tests {
         assert!(p.can(Module::Clients, Action::View));
         assert!(!p.modules.contains_key(&Module::Items));
         let json = serde_json::to_string(&p).unwrap();
-        assert_eq!(json, r#"{"admin":false,"modules":{"clients":["view","edit"]},"fields":[]}"#);
+        assert_eq!(
+            json,
+            r#"{"admin":false,"modules":{"clients":["view","edit"]},"fields":[]}"#
+        );
         assert_eq!(Perms::parse(Some(&json)), p);
         assert_eq!(Perms::parse(Some("garbage")), Perms::default());
         assert_eq!(Perms::parse(Some("{}")), Perms::default());

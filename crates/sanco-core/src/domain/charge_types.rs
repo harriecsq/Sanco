@@ -93,7 +93,9 @@ pub fn save(tx: &mut WriteTx, input: &ChargeTypeInput) -> Result<String> {
         |r| r.get(0),
     )?;
     if taken {
-        return Err(Error::Invalid(format!("a charge named {name} already exists")));
+        return Err(Error::Invalid(format!(
+            "a charge named {name} already exists"
+        )));
     }
     let data = json!({
         "name": name,

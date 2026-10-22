@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db::registry;
-use crate::domain::{require_text, text_opt};
+use crate::domain::{inventory, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids;
 use crate::repo::WriteTx;
@@ -74,7 +74,9 @@ pub fn save(tx: &mut WriteTx, input: &LocationInput) -> Result<String> {
         |r| r.get(0),
     )?;
     if taken {
-        return Err(Error::Invalid(format!("a location named {name} already exists")));
+        return Err(Error::Invalid(format!(
+            "a location named {name} already exists"
+        )));
     }
     let data = json!({
         "name": name,
@@ -94,11 +96,15 @@ pub fn save(tx: &mut WriteTx, input: &LocationInput) -> Result<String> {
     }
 }
 
-/// Deletes a location. Stock movements will block this once they exist
-/// (M6); until then nothing refers to locations.
+/// Deletes a location that no stock document uses, even a voided one.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(LOCATIONS, id)?.is_none() {
         return Err(Error::Invalid("that location no longer exists".into()));
+    }
+    if inventory::location_in_use(tx.conn(), id)? {
+        return Err(Error::Invalid(
+            "this location has stock movements; mark it inactive instead".into(),
+        ));
     }
     tx.delete(LOCATIONS, id)
 }

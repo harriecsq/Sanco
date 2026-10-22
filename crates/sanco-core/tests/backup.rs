@@ -36,7 +36,11 @@ fn daily_backups_are_made_once_and_pruned() {
     backup::manual(&a.db, &bdir).unwrap();
 
     let list = backup::list(&bdir).unwrap();
-    let daily: Vec<_> = list.iter().filter(|b| b.kind == "daily").map(|b| b.name.as_str()).collect();
+    let daily: Vec<_> = list
+        .iter()
+        .filter(|b| b.kind == "daily")
+        .map(|b| b.name.as_str())
+        .collect();
     assert_eq!(daily.len(), 3);
     assert!(daily.contains(&"sanco-daily-2026-10-25.db"));
     assert!(!daily.contains(&"sanco-daily-2026-10-22.db"));
@@ -52,7 +56,15 @@ fn backup_names_are_checked() {
     let made = backup::manual(&a.db, &bdir).unwrap();
     let name = made.file_name().unwrap().to_str().unwrap();
     assert_eq!(backup::resolve(&bdir, name).unwrap(), made);
-    for bad in ["", "..", "../sanco.db", "..\\sanco.db", "C:\\x.db", "missing.db", "notes.txt"] {
+    for bad in [
+        "",
+        "..",
+        "../sanco.db",
+        "..\\sanco.db",
+        "C:\\x.db",
+        "missing.db",
+        "notes.txt",
+    ] {
         assert!(backup::resolve(&bdir, bad).is_err(), "{bad}");
     }
 }
@@ -86,17 +98,30 @@ fn restore_takes_a_new_identity_and_resyncs() {
     let old_site = a.db.site_id().to_string();
     let before = backup::before_restore_path(&bdir, a.db.now_ms());
     a.db.backup_to(&before).unwrap();
-    let TestPeer { path, machine, clock, db } = a;
+    let TestPeer {
+        path,
+        machine,
+        clock,
+        db,
+    } = a;
     drop(db);
     backup::replace_db(&path, &saved).unwrap();
     let mut o = opts(&path, &machine, &clock, 33);
     o.new_identity = true;
-    a = TestPeer { path, machine, clock, db: Db::open(o).unwrap() };
+    a = TestPeer {
+        path,
+        machine,
+        clock,
+        db: Db::open(o).unwrap(),
+    };
 
     assert_ne!(a.db.site_id(), old_site);
     assert_eq!(a.db.previous_sites().unwrap(), vec![old_site]);
     assert_eq!(count_todos(&a.db), 1);
-    assert_eq!(a.db.workspace().unwrap().unwrap().workspace_id, ws.workspace_id);
+    assert_eq!(
+        a.db.workspace().unwrap().unwrap().workspace_id,
+        ws.workspace_id
+    );
 
     // B still has what was synced; the restored PC gets it back from B, and
     // B accepts the restored PC as a new site.
@@ -107,5 +132,10 @@ fn restore_takes_a_new_identity_and_resyncs() {
     assert_eq!(count_todos(&b.db), 3);
 
     // The pre-restore copy still holds the unsynced edit.
-    assert!(backup::list(&bdir).unwrap().iter().any(|b| b.kind == "before-restore"));
+    assert!(
+        backup::list(&bdir)
+            .unwrap()
+            .iter()
+            .any(|b| b.kind == "before-restore")
+    );
 }

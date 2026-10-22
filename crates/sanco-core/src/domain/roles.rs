@@ -90,7 +90,9 @@ pub fn save(tx: &mut WriteTx, input: RoleInput) -> Result<String> {
         |r| r.get(0),
     )?;
     if taken {
-        return Err(Error::Invalid(format!("a role named {name} already exists")));
+        return Err(Error::Invalid(format!(
+            "a role named {name} already exists"
+        )));
     }
     let data = json!({
         "name": name,

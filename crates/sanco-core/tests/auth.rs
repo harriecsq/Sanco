@@ -48,12 +48,17 @@ fn first_admin_then_login() {
     // Usernames are case-insensitive.
     let user = auth::login(&a.db, "ANA", "secret1").unwrap();
     assert_eq!(user.id, admin.id);
-    assert!(matches!(auth::login(&a.db, "ana", "wrong!"), Err(Error::BadLogin)));
-    assert!(matches!(auth::login(&a.db, "nobody", "secret1"), Err(Error::BadLogin)));
+    assert!(matches!(
+        auth::login(&a.db, "ana", "wrong!"),
+        Err(Error::BadLogin)
+    ));
+    assert!(matches!(
+        auth::login(&a.db, "nobody", "secret1"),
+        Err(Error::BadLogin)
+    ));
 
-    let logins = a
-        .db
-        .read(|c| {
+    let logins =
+        a.db.read(|c| {
             audit::list(
                 c,
                 &AuditFilter {
@@ -67,7 +72,9 @@ fn first_admin_then_login() {
     assert_eq!(logins[0].user_name.as_deref(), Some("Ana Cruz"));
 
     // The password hash never reaches the audit log.
-    let all = a.db.read(|c| audit::list(c, &AuditFilter::default())).unwrap();
+    let all =
+        a.db.read(|c| audit::list(c, &AuditFilter::default()))
+            .unwrap();
     assert!(all.iter().all(|e| !e.changes_json.contains("argon2")));
 }
 
@@ -77,9 +84,12 @@ fn staff_permissions_and_admin_guard() {
     let a = TestPeer::new(dir.path(), "a", 2);
     let admin = admin_setup(&a.db);
 
-    let staff_id =
-        users::create_user(&a.db, admin.actor(), new_user("ben", vec![roles::staff_role_id()]))
-            .unwrap();
+    let staff_id = users::create_user(
+        &a.db,
+        admin.actor(),
+        new_user("ben", vec![roles::staff_role_id()]),
+    )
+    .unwrap();
     let ben = auth::login(&a.db, "ben", "secret1").unwrap();
     assert_eq!(ben.id, staff_id);
     assert!(ben.perms.can(Module::Clients, Action::Create));
@@ -95,9 +105,8 @@ fn staff_permissions_and_admin_guard() {
     assert!(matches!(dup, Err(Error::Invalid(_))));
 
     // A custom role adds cost visibility on top of Staff.
-    let costs = a
-        .db
-        .write(admin.actor(), |tx| {
+    let costs =
+        a.db.write(admin.actor(), |tx| {
             roles::save(
                 tx,
                 RoleInput {
@@ -123,14 +132,20 @@ fn staff_permissions_and_admin_guard() {
         move |tx| users::update(tx, &u)
     })
     .unwrap();
-    let ben = a.db.read(|c| auth::load_user(c, &staff_id)).unwrap().unwrap();
+    let ben =
+        a.db.read(|c| auth::load_user(c, &staff_id))
+            .unwrap()
+            .unwrap();
     assert!(ben.perms.sees(Field::Costs));
     assert_eq!(ben.roles, vec!["Costing", "Staff"]);
 
     // Deleting the role takes it away again.
     a.db.write(admin.actor(), move |tx| roles::delete(tx, &costs))
         .unwrap();
-    let ben = a.db.read(|c| auth::load_user(c, &staff_id)).unwrap().unwrap();
+    let ben =
+        a.db.read(|c| auth::load_user(c, &staff_id))
+            .unwrap()
+            .unwrap();
     assert!(!ben.perms.sees(Field::Costs));
 
     // The last admin can't lose the role, be deactivated, or lose admin rights.
@@ -171,12 +186,15 @@ fn staff_permissions_and_admin_guard() {
         )
     });
     assert!(matches!(res, Err(Error::Invalid(_))));
-    let res = a
-        .db
-        .write(admin.actor(), |tx| roles::delete(tx, &roles::admin_role_id()));
+    let res = a.db.write(admin.actor(), |tx| {
+        roles::delete(tx, &roles::admin_role_id())
+    });
     assert!(matches!(res, Err(Error::Invalid(_))));
     // The failed writes left everything as it was.
-    let admin_now = a.db.read(|c| auth::load_user(c, &admin.id)).unwrap().unwrap();
+    let admin_now =
+        a.db.read(|c| auth::load_user(c, &admin.id))
+            .unwrap()
+            .unwrap();
     assert!(admin_now.perms.admin);
 
     // Deactivated users can't sign in.
@@ -187,8 +205,15 @@ fn staff_permissions_and_admin_guard() {
     };
     a.db.write(admin.actor(), move |tx| users::update(tx, &u))
         .unwrap();
-    assert!(matches!(auth::login(&a.db, "ben", "secret1"), Err(Error::BadLogin)));
-    assert!(a.db.read(|c| auth::load_user(c, &staff_id)).unwrap().is_none());
+    assert!(matches!(
+        auth::login(&a.db, "ben", "secret1"),
+        Err(Error::BadLogin)
+    ));
+    assert!(
+        a.db.read(|c| auth::load_user(c, &staff_id))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -225,9 +250,8 @@ fn conflicts_keep_or_restore() {
     let a = TestPeer::new(dir.path(), "a", 6);
     let b = TestPeer::new(dir.path(), "b", 7);
     let admin = admin_setup(&a.db);
-    let id = a
-        .db
-        .write(admin.actor(), |tx| {
+    let id =
+        a.db.write(admin.actor(), |tx| {
             tx.insert("todos", json!({ "title": "Call client", "done": 0 }))
         })
         .unwrap();
@@ -295,9 +319,30 @@ fn audit_filters() {
     assert_eq!(todos[0].user_id.as_deref(), Some(admin.id.as_str()));
 
     // LIKE wildcards in the search are literal.
-    assert_eq!(list(AuditFilter { q: Some("100%".into()), ..AuditFilter::default() }).len(), 1);
-    assert_eq!(list(AuditFilter { q: Some("0%".into()), ..AuditFilter::default() }).len(), 1);
-    assert_eq!(list(AuditFilter { q: Some("1_0".into()), ..AuditFilter::default() }).len(), 0);
+    assert_eq!(
+        list(AuditFilter {
+            q: Some("100%".into()),
+            ..AuditFilter::default()
+        })
+        .len(),
+        1
+    );
+    assert_eq!(
+        list(AuditFilter {
+            q: Some("0%".into()),
+            ..AuditFilter::default()
+        })
+        .len(),
+        1
+    );
+    assert_eq!(
+        list(AuditFilter {
+            q: Some("1_0".into()),
+            ..AuditFilter::default()
+        })
+        .len(),
+        0
+    );
 
     // Dates are Manila days; the test clock is 2026-10-21 08:00 Manila.
     let day = |from: &str, to: &str| {
@@ -336,12 +381,18 @@ fn removing_a_device() {
     pull(&a.db, &b.db, 100);
 
     let own = a.db.site_id().to_string();
-    assert!(matches!(a.db.remove_device(Actor::system(), &own), Err(Error::Invalid(_))));
+    assert!(matches!(
+        a.db.remove_device(Actor::system(), &own),
+        Err(Error::Invalid(_))
+    ));
     a.db.remove_device(Actor::system(), b.db.site_id()).unwrap();
     assert_eq!(a.db.devices().unwrap().len(), 1);
 
     assert!(!b.db.is_removed().unwrap());
     pull(&b.db, &a.db, 100);
     assert!(b.db.is_removed().unwrap());
-    assert!(matches!(b.db.register_device(&info("B")), Err(Error::Deleted { .. })));
+    assert!(matches!(
+        b.db.register_device(&info("B")),
+        Err(Error::Deleted { .. })
+    ));
 }

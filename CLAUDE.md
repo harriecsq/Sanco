@@ -60,7 +60,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Quantities are integers in the base unit.
   - Timestamps are UTC milliseconds, displayed in Asia/Manila.
   - Calendar dates are `YYYY-MM-DD`.
-- **Migrations are additive only.** Backfills are deterministic and do not bump the HLC or `row_versions`. Run `VACUUM INTO` before each migration.
+- **Migrations are additive only.** Backfills are deterministic and do not bump the HLC or `row_versions`. Run `VACUUM INTO` before each migration. Views (`v_stock`, …) aren't replicated, so a later migration may drop and recreate them.
 - **Database connections:** one writer thread with a job channel, plus read connections. WAL with `synchronous=FULL`.
 - **Qwik static rules:**
   - Call `invoke`/`commands.*` only in the browser (`useVisibleTask$`, event handlers).
@@ -81,7 +81,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Peers are the replicated `devices` rows (id = site id, host = Tailscale IPv4) plus addresses that poked us. Plain HTTP: WireGuard already encrypts.
   - Joining: a join code (Crockford base32 of key + inviter `host:port` + checksum) → `GET /snapshot` → open as a copy (never `new_identity`) → `Db::finish_join`.
 - **Handshake** (`GET /hello`, `Db::check_peer`) rejects: schema mismatch, clock skew over 2 minutes either way, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
-- **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`Node::reserve_number` over HTTP, i.e. `numbering::reserve`, then `numbering::assign` inside the document's write). Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
+- **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`Node::reserve_number` over HTTP, i.e. `numbering::reserve`, then `numbering::assign` inside the document's write). **Validate read-only before reserving** (e.g. `inventory::validate`): a write that fails after the reservation leaves the claim held, so the next document skips a number. Posted stock documents are never edited; they are voided and entered again. Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
 
 ## Business rules
 - **Margin is margin on price:** `price = cost ÷ (1 − margin%)`. ₱100 at 20% → ₱125.

@@ -162,6 +162,24 @@ export const commands = {
 	priceQuote: (clientId: string, itemId: string) => typedError<PriceQuote, string>(__TAURI_INVOKE("price_quote", { clientId, itemId })),
 	/**  Every item, for pickers in other modules. */
 	itemOptions: () => typedError<Choice[], string>(__TAURI_INVOKE("item_options")),
+	/**  Every live item with its stock per location. */
+	stockOverview: () => typedError<ItemStock[], string>(__TAURI_INVOKE("stock_overview")),
+	/**  Non-zero lots (item, location, expiry), optionally of one item. */
+	stockLots: (itemId: string | null) => typedError<StockLot[], string>(__TAURI_INVOKE("stock_lots", { itemId })),
+	/**  Lots in stock expiring within `within_days` days, or already expired. */
+	expiringStock: (withinDays: number) => typedError<StockLot[], string>(__TAURI_INVOKE("expiring_stock", { withinDays })),
+	itemStockMoves: (itemId: string) => typedError<StockMove[], string>(__TAURI_INVOKE("item_stock_moves", { itemId })),
+	listStockDocs: () => typedError<StockDocInfo[], string>(__TAURI_INVOKE("list_stock_docs")),
+	getStockDoc: (id: string) => typedError<{
+	doc: StockDocInfo,
+	lines: StockDocLine[],
+} | null, string>(__TAURI_INVOKE("get_stock_doc", { id })),
+	/**
+	 *  Posts a receipt, adjustment or transfer with a new shared number.
+	 *  Returns its id.
+	 */
+	postStockDoc: (doc: StockDocInput) => typedError<string, string>(__TAURI_INVOKE("post_stock_doc", { doc })),
+	voidStockDoc: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_stock_doc", { id, reason })),
 };
 
 /* Types */
@@ -408,6 +426,28 @@ export type ItemInput = {
 	active: boolean,
 };
 
+/**  One item's stock across locations. */
+export type ItemStock = {
+	item_id: string,
+	code: string,
+	name: string,
+	unit: string | null,
+	category: string | null,
+	supplier_id: string | null,
+	active: boolean,
+	tracks_expiry: boolean,
+	reorder_level: number | null,
+	on_hand: number,
+	/**  Locations with non-zero stock. */
+	by_location: LocationQty[],
+	/**  At or below the reorder level. */
+	low: boolean,
+	/**  Some lot is below zero (offline PCs took the same stock). */
+	negative: boolean,
+	/**  Earliest expiry among lots in stock. */
+	next_expiry: string | null,
+};
+
 export type ItemSuggestions = {
 	categories: string[],
 	units: string[],
@@ -441,6 +481,11 @@ export type LocationInput = {
 	notes: string,
 	sort: number,
 	active: boolean,
+};
+
+export type LocationQty = {
+	location_id: string,
+	qty: number,
 };
 
 export type Module = "dashboard" | "bd" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
@@ -606,6 +651,101 @@ export type SessionUser = {
 	display_name: string,
 	roles: string[],
 	perms: Perms,
+};
+
+export type StockDocDetail = {
+	doc: StockDocInfo,
+	lines: StockDocLine[],
+};
+
+export type StockDocInfo = {
+	id: string,
+	no: string | null,
+	/**  False while the number was given offline: it may still change. */
+	no_confirmed: boolean,
+	kind: StockKind,
+	date: string,
+	location_id: string | null,
+	location_name: string | null,
+	to_location_id: string | null,
+	to_location_name: string | null,
+	reason: string | null,
+	notes: string | null,
+	voided: boolean,
+	voided_at: number | null,
+	voided_by_name: string | null,
+	void_reason: string | null,
+	created_at: number,
+	created_by_name: string | null,
+	/**  e.g. "GLV-100 ×10, MSK-1 ×−2". */
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+};
+
+export type StockDocInput = {
+	kind: StockKind,
+	date: string,
+	/**  Receiving, adjusted or (for transfers) source location. */
+	location_id: string,
+	/**  Destination of a transfer. */
+	to_location_id: string | null,
+	/**  Why stock was adjusted. Required for adjustments. */
+	reason: string,
+	notes: string,
+	lines: StockLineInput[],
+};
+
+export type StockDocLine = {
+	id: string,
+	item_id: string,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	expiry: string | null,
+	qty: number,
+};
+
+export type StockKind = "receipt" | "adjustment" | "transfer";
+
+export type StockLineInput = {
+	item_id: string,
+	/**
+	 *  `YYYY-MM-DD`. Required for stock coming in of an item that tracks
+	 *  expiry; ignored for incoming stock of other items.
+	 */
+	expiry: string | null,
+	/**  In the item's base unit. Signed for adjustments, positive otherwise. */
+	qty: number,
+};
+
+/**  Stock of one item at one location with one expiry date. */
+export type StockLot = {
+	item_id: string,
+	item_code: string,
+	item_name: string,
+	unit: string | null,
+	category: string | null,
+	location_id: string,
+	location_name: string | null,
+	expiry: string | null,
+	/**  Days from today to expiry; negative once expired. */
+	days_left: number | null,
+	qty: number,
+};
+
+/**  One line of an item's stock history. */
+export type StockMove = {
+	doc_id: string,
+	no: string | null,
+	kind: StockKind,
+	date: string,
+	location_id: string,
+	location_name: string | null,
+	expiry: string | null,
+	/**  Positive in, negative out. */
+	qty: number,
+	created_at: number,
 };
 
 export type SupplierChoice = {

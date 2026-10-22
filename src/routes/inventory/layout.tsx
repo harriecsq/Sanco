@@ -13,6 +13,9 @@ export default component$(() => {
         label="Inventory"
         tabs={[
           { href: "/inventory/", label: "Stock" },
+          { href: "/inventory/movements/", label: "Movements" },
+          { href: "/inventory/expiry/", label: "Expiring" },
+          { href: "/inventory/low/", label: "Low stock" },
           { href: "/inventory/locations/", label: "Locations" },
         ]}
       />

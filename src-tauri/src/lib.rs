@@ -82,6 +82,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::items::save_rate,
             commands::items::price_quote,
             commands::items::item_options,
+            commands::inventory::stock_overview,
+            commands::inventory::stock_lots,
+            commands::inventory::expiring_stock,
+            commands::inventory::item_stock_moves,
+            commands::inventory::list_stock_docs,
+            commands::inventory::get_stock_doc,
+            commands::inventory::post_stock_doc,
+            commands::inventory::void_stock_doc,
         ])
         .dangerously_cast_bigints_to_number()
 }

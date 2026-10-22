@@ -31,7 +31,11 @@ pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
 }
 
 pub fn set(tx: &mut WriteTx, key: &str, value: Option<&str>) -> Result<()> {
-    tx.upsert(SETTINGS, &setting_id(key), json!({ "key": key, "value": value }))
+    tx.upsert(
+        SETTINGS,
+        &setting_id(key),
+        json!({ "key": key, "value": value }),
+    )
 }
 
 /// VAT rate in basis points (12% = 1200).
@@ -43,7 +47,9 @@ pub fn vat_rate_bp(conn: &Connection) -> Result<i64> {
 
 pub fn set_vat_rate_bp(tx: &mut WriteTx, bp: i64) -> Result<()> {
     if !(0..=5_000).contains(&bp) {
-        return Err(Error::Invalid("the VAT rate must be between 0% and 50%".into()));
+        return Err(Error::Invalid(
+            "the VAT rate must be between 0% and 50%".into(),
+        ));
     }
     set(tx, VAT_RATE_KEY, Some(&bp.to_string()))
 }
@@ -87,13 +93,16 @@ pub fn set_company(tx: &mut WriteTx, c: &Company) -> Result<()> {
 // Number formats ------------------------------------------------------------
 
 /// Series shown in Settings → Number formats, with their labels.
-pub const SERIES: [(&str, &str); 8] = [
+pub const SERIES: [(&str, &str); 11] = [
     (series::BD, "Business Development requests"),
     (series::BOOKING, "Bookings"),
     (series::DR, "Delivery receipts"),
     (series::PAYMENT, "Payments"),
     (series::PO, "Purchase orders"),
     (series::RECEIVING, "Receiving reports"),
+    (series::STOCK_RECEIPT, "Stock receipts"),
+    (series::ADJUSTMENT, "Stock adjustments"),
+    (series::TRANSFER, "Stock transfers"),
     (series::CLIENT, "Client codes"),
     (series::SUPPLIER, "Supplier codes"),
 ];

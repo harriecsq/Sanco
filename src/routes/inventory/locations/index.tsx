@@ -221,7 +221,9 @@ export default component$(() => {
       >
         <p>
           This deletes the location on every PC and can't be undone.{" "}
-          <span class={hint}>Once stock is tracked (M6), locations with stock can't be deleted.</span>
+          <span class={hint}>
+            A location with stock movements can't be deleted; mark it inactive instead.
+          </span>
         </p>
       </Confirm>
     </>

@@ -69,8 +69,12 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<SupplierInfo> {
         code: r.get(1)?,
         code_confirmed: r.get::<_, i64>(2)? != 0,
         name: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-        country: r.get::<_, Option<String>>(4)?.unwrap_or_else(|| "OTHER".into()),
-        currency: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "USD".into()),
+        country: r
+            .get::<_, Option<String>>(4)?
+            .unwrap_or_else(|| "OTHER".into()),
+        currency: r
+            .get::<_, Option<String>>(5)?
+            .unwrap_or_else(|| "USD".into()),
         contact_person: r.get(6)?,
         phone: r.get(7)?,
         email: r.get(8)?,

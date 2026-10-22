@@ -261,7 +261,13 @@ impl WriteTx<'_> {
 
     /// Records an event that changes no row, such as a sign-in, in the
     /// audit log.
-    pub fn log_event(&mut self, action: &str, table: &str, row_id: &str, details: Value) -> Result<()> {
+    pub fn log_event(
+        &mut self,
+        action: &str,
+        table: &str,
+        row_id: &str,
+        details: Value,
+    ) -> Result<()> {
         let def = registry::table(table)?;
         let hlc = self.hlc.tick(self.clock.now_ms());
         self.audit(hlc, action, def, row_id, serde_json::to_string(&details)?)

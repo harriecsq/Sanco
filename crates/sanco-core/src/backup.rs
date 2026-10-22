@@ -36,16 +36,16 @@ pub struct BackupFile {
 
 /// `<dir of the database>/backups`, where the migration runner also writes.
 pub fn dir_for(db_path: &Path) -> PathBuf {
-    db_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("backups")
+    db_path.parent().unwrap_or(Path::new(".")).join("backups")
 }
 
 /// Makes today's daily backup unless it exists, then prunes old dailies.
 /// Returns the new file, if one was made.
 pub fn daily(db: &Db, dir: &Path, keep: usize) -> Result<Option<PathBuf>> {
-    let dest = dir.join(format!("{DAILY_PREFIX}{}.db", manila_date_string(db.now_ms())));
+    let dest = dir.join(format!(
+        "{DAILY_PREFIX}{}.db",
+        manila_date_string(db.now_ms())
+    ));
     if dest.exists() {
         return Ok(None);
     }
@@ -118,12 +118,16 @@ pub fn check_restorable(backup: &Path, workspace_id: &str) -> Result<()> {
         });
     }
     let ws: Option<String> = conn
-        .query_row("SELECT workspace_id FROM workspace WHERE id = 1", [], |r| r.get(0))
+        .query_row("SELECT workspace_id FROM workspace WHERE id = 1", [], |r| {
+            r.get(0)
+        })
         .optional()
         .unwrap_or(None);
     match ws {
         Some(id) if id == workspace_id => Ok(()),
-        Some(_) => Err(Error::Invalid("the backup belongs to another workspace".into())),
+        Some(_) => Err(Error::Invalid(
+            "the backup belongs to another workspace".into(),
+        )),
         None => Err(Error::Invalid(
             "the backup has no workspace (made before setup or by an older version)".into(),
         )),

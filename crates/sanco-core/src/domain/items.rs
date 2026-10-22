@@ -16,7 +16,7 @@ use crate::domain::pricing::{
     self, CLIENT_ITEM_RATES, ChargeMode, LandedCost, check_currency, price_from_cost,
 };
 use crate::domain::suppliers::SUPPLIERS;
-use crate::domain::{require_text, text_opt};
+use crate::domain::{inventory, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids;
 use crate::repo::WriteTx;
@@ -179,7 +179,9 @@ fn data(tx: &WriteTx, input: &ItemInput, margins: bool) -> Result<Value> {
         |r| r.get(0),
     )?;
     if taken {
-        return Err(Error::Invalid(format!("another item already has the code {code}")));
+        return Err(Error::Invalid(format!(
+            "another item already has the code {code}"
+        )));
     }
     let supplier = input.supplier_id.as_deref().filter(|s| !s.is_empty());
     if let Some(s) = supplier
@@ -223,10 +225,16 @@ pub fn save(tx: &mut WriteTx, input: &ItemInput, margins: bool) -> Result<String
     }
 }
 
-/// Deletes an item with its cost sheet and client rates.
+/// Deletes an item with its cost sheet and client rates. Items with stock
+/// movements can't be deleted.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(ITEMS, id)?.is_none() {
         return Err(Error::Invalid("that item no longer exists".into()));
+    }
+    if inventory::item_in_use(tx.conn(), id)? {
+        return Err(Error::Invalid(
+            "this item has stock movements; mark it inactive instead".into(),
+        ));
     }
     for table in [ITEM_COSTS, ITEM_COST_CHARGES, CLIENT_ITEM_RATES] {
         let rows: Vec<String> = {

@@ -50,10 +50,18 @@ pub fn list(conn: &Connection, f: &AuditFilter) -> Result<Vec<AuditEntry>> {
     let mut args: Vec<SqlValue> = Vec::new();
     let mut add = |cond: &str, v: SqlValue| {
         args.push(v);
-        sql.push_str(&format!(" AND {}", cond.replace('?', &format!("?{}", args.len()))));
+        sql.push_str(&format!(
+            " AND {}",
+            cond.replace('?', &format!("?{}", args.len()))
+        ));
     };
     if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        let like = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let like = format!(
+            "%{}%",
+            q.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         add(
             "(a.row_id LIKE ? ESCAPE '\\' OR a.action LIKE ? ESCAPE '\\' OR a.changes_json LIKE ? ESCAPE '\\')",
             SqlValue::Text(like),

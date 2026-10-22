@@ -226,6 +226,31 @@ pub static TABLES: &[TableDef] = &[
             text("notes"),
         ],
     },
+    TableDef {
+        name: "stock_docs",
+        cols: &[
+            text("kind"),
+            text("date"),
+            text("location_id"),
+            text("to_location_id"),
+            text("reason"),
+            text("notes"),
+            text("status"),
+            int("voided_at"),
+            text("voided_by"),
+            text("void_reason"),
+        ],
+    },
+    TableDef {
+        name: "stock_doc_lines",
+        cols: &[
+            text("doc_id"),
+            int("line_no"),
+            text("item_id"),
+            text("expiry"),
+            int("qty"),
+        ],
+    },
 ];
 
 pub fn table(name: &str) -> Result<&'static TableDef> {

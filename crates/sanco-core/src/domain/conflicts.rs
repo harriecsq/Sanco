@@ -114,7 +114,12 @@ pub fn resolve(tx: &mut WriteTx, id: &str, restore: bool) -> Result<()> {
             .cols
             .iter()
             .filter(|c| !HIDDEN.contains(&c.name))
-            .map(|c| (c.name.to_string(), lost.get(c.name).cloned().unwrap_or(Value::Null)))
+            .map(|c| {
+                (
+                    c.name.to_string(),
+                    lost.get(c.name).cloned().unwrap_or(Value::Null),
+                )
+            })
             .collect();
         tx.update(&tbl, &row_id, Value::Object(patch))?;
     }

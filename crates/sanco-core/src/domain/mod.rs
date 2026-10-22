@@ -6,6 +6,7 @@ pub mod auth;
 pub mod charge_types;
 pub mod clients;
 pub mod conflicts;
+pub mod inventory;
 pub mod items;
 pub mod locations;
 pub mod pricing;

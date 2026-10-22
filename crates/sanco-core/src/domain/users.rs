@@ -59,7 +59,9 @@ pub fn list(conn: &Connection) -> Result<Vec<UserInfo>> {
         let roles: String = r.get(5)?;
         Ok(UserInfo {
             id: r.get(0)?,
-            display_name: r.get::<_, Option<String>>(2)?.unwrap_or_else(|| username.clone()),
+            display_name: r
+                .get::<_, Option<String>>(2)?
+                .unwrap_or_else(|| username.clone()),
             username,
             active: r.get::<_, Option<i64>>(3)?.unwrap_or(0) != 0,
             created_at: r.get(4)?,
@@ -166,7 +168,9 @@ pub fn update(tx: &mut WriteTx, input: &UserUpdate) -> Result<()> {
         .unwrap_or_default()
         .to_string();
     if !input.active && tx.actor().user_id.as_deref() == Some(input.id.as_str()) {
-        return Err(Error::Invalid("you can't deactivate your own account".into()));
+        return Err(Error::Invalid(
+            "you can't deactivate your own account".into(),
+        ));
     }
     tx.update(
         USERS,
@@ -189,9 +193,9 @@ fn set_roles(tx: &mut WriteTx, user_id: &str, role_ids: &[String]) -> Result<()>
         }
     }
     let current: Vec<(String, String)> = {
-        let mut stmt = tx.conn().prepare(
-            "SELECT id, role_id FROM user_roles WHERE user_id = ?1 AND _deleted = 0",
-        )?;
+        let mut stmt = tx
+            .conn()
+            .prepare("SELECT id, role_id FROM user_roles WHERE user_id = ?1 AND _deleted = 0")?;
         let rows = stmt.query_map([user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect::<Result<_, _>>()?
     };

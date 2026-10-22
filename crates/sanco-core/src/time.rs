@@ -43,6 +43,29 @@ pub fn manila_day_start_ms(date: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d) * DAY_MS - MANILA_OFFSET_MS)
 }
 
+/// The date `YYYY-MM-DD` normalized, if it is a real calendar date.
+pub fn parse_date(date: &str) -> Option<String> {
+    let start = manila_day_start_ms(date)?;
+    let parts: Vec<i64> = date
+        .trim()
+        .splitn(3, '-')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
+    // Feb 31 parses but lands on another day.
+    let (y, m, d) = manila_date(start);
+    (parts == [i64::from(y), i64::from(m), i64::from(d)]).then(|| manila_date_string(start))
+}
+
+/// `date` plus `days` (which may be negative). `date` must be valid.
+pub fn add_days(date: &str, days: i64) -> Option<String> {
+    manila_day_start_ms(date).map(|ms| manila_date_string(ms + days * DAY_MS))
+}
+
+/// Whole days from `from` to `to` (both `YYYY-MM-DD`).
+pub fn days_between(from: &str, to: &str) -> Option<i64> {
+    Some((manila_day_start_ms(to)? - manila_day_start_ms(from)?).div_euclid(DAY_MS))
+}
+
 /// Inverse of [`civil_from_days`].
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -93,9 +116,30 @@ mod tests {
         assert_eq!(start, 1_792_540_800_000 - MANILA_OFFSET_MS);
         assert_eq!(manila_date_string(start), "2026-10-21");
         assert_eq!(manila_date_string(start - 1), "2026-10-20");
-        assert_eq!(manila_day_start_ms("2024-02-29").map(manila_date_string).as_deref(), Some("2024-02-29"));
+        assert_eq!(
+            manila_day_start_ms("2024-02-29")
+                .map(manila_date_string)
+                .as_deref(),
+            Some("2024-02-29")
+        );
         assert_eq!(manila_day_start_ms("2026-13-01"), None);
         assert_eq!(manila_day_start_ms("junk"), None);
-        assert_eq!(manila_stamp(1_792_540_800_000 + 3_723_000), "20261021-090203");
+        assert_eq!(
+            manila_stamp(1_792_540_800_000 + 3_723_000),
+            "20261021-090203"
+        );
+    }
+
+    #[test]
+    fn calendar_dates() {
+        assert_eq!(parse_date(" 2026-1-5 ").as_deref(), Some("2026-01-05"));
+        assert_eq!(parse_date("2024-02-29").as_deref(), Some("2024-02-29"));
+        assert_eq!(parse_date("2026-02-29"), None);
+        assert_eq!(parse_date("2026-04-31"), None);
+        assert_eq!(parse_date("2026-10"), None);
+        assert_eq!(add_days("2026-12-31", 1).as_deref(), Some("2027-01-01"));
+        assert_eq!(add_days("2026-03-01", -1).as_deref(), Some("2026-02-28"));
+        assert_eq!(days_between("2026-10-22", "2027-01-20"), Some(90));
+        assert_eq!(days_between("2026-10-22", "2026-10-20"), Some(-2));
     }
 }

@@ -46,6 +46,9 @@ pub mod series {
     pub const RECEIVING: &str = "RR";
     pub const CLIENT: &str = "CL";
     pub const SUPPLIER: &str = "SUP";
+    pub const STOCK_RECEIPT: &str = "SR";
+    pub const ADJUSTMENT: &str = "ADJ";
+    pub const TRANSFER: &str = "TR";
 }
 
 /// Display format of a series. Stored as JSON in the setting

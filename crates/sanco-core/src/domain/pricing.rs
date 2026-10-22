@@ -267,7 +267,9 @@ pub fn quote(conn: &Connection, client_id: &str, item_id: &str) -> Result<PriceQ
         rule,
         net_c: net,
         vat,
-        vat_amounts: net.filter(|_| vat != Some(false)).map(|n| with_vat(n, vat_bp)),
+        vat_amounts: net
+            .filter(|_| vat != Some(false))
+            .map(|n| with_vat(n, vat_bp)),
         vat_bp,
         cost_c: cost,
         margin_bp: net.zip(cost).and_then(|(p, c)| margin_of(p, c)),
@@ -478,10 +480,18 @@ mod tests {
         assert_eq!(l.charges_c, 2_000 + 5_650);
         assert_eq!(l.total_c, 64_150);
         // PHP ignores FX; missing FX for a foreign price → no cost.
-        assert_eq!(landed_cost("PHP", Some(100), None, []).unwrap().total_c, 100);
+        assert_eq!(
+            landed_cost("PHP", Some(100), None, []).unwrap().total_c,
+            100
+        );
         assert_eq!(landed_cost("USD", Some(100), None, []), None);
         assert_eq!(landed_cost("USD", None, Some("56"), []), None);
         // ¥1.23 at 7.8125 = ₱9.609375 → 961 centavos.
-        assert_eq!(landed_cost("CNY", Some(123), Some("7.8125"), []).unwrap().base_c, 961);
+        assert_eq!(
+            landed_cost("CNY", Some(123), Some("7.8125"), [])
+                .unwrap()
+                .base_c,
+            961
+        );
     }
 }

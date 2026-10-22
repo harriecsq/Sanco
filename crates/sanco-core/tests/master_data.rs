@@ -48,8 +48,10 @@ fn add_client(db: &Db, actor: &Actor, name: &str, tier: Option<i64>) -> String {
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::CLIENT, &id).unwrap();
     let input = client_input(name, tier);
-    db.write(actor.clone(), move |tx| clients::create(tx, &input, &res, true))
-        .unwrap()
+    db.write(actor.clone(), move |tx| {
+        clients::create(tx, &input, &res, true)
+    })
+    .unwrap()
 }
 
 fn supplier_input(name: &str) -> SupplierInput {
@@ -139,22 +141,30 @@ fn seeds_are_shared_and_idempotent() {
     sanco_core::domain::seed_defaults(&b.db).unwrap();
     sanco_core::domain::seed_defaults(&a.db).unwrap();
 
-    let names: Vec<String> = a.db.read(locations::list).unwrap().into_iter().map(|l| l.name).collect();
+    let names: Vec<String> =
+        a.db.read(locations::list)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.name)
+            .collect();
     assert_eq!(names, ["Office", "Warehouse"]);
     assert_eq!(a.db.read(charge_types::list).unwrap().len(), 5);
 
     pull(&a.db, &b.db, 100);
     pull(&b.db, &a.db, 100);
-    assert_eq!(a.db.read(locations::list).unwrap(), b.db.read(locations::list).unwrap());
-    let conflicts: i64 = a
-        .db
-        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM conflicts", [], |r| r.get(0))?))
-        .unwrap();
+    assert_eq!(
+        a.db.read(locations::list).unwrap(),
+        b.db.read(locations::list).unwrap()
+    );
+    let conflicts: i64 =
+        a.db.read(|c| Ok(c.query_row("SELECT COUNT(*) FROM conflicts", [], |r| r.get(0))?))
+            .unwrap();
     assert_eq!(conflicts, 0, "identical seeds are not conflicts");
 
     // A deleted seed stays deleted.
     let office = a.db.read(locations::list).unwrap()[0].id.clone();
-    a.db.write(Actor::system(), move |tx| locations::delete(tx, &office)).unwrap();
+    a.db.write(Actor::system(), move |tx| locations::delete(tx, &office))
+        .unwrap();
     sanco_core::domain::seed_defaults(&a.db).unwrap();
     assert_eq!(a.db.read(locations::list).unwrap().len(), 1);
 }
@@ -171,7 +181,8 @@ fn locations_have_unique_names() {
         sort: 3,
         active: true,
     };
-    let dup = a.db.write(actor.clone(), move |tx| locations::save(tx, &input));
+    let dup =
+        a.db.write(actor.clone(), move |tx| locations::save(tx, &input));
     assert!(matches!(dup, Err(Error::Invalid(_))));
     let input = LocationInput {
         id: None,
@@ -180,7 +191,8 @@ fn locations_have_unique_names() {
         sort: 3,
         active: true,
     };
-    a.db.write(actor, move |tx| locations::save(tx, &input)).unwrap();
+    a.db.write(actor, move |tx| locations::save(tx, &input))
+        .unwrap();
     assert_eq!(a.db.read(locations::list).unwrap()[2].name, "Store");
 }
 
@@ -204,7 +216,8 @@ fn clients_get_codes_and_keep_hidden_margins() {
     // Someone who can't see margins edits the client: the tier stays.
     let mut input = client_input("Mercy Hospital Inc.", None);
     input.id = Some(c1.clone());
-    a.db.write(actor.clone(), move |tx| clients::update(tx, &input, false)).unwrap();
+    a.db.write(actor.clone(), move |tx| clients::update(tx, &input, false))
+        .unwrap();
     let mut one = a.db.read(|c| clients::get(c, &c1)).unwrap().unwrap();
     assert_eq!(one.name, "Mercy Hospital Inc.");
     assert_eq!(one.margin_tier_bp, Some(2_000));
@@ -215,12 +228,15 @@ fn clients_get_codes_and_keep_hidden_margins() {
     let bad = client_input("  ", None);
     let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], series::CLIENT, &id).unwrap();
-    let r = a.db.write(actor.clone(), move |tx| clients::create(tx, &bad, &res, true));
+    let r = a.db.write(actor.clone(), move |tx| {
+        clients::create(tx, &bad, &res, true)
+    });
     assert!(matches!(r, Err(Error::Invalid(_))));
     let bad = client_input("X", Some(10_000));
     let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], series::CLIENT, &id).unwrap();
-    let r = a.db.write(actor, move |tx| clients::create(tx, &bad, &res, true));
+    let r =
+        a.db.write(actor, move |tx| clients::create(tx, &bad, &res, true));
     assert!(matches!(r, Err(Error::Invalid(_))));
     assert_eq!(a.db.read(clients::list).unwrap().len(), 2);
 }
@@ -266,7 +282,9 @@ fn number_formats_apply_to_new_codes() {
         settings::set_number_format(tx, series::BOOKING, &fmt)
     });
     assert!(matches!(r, Err(Error::Invalid(_))));
-    let formats = a.db.read(|c| settings::number_formats(c, common::T0)).unwrap();
+    let formats =
+        a.db.read(|c| settings::number_formats(c, common::T0))
+            .unwrap();
     let dr = formats.iter().find(|f| f.series == "DR").unwrap();
     assert_eq!(dr.example, "DR-2026-0001");
 }
@@ -299,7 +317,13 @@ fn items_flag_codes_and_block_supplier_delete() {
         move |tx| suppliers::delete(tx, &sup)
     });
     assert!(matches!(r, Err(Error::Invalid(_))));
-    assert_eq!(a.db.read(|c| suppliers::get(c, &sup)).unwrap().unwrap().item_count, 1);
+    assert_eq!(
+        a.db.read(|c| suppliers::get(c, &sup))
+            .unwrap()
+            .unwrap()
+            .item_count,
+        1
+    );
 }
 
 #[test]
@@ -308,7 +332,12 @@ fn landed_cost_and_price_resolution() {
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
     let sup = add_supplier(&a.db, &actor, "Formosa Medical");
-    let item = add_item(&a.db, &actor, item_input("GLV-100", Some(&sup), Some(2_000))).unwrap();
+    let item = add_item(
+        &a.db,
+        &actor,
+        item_input("GLV-100", Some(&sup), Some(2_000)),
+    )
+    .unwrap();
     let tiered = add_client(&a.db, &actor, "Tiered", Some(3_000));
     let plain = add_client(&a.db, &actor, "Plain", None);
 
@@ -323,8 +352,15 @@ fn landed_cost_and_price_resolution() {
     set_cost(&a.db, &actor, &item);
     let sheet = a.db.read(|c| items::cost_sheet(c, &item)).unwrap().unwrap();
     let landed = sheet.landed.unwrap();
-    assert_eq!((landed.base_c, landed.charges_c, landed.total_c), (56_500, 7_650, 64_150));
-    let duty = sheet.lines.iter().find(|l| l.name == "Customs duty").unwrap();
+    assert_eq!(
+        (landed.base_c, landed.charges_c, landed.total_c),
+        (56_500, 7_650, 64_150)
+    );
+    let duty = sheet
+        .lines
+        .iter()
+        .find(|l| l.name == "Customs duty")
+        .unwrap();
     assert_eq!(duty.amount_c, Some(5_650));
     assert_eq!(sheet.fx_rate.as_deref(), Some("56.5"));
 
@@ -335,7 +371,10 @@ fn landed_cost_and_price_resolution() {
 
     // Rule 3: item default margin.
     let q = a.db.read(|c| pricing::quote(c, &plain, &item)).unwrap();
-    assert_eq!((q.rule, q.net_c, q.vat), (PriceRule::ItemDefault, Some(80_188), None));
+    assert_eq!(
+        (q.rule, q.net_c, q.vat),
+        (PriceRule::ItemDefault, Some(80_188), None)
+    );
     let v = q.vat_amounts.unwrap();
     assert_eq!((v.vat_c, v.gross_c), (9_623, 89_811));
     assert_eq!(q.margin_bp, Some(2_000));
@@ -352,18 +391,29 @@ fn landed_cost_and_price_resolution() {
         vat: false,
         notes: "promo".into(),
     };
-    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate)).unwrap();
+    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate))
+        .unwrap();
     let mut q = a.db.read(|c| pricing::quote(c, &tiered, &item)).unwrap();
-    assert_eq!((q.rule, q.net_c, q.vat), (PriceRule::Manual, Some(60_000), Some(false)));
+    assert_eq!(
+        (q.rule, q.net_c, q.vat),
+        (PriceRule::Manual, Some(60_000), Some(false))
+    );
     assert_eq!(q.vat_amounts, None);
     assert!(q.below_cost);
     q.strip(&Perms::staff());
     assert_eq!((q.cost_c, q.margin_bp), (None, None));
     assert!(q.below_cost, "the warning stays for everyone");
 
-    let rates = a
-        .db
-        .read(|c| pricing::list_rates(c, &RateFilter { client_id: Some(tiered.clone()), item_id: None }))
+    let rates =
+        a.db.read(|c| {
+            pricing::list_rates(
+                c,
+                &RateFilter {
+                    client_id: Some(tiered.clone()),
+                    item_id: None,
+                },
+            )
+        })
         .unwrap();
     assert_eq!(rates.len(), 1);
     assert_eq!(rates[0].client_code.as_deref(), Some("CL-0001"));
@@ -371,7 +421,8 @@ fn landed_cost_and_price_resolution() {
     assert!(rates[0].below_cost);
 
     // VAT rate from settings applies to VAT-able rates.
-    a.db.write(actor.clone(), |tx| settings::set_vat_rate_bp(tx, 1_000)).unwrap();
+    a.db.write(actor.clone(), |tx| settings::set_vat_rate_bp(tx, 1_000))
+        .unwrap();
     let rate = RateInput {
         client_id: plain.clone(),
         item_id: item.clone(),
@@ -379,7 +430,8 @@ fn landed_cost_and_price_resolution() {
         vat: true,
         notes: String::new(),
     };
-    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate)).unwrap();
+    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate))
+        .unwrap();
     let q = a.db.read(|c| pricing::quote(c, &plain, &item)).unwrap();
     assert_eq!(q.vat_amounts.unwrap().gross_c, 110_000);
     assert!(!q.below_cost);
@@ -392,19 +444,34 @@ fn landed_cost_and_price_resolution() {
         vat: false,
         notes: String::new(),
     };
-    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &clear)).unwrap();
+    a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &clear))
+        .unwrap();
     let q = a.db.read(|c| pricing::quote(c, &tiered, &item)).unwrap();
     assert_eq!(q.rule, PriceRule::ClientTier);
-    assert_eq!(a.db.read(clients::list).unwrap().iter().map(|c| c.rate_count).sum::<i64>(), 1);
+    assert_eq!(
+        a.db.read(clients::list)
+            .unwrap()
+            .iter()
+            .map(|c| c.rate_count)
+            .sum::<i64>(),
+        1
+    );
 
     // Deleting the item takes its sheet and rates along.
     let it = item.clone();
     a.db.write(actor, move |tx| items::delete(tx, &it)).unwrap();
-    assert!(a.db.read(|c| items::cost_sheet(c, &item)).unwrap().is_none());
-    assert!(a.db.read(|c| pricing::list_rates(c, &RateFilter::default())).unwrap().is_empty());
-    let left: i64 = a
-        .db
-        .read(|c| {
+    assert!(
+        a.db.read(|c| items::cost_sheet(c, &item))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        a.db.read(|c| pricing::list_rates(c, &RateFilter::default()))
+            .unwrap()
+            .is_empty()
+    );
+    let left: i64 =
+        a.db.read(|c| {
             Ok(c.query_row(
                 "SELECT COUNT(*) FROM item_cost_charges WHERE _deleted = 0",
                 [],
@@ -433,11 +500,13 @@ fn cost_sheet_validation_and_php() {
         lines: vec![],
     };
     let i2 = input.clone();
-    let r = a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &i2));
+    let r =
+        a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &i2));
     assert!(matches!(r, Err(Error::Invalid(_))));
     input.currency = "EUR".into();
     let i2 = input.clone();
-    let r = a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &i2));
+    let r =
+        a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &i2));
     assert!(matches!(r, Err(Error::Invalid(_))));
 
     // PHP ignores the rate; a pct charge on ₱1.00 base.
@@ -447,14 +516,20 @@ fn cost_sheet_validation_and_php() {
         mode: ChargeMode::Pct,
         value: Some(1_200),
     }];
-    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &input)).unwrap();
+    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &input))
+        .unwrap();
     let sheet = a.db.read(|c| items::cost_sheet(c, &item)).unwrap().unwrap();
     assert_eq!(sheet.fx_rate, None);
     assert_eq!(sheet.landed.unwrap().total_c, 112);
 
     // A deactivated charge type with a value still shows and counts.
     let vat_type = charge(&a.db, "Import VAT");
-    let t = a.db.read(charge_types::list).unwrap().into_iter().find(|t| t.id == vat_type).unwrap();
+    let t =
+        a.db.read(charge_types::list)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == vat_type)
+            .unwrap();
     assert_eq!(t.used_by, 1);
     let input = charge_types::ChargeTypeInput {
         id: Some(vat_type.clone()),
@@ -463,10 +538,19 @@ fn cost_sheet_validation_and_php() {
         sort: t.sort,
         active: false,
     };
-    a.db.write(actor.clone(), move |tx| charge_types::save(tx, &input).map(drop)).unwrap();
+    a.db.write(actor.clone(), move |tx| {
+        charge_types::save(tx, &input).map(drop)
+    })
+    .unwrap();
     let sheet = a.db.read(|c| items::cost_sheet(c, &item)).unwrap().unwrap();
     assert_eq!(sheet.lines.len(), 5);
-    assert!(sheet.lines.iter().any(|l| l.charge_type_id == vat_type && !l.active));
-    let r = a.db.write(actor, move |tx| charge_types::delete(tx, &vat_type));
+    assert!(
+        sheet
+            .lines
+            .iter()
+            .any(|l| l.charge_type_id == vat_type && !l.active)
+    );
+    let r =
+        a.db.write(actor, move |tx| charge_types::delete(tx, &vat_type));
     assert!(matches!(r, Err(Error::Invalid(_))));
 }

@@ -154,7 +154,12 @@ fn data(input: &ClientInput, margins: bool) -> Result<Value> {
 
 /// Creates a client with a code reserved for it (`res.ref_id` is the new
 /// client's id). `margins`: whether the user may set the margin tier.
-pub fn create(tx: &mut WriteTx, input: &ClientInput, res: &Reservation, margins: bool) -> Result<String> {
+pub fn create(
+    tx: &mut WriteTx,
+    input: &ClientInput,
+    res: &Reservation,
+    margins: bool,
+) -> Result<String> {
     if res.series != series::CLIENT {
         return Err(Error::Invalid("wrong number series for a client".into()));
     }

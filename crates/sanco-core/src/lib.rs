@@ -15,4 +15,3 @@ pub use db::registry::Row;
 pub use db::{Db, OpenOptions};
 pub use error::{Error, Result};
 pub use repo::{Actor, ChangeEvent, Origin, WriteTx};
-
