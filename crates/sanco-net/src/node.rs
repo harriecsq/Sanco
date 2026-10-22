@@ -295,6 +295,20 @@ impl Node {
             .await
     }
 
+    /// Claims a number typed by staff for document `ref_id` with every
+    /// reachable peer. See [`numbering::reserve_exact`].
+    pub async fn reserve_exact(&self, series: &str, no: &str, ref_id: &str) -> Result<Reservation> {
+        let peers = self.inner.number_peers().await?;
+        let (series, no, ref_id) = (series.to_string(), no.to_string(), ref_id.to_string());
+        self.inner
+            .blocking(move |db| {
+                let refs: Vec<&dyn NumberPeer> =
+                    peers.iter().map(|p| p as &dyn NumberPeer).collect();
+                numbering::reserve_exact(db, &refs, &series, &no, &ref_id)
+            })
+            .await
+    }
+
     /// Stops the server and loops, and waits for them.
     pub async fn shutdown(mut self) {
         let _ = self.stop.send(true);

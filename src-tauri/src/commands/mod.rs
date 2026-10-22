@@ -3,8 +3,11 @@
 //! what a user can't use.
 
 pub mod auth;
+pub mod bd;
+pub mod bookings;
 pub mod clients;
 pub mod config;
+pub mod delivery;
 pub mod inventory;
 pub mod items;
 pub mod locations;

@@ -16,6 +16,11 @@
 //! sync, the holder with the earliest `(assigned_at, id)` keeps it. Only the
 //! PC that assigned a later holder ([`resolve_clashes`]) renumbers it, so all
 //! PCs agree without coordination; both users get a to-do.
+//!
+//! Some series can instead take numbers typed by staff (DR numbers come
+//! from the BIR booklet, see [`is_manual`]). [`reserve_exact`] claims the
+//! typed number the same way. A typed number is never renumbered: on an
+//! offline clash both documents keep it and both users get a to-do.
 
 use std::collections::BTreeSet;
 
@@ -116,6 +121,51 @@ impl NumberFormat {
 /// Settings key holding a series' format.
 pub fn format_key(series: &str) -> String {
     format!("number_format.{series}")
+}
+
+/// Series whose numbers may be typed by staff instead of given out.
+pub const MANUAL_SERIES: [&str; 1] = [series::DR];
+/// Longest typed number, in digits.
+pub const MANUAL_MAX_DIGITS: usize = 12;
+
+/// Settings key holding whether a series takes typed numbers
+/// (`manual` | `auto`).
+pub fn mode_key(series: &str) -> String {
+    format!("number_mode.{series}")
+}
+
+/// Whether staff type this series' numbers. DR numbers are typed from the
+/// BIR booklet unless the setting says `auto`; other series never are.
+pub fn is_manual(conn: &Connection, series: &str) -> Result<bool> {
+    if !MANUAL_SERIES.contains(&series) {
+        return Ok(false);
+    }
+    let stored: Option<Option<String>> = conn
+        .prepare_cached(
+            "SELECT value FROM settings WHERE key = ?1 AND _deleted = 0 ORDER BY id LIMIT 1",
+        )?
+        .query_row([mode_key(series)], |r| r.get(0))
+        .optional()?;
+    Ok(stored.flatten().as_deref() != Some("auto"))
+}
+
+/// Checks a typed number: digits only, as printed. Returns its sequence
+/// value and the text to show (leading zeros kept).
+pub fn parse_manual(text: &str) -> Result<(i64, String)> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Err(Error::Invalid("enter the number".into()));
+    }
+    if t.len() > MANUAL_MAX_DIGITS || !t.chars().all(|c| c.is_ascii_digit()) {
+        return Err(Error::Invalid(format!(
+            "“{t}” is not a valid number: use digits only, as printed (up to {MANUAL_MAX_DIGITS})"
+        )));
+    }
+    let seq: i64 = t.parse().map_err(|_| Error::Invalid("enter the number".into()))?;
+    if seq == 0 {
+        return Err(Error::Invalid("the number can't be zero".into()));
+    }
+    Ok((seq, t.to_string()))
 }
 
 pub fn number_format(conn: &Connection, series: &str) -> Result<NumberFormat> {
@@ -232,8 +282,12 @@ pub struct Reservation {
     pub ref_id: String,
     /// Peers that answered the final round.
     pub reached: usize,
-    /// Peers that didn't. If any, the number may still change after a sync.
+    /// Peers that didn't. If any, the number may still change after a sync
+    /// (or, for a typed number, may turn out to be used twice).
     pub unreachable: usize,
+    /// Typed by staff ([`reserve_exact`]); never renumbered automatically.
+    #[serde(default)]
+    pub manual: bool,
 }
 
 impl Reservation {
@@ -301,6 +355,7 @@ fn reserve_in(
                 ref_id: claim.ref_id,
                 reached,
                 unreachable,
+                manual: false,
             });
         }
         seq = max.max(seq) + 1;
@@ -308,6 +363,52 @@ fn reserve_in(
     Err(Error::NumberUnavailable {
         series: series.to_string(),
         rounds: MAX_ROUNDS,
+    })
+}
+
+/// Reserves a number typed by staff (e.g. a DR booklet number) for
+/// document `ref_id`, claiming it on this PC and every reachable peer.
+/// Refused if any of them has it on another document. Typed numbers have no
+/// period: they don't restart yearly.
+pub fn reserve_exact(
+    local: &Db,
+    peers: &[&dyn NumberPeer],
+    series: &str,
+    text: &str,
+    ref_id: &str,
+) -> Result<Reservation> {
+    let (seq, no) = parse_manual(text)?;
+    let claim = NumberClaim {
+        series: series.to_string(),
+        period: String::new(),
+        seq,
+        ref_id: ref_id.to_string(),
+        site: local.site_id().to_string(),
+    };
+    let taken = || Error::Invalid(format!("number {no} is already used on another document"));
+    if !local.claim_number(claim.clone())?.granted {
+        return Err(taken());
+    }
+    let (mut reached, mut unreachable) = (0, 0);
+    for peer in peers {
+        match peer.claim(&claim) {
+            Ok(r) if r.granted => reached += 1,
+            Ok(_) => return Err(taken()),
+            Err(e) => {
+                tracing::debug!(error = %e, "number claim: peer skipped");
+                unreachable += 1;
+            }
+        }
+    }
+    Ok(Reservation {
+        series: claim.series,
+        period: claim.period,
+        seq,
+        no,
+        ref_id: claim.ref_id,
+        reached,
+        unreachable,
+        manual: true,
     })
 }
 
@@ -334,6 +435,35 @@ pub fn assign(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> Result<Stri
             "site": site,
             "assigned_at": now,
             "confirmed": res.confirmed(),
+            "manual": res.manual,
+        }),
+    )?;
+    Ok(res.no.clone())
+}
+
+/// Gives a document a number, or changes the one it has (a typed number
+/// corrected by staff). The old text is kept in `prev_no`.
+pub fn assign_or_change(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> Result<String> {
+    let id = number_row_id(&res.ref_id, &res.series);
+    let Some(row) = tx.get(DOC_NUMBERS, &id)? else {
+        return assign(tx, res, ref_tbl);
+    };
+    if text(&row, "no") == res.no && int(&row, "seq") == res.seq {
+        return Ok(res.no.clone());
+    }
+    let (site, now) = (tx.site().to_string(), tx.now_ms());
+    tx.update(
+        DOC_NUMBERS,
+        &id,
+        json!({
+            "period": res.period,
+            "seq": res.seq,
+            "no": res.no,
+            "prev_no": text(&row, "no"),
+            "site": site,
+            "assigned_at": now,
+            "confirmed": res.confirmed(),
+            "manual": res.manual,
         }),
     )?;
     Ok(res.no.clone())
@@ -371,6 +501,12 @@ pub fn resolve_clashes(db: &Db, peers: &[&dyn NumberPeer]) -> Result<Vec<Renumbe
 
     let mut done = Vec::new();
     for loser in losers {
+        if int(&loser, "manual") != 0 {
+            // Typed numbers are what's printed on paper: never change them,
+            // tell people instead.
+            db.write(Actor::system(), move |tx| flag_clash(tx, &loser))?;
+            continue;
+        }
         let series = text(&loser, "series").to_string();
         let fmt = db.read(|c| number_format(c, &series))?;
         let res = reserve_in(
@@ -457,14 +593,60 @@ fn renumber(tx: &mut WriteTx, seen: &Row, res: &Reservation) -> Result<Option<Re
         }),
     )?;
 
-    // Tell whoever created each of the two documents.
-    let users: BTreeSet<&str> = [&row, &winner]
+    let title = format!("{} renumbered to {}", out.old_no, out.new_no);
+    let notes = format!(
+        "Two PCs gave out {} while they couldn't reach each other. \
+         The earlier record keeps it; this one is now {}.",
+        out.old_no, out.new_no
+    );
+    notify_both(tx, &row, &winner, &format!("renumbered/{old_seq}"), &title, &notes)?;
+    Ok(Some(out))
+}
+
+/// A typed number that another document also has: both keep it, and whoever
+/// created each of them gets a to-do to correct one.
+fn flag_clash(tx: &mut WriteTx, seen: &Row) -> Result<()> {
+    let id = text(seen, "id").to_string();
+    let Some(row) = tx.get(DOC_NUMBERS, &id)? else {
+        return Ok(());
+    };
+    let (series, period, seq) = (text(&row, "series"), text(&row, "period"), int(&row, "seq"));
+    if seq != int(seen, "seq") {
+        return Ok(());
+    }
+    let Some(winner) = first_holder(tx.conn(), series, period, seq)? else {
+        return Ok(());
+    };
+    if text(&winner, "id") == id {
+        return Ok(());
+    }
+    let no = text(&row, "no").to_string();
+    let title = format!("Number {no} is used twice");
+    let notes = format!(
+        "Two PCs recorded {series} no. {no} while they couldn't reach each other. \
+         Check the booklet and correct the number on the wrong one."
+    );
+    notify_both(tx, &row, &winner, &format!("clash/{seq}"), &title, &notes)
+}
+
+/// One to-do, pointing at `row`'s document, for whoever created `row` and
+/// `other`. Ids are derived, so repeated calls (or other PCs) add nothing.
+fn notify_both(
+    tx: &mut WriteTx,
+    row: &Row,
+    other: &Row,
+    kind: &str,
+    title: &str,
+    notes: &str,
+) -> Result<()> {
+    let id = text(row, "id").to_string();
+    let users: BTreeSet<String> = [row, other]
         .iter()
-        .filter_map(|r| r["created_by"].as_str())
+        .filter_map(|r| r["created_by"].as_str().map(String::from))
         .collect();
     let todos = registry::table("todos")?;
     for user in users {
-        let todo_id = ids::derived_id(&id, &format!("renumbered/{old_seq}/{user}"));
+        let todo_id = ids::derived_id(&id, &format!("{kind}/{user}"));
         if todos.load(tx.conn(), &todo_id)?.is_some() {
             continue;
         }
@@ -472,20 +654,16 @@ fn renumber(tx: &mut WriteTx, seen: &Row, res: &Reservation) -> Result<Option<Re
             "todos",
             json!({
                 "id": todo_id,
-                "title": format!("{} renumbered to {}", out.old_no, out.new_no),
-                "notes": format!(
-                    "Two PCs gave out {} while they couldn't reach each other. \
-                     The earlier record keeps it; this one is now {}.",
-                    out.old_no, out.new_no
-                ),
+                "title": title,
+                "notes": notes,
                 "assignee_id": user,
                 "done": 0,
-                "ref_tbl": out.ref_tbl,
-                "ref_id": out.ref_id,
+                "ref_tbl": text(row, "ref_tbl"),
+                "ref_id": text(row, "ref_id"),
             }),
         )?;
     }
-    Ok(Some(out))
+    Ok(())
 }
 
 fn text<'r>(row: &'r Row, col: &str) -> &'r str {

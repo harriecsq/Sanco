@@ -115,6 +115,11 @@ pub struct SeriesFormat {
     pub format: NumberFormat,
     /// What the next number would look like (sequence 1).
     pub example: String,
+    /// The series can take numbers typed by staff instead.
+    pub manual_allowed: bool,
+    /// Staff type the numbers (the format then only applies after
+    /// switching to automatic).
+    pub manual: bool,
 }
 
 pub fn number_formats(conn: &Connection, now_ms: i64) -> Result<Vec<SeriesFormat>> {
@@ -127,9 +132,26 @@ pub fn number_formats(conn: &Connection, now_ms: i64) -> Result<Vec<SeriesFormat
                 label: label.to_string(),
                 example: format.render(&format.period(now_ms), now_ms, 1),
                 format,
+                manual_allowed: numbering::MANUAL_SERIES.contains(s),
+                manual: numbering::is_manual(conn, s)?,
             })
         })
         .collect()
+}
+
+/// Switches a series between typed and automatic numbers. Numbers already
+/// given keep their text.
+pub fn set_number_mode(tx: &mut WriteTx, series: &str, manual: bool) -> Result<()> {
+    if !numbering::MANUAL_SERIES.contains(&series) {
+        return Err(Error::Invalid(format!(
+            "{series} numbers are always given automatically"
+        )));
+    }
+    set(
+        tx,
+        &numbering::mode_key(series),
+        Some(if manual { "manual" } else { "auto" }),
+    )
 }
 
 /// Changes how new numbers of a series look. Numbers already given keep

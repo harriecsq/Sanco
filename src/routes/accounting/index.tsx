@@ -1,19 +1,494 @@
-import { component$ } from "@builder.io/qwik";
-import type { DocumentHead } from "@builder.io/qwik-city";
-import { ModulePlaceholder } from "~/components/shell/placeholder";
+import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
+import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
+import {
+  commands,
+  type Choice,
+  type DrDetail,
+  type DrInfo,
+  type LocationInfo,
+} from "~/lib/bindings";
+import { useLiveLoad } from "~/lib/events";
+import { formatDateTime, formatDay, formatPeso, formatQty, todayManila } from "~/lib/format";
+import { can } from "~/lib/perms";
+import { errorText, unwrap } from "~/lib/result";
+import { useSession } from "~/lib/session";
+import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { DrRequestModal } from "~/components/sales/dr-request";
+import { DR_STATUS, DrNo, DrStatusBadge, Totals } from "~/components/sales/sales";
+import { Alert, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import {
+  btnDanger,
+  btnPrimary,
+  btnSecondary,
+  card,
+  hint,
+  input,
+  table,
+  td,
+  th,
+} from "~/components/ui/styles";
 
-export default component$(() => (
-  <ModulePlaceholder
-    module="accounting"
-    title="Accounting"
-    milestone="M8"
-    items={[
-      "Delivery receipts: requested → approved → delivered",
-      "Receivables with aging buckets",
-      "Checks received, including PDCs",
-      "Payments allocated to DRs",
-    ]}
-  />
-));
+const TABLES = [
+  "delivery_receipts",
+  "dr_lines",
+  "bookings",
+  "clients",
+  "items",
+  "locations",
+  "doc_numbers",
+  "users",
+  "settings",
+];
 
-export const head: DocumentHead = { title: "Accounting · Sanco" };
+/** The date that matters: delivered on, else planned for. */
+const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
+
+const DrList = component$(() => {
+  const loc = useLocation();
+  const drs = useSignal<DrInfo[]>([]);
+  const clients = useSignal<Choice[]>([]);
+  const locations = useSignal<LocationInfo[]>([]);
+  const error = useSignal("");
+
+  useLiveLoad(
+    TABLES,
+    $(async () => {
+      try {
+        drs.value = unwrap(await commands.listDrs());
+        clients.value = unwrap(await commands.clientOptions());
+        locations.value = unwrap(await commands.listLocations());
+      } catch (e) {
+        error.value = errorText(e);
+      }
+    }),
+  );
+
+  const shown = useComputed$(() => {
+    const f = filtersOf(loc.url, ["q", "from", "to", "status", "client", "location"]);
+    const q = f.q.toLowerCase();
+    return drs.value.filter(
+      (d) =>
+        (!q ||
+          [d.no, d.booking_no, d.client_name, d.summary, d.received_by, d.notes].some((v) =>
+            v?.toLowerCase().includes(q),
+          )) &&
+        (!f.from || dayOf(d) >= f.from) &&
+        (!f.to || dayOf(d) <= f.to) &&
+        (!f.client || d.client_id === f.client) &&
+        (!f.location || d.from_location_id === f.location) &&
+        (!f.status ||
+          (f.status === "void"
+            ? d.voided
+            : f.status === "no_number"
+              ? !d.no && d.status !== "cancelled"
+              : f.status === "clash"
+                ? d.no_clash
+                : d.status === f.status && !d.voided)),
+    );
+  });
+
+  return (
+    <>
+      <PageHeader
+        title="Delivery receipts"
+        subtitle="DRs are requested from bookings, approved, then marked delivered (stock goes out)."
+      />
+      {error.value && <Alert>{error.value}</Alert>}
+      <FilterBar
+        search="Search DR no., booking, client, items"
+        dates
+        selects={[
+          {
+            key: "status",
+            label: "Statuses",
+            options: [
+              ...(["requested", "approved", "delivered", "cancelled"] as const).map((s) => ({
+                value: s,
+                label: DR_STATUS[s].label,
+              })),
+              { value: "void", label: "Void" },
+              { value: "no_number", label: "No DR no. yet" },
+              { value: "clash", label: "Number used twice" },
+            ],
+          },
+          {
+            key: "client",
+            label: "Clients",
+            options: clients.value.map((c) => ({ value: c.id, label: c.label })),
+          },
+          {
+            key: "location",
+            label: "Locations",
+            options: locations.value.map((l) => ({ value: l.id, label: l.name })),
+          },
+        ]}
+      />
+      <section class={[card, "overflow-x-auto"]}>
+        {shown.value.length === 0 ? (
+          <Empty>{drs.value.length ? "No DRs match." : "No DRs yet. Request one from a confirmed booking."}</Empty>
+        ) : (
+          <table class={table}>
+            <thead>
+              <tr>
+                <th class={th}>DR no.</th>
+                <th class={th}>Date</th>
+                <th class={th}>Client</th>
+                <th class={th}>Booking</th>
+                <th class={th}>From</th>
+                <th class={th}>Items</th>
+                <th class={[th, "text-right"]}>Gross</th>
+                <th class={th}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.value.map((d) => (
+                <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
+                      <DrNo d={d} />
+                    </Link>
+                  </td>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    {formatDay(dayOf(d))}
+                    {!d.delivered_date && d.status !== "cancelled" && <span class={[hint, "block"]}>planned</span>}
+                  </td>
+                  <td class={td}>{d.client_name ?? "—"}</td>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    {d.booking_id ? (
+                      <Link class="text-brand-700 hover:underline" href={`/bookings/?id=${d.booking_id}`}>
+                        {d.booking_no ?? "—"}
+                      </Link>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td class={td}>{d.from_location_name ?? "—"}</td>
+                  <td class={td}>{d.summary}</td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                  <td class={td}>
+                    <DrStatusBadge d={d} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </>
+  );
+});
+
+type Step = "approve" | "deliver" | "number" | "cancel" | "void";
+
+const STEP_TITLE: Record<Step, string> = {
+  approve: "Approve DR",
+  deliver: "Mark delivered",
+  number: "DR number",
+  cancel: "Cancel DR",
+  void: "Void delivered DR",
+};
+
+const DrView = component$<{ id: string }>(({ id }) => {
+  const session = useSession();
+  const detail = useSignal<DrDetail | null>(null);
+  const missing = useSignal(false);
+  const error = useSignal("");
+  const step = useSignal<Step>("approve");
+  const open = useSignal(false);
+  const no = useSignal("");
+  const date = useSignal("");
+  const receivedBy = useSignal("");
+  const reason = useSignal("");
+  const stepError = useSignal("");
+  const busy = useSignal(false);
+  const editOpen = useSignal(false);
+
+  useLiveLoad(
+    TABLES,
+    $(async () => {
+      try {
+        const d = unwrap(await commands.getDr(id));
+        detail.value = d;
+        missing.value = !d;
+      } catch (e) {
+        error.value = errorText(e);
+      }
+    }),
+  );
+
+  if (missing.value) {
+    return (
+      <>
+        <PageHeader title="DR not found" />
+        <Link class="text-sm text-brand-700 hover:underline" href="/accounting/">
+          Back to DRs
+        </Link>
+      </>
+    );
+  }
+  const det = detail.value;
+  if (!det) return error.value ? <Alert>{error.value}</Alert> : null;
+  const d = det.dr;
+  const manual = det.manual_numbers;
+  const user = session.user;
+
+  const begin = $((s: Step) => {
+    step.value = s;
+    no.value = detail.value?.dr.no ?? "";
+    date.value = todayManila();
+    receivedBy.value = "";
+    reason.value = "";
+    stepError.value = "";
+    open.value = true;
+  });
+
+  const submit = $(async () => {
+    busy.value = true;
+    stepError.value = "";
+    const typed = manual ? no.value.trim() || null : null;
+    try {
+      switch (step.value) {
+        case "approve":
+          unwrap(await commands.approveDr(id, typed));
+          break;
+        case "deliver":
+          unwrap(await commands.deliverDr(id, { date: date.value, received_by: receivedBy.value }, typed));
+          break;
+        case "number":
+          unwrap(await commands.setDrNumber(id, no.value));
+          break;
+        case "cancel":
+          unwrap(await commands.cancelDr(id, reason.value));
+          break;
+        case "void":
+          unwrap(await commands.voidDr(id, reason.value));
+          break;
+      }
+      open.value = false;
+    } catch (e) {
+      stepError.value = errorText(e);
+    } finally {
+      busy.value = false;
+    }
+  });
+
+  const rows: [string, string][] = [
+    ["Client", d.client_name ? `${d.client_name}${d.client_code ? ` (${d.client_code})` : ""}` : "—"],
+    ["From", d.from_location_name ?? "—"],
+    ["Planned for", formatDay(d.date)],
+    ["Deliver to", d.deliver_to ?? ""],
+    ["Notes", d.notes ?? ""],
+    ["Requested", `${formatDateTime(d.created_at)} by ${d.created_by_name ?? "—"}`],
+  ];
+  if (d.approved_at) rows.push(["Approved", `${formatDateTime(d.approved_at)} by ${d.approved_by_name ?? "—"}`]);
+  if (d.delivered_at) {
+    rows.push(["Delivered on", formatDay(d.delivered_date)]);
+    rows.push(["Received by", d.received_by ?? ""]);
+    rows.push(["Marked by", `${d.delivered_by_name ?? "—"}, ${formatDateTime(d.delivered_at)}`]);
+  }
+  if (d.status === "cancelled") {
+    rows.push([d.voided ? "Voided" : "Cancelled", `${formatDateTime(d.cancelled_at)} by ${d.cancelled_by_name ?? "—"}`]);
+    rows.push(["Reason", d.cancel_reason ?? ""]);
+  }
+
+  const canEdit = can(user, "accounting", "edit");
+  const needsNo = manual && (step.value === "approve" || step.value === "deliver" || step.value === "number");
+
+  return (
+    <>
+      <p class="mb-2 text-sm">
+        <Link class="text-brand-700 hover:underline" href="/accounting/">
+          ← Delivery receipts
+        </Link>
+      </p>
+      <PageHeader title={d.no ? `DR ${d.no}` : "DR (no number yet)"} subtitle={d.client_name ?? undefined}>
+        {d.status === "delivered" && can(user, "accounting", "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("void")}>
+            Void
+          </button>
+        )}
+        {d.status !== "cancelled" &&
+          d.booking_id &&
+          (canEdit || can(user, "bookings", "edit")) && (
+            <button q:slot="actions" class={btnSecondary} onClick$={() => (editOpen.value = true)}>
+              Edit
+            </button>
+          )}
+        {(d.status === "requested" || d.status === "approved") && canEdit && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("cancel")}>
+            Cancel DR
+          </button>
+        )}
+        {manual && d.status !== "cancelled" && canEdit && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("number")}>
+            {d.no ? "Correct DR no." : "Enter DR no."}
+          </button>
+        )}
+        {d.status === "requested" && can(user, "accounting", "approve") && (
+          <button q:slot="actions" class={btnPrimary} onClick$={() => begin("approve")}>
+            Approve
+          </button>
+        )}
+        {d.status === "approved" && canEdit && (
+          <button q:slot="actions" class={btnPrimary} onClick$={() => begin("deliver")}>
+            Mark delivered
+          </button>
+        )}
+      </PageHeader>
+      {error.value && <Alert>{error.value}</Alert>}
+      <div class="mb-4 space-y-2">
+        <div class="flex flex-wrap items-center gap-3">
+          <DrStatusBadge d={d} />
+          <span class="text-sm">
+            <DrNo d={d} />
+          </span>
+          {d.booking_id && (
+            <span class="text-sm">
+              Booking{" "}
+              <Link class="text-brand-700 hover:underline" href={`/bookings/?id=${d.booking_id}`}>
+                {d.booking_no ?? "—"}
+              </Link>
+            </span>
+          )}
+        </div>
+        {d.no_clash && (
+          <Alert>
+            Another DR has number {d.no}: two PCs entered it while they couldn't reach each other.
+            Check the booklet and correct the wrong one.
+          </Alert>
+        )}
+        {d.voided && <Alert tone="warning">This DR is void: its stock came back.</Alert>}
+      </div>
+      <div class="grid gap-4 xl:grid-cols-[24rem_minmax(0,1fr)]">
+        <section class={[card, "self-start p-5"]}>
+          <InfoList rows={rows} />
+        </section>
+        <section class={[card, "overflow-x-auto"]}>
+          <table class={table}>
+            <thead>
+              <tr>
+                <th class={th}>Item</th>
+                <th class={th}>Lot</th>
+                <th class={[th, "text-right"]}>Qty</th>
+                <th class={[th, "text-right"]}>Price</th>
+                <th class={[th, "text-right"]}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {det.lines.map((l) => (
+                <tr key={l.id}>
+                  <td class={td}>
+                    <span class="font-medium">{l.item_code ?? "Deleted item"}</span> {l.item_name}
+                  </td>
+                  <td class={[td, "whitespace-nowrap"]}>{l.expiry ? `Exp. ${formatDay(l.expiry)}` : "—"}</td>
+                  <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>{formatQty(l.qty, l.unit)}</td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(l.price_c)}</td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(l.amount_c)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div class="border-t border-line px-3 py-3">
+            <Totals totals={d.totals} vat={d.vat} vatBp={d.vat_bp} />
+          </div>
+        </section>
+      </div>
+
+      {d.booking_id && <DrRequestModal open={editOpen} bookingId={d.booking_id} dr={det} />}
+      <Modal open={open} title={STEP_TITLE[step.value]}>
+        <form class="space-y-3" preventdefault:submit onSubmit$={submit}>
+          {stepError.value && <Alert>{stepError.value}</Alert>}
+          {step.value === "approve" && (
+            <p class="text-sm">
+              {manual
+                ? "Enter the DR number from the booklet now, or later when it is delivered."
+                : "The DR gets the next number automatically."}
+            </p>
+          )}
+          {step.value === "deliver" && (
+            <>
+              <p class="text-sm">
+                Stock goes out of {d.from_location_name ?? "the location"} on every PC.
+              </p>
+              <Field label="Delivered on">
+                <input
+                  type="date"
+                  class={input}
+                  required
+                  max={todayManila()}
+                  value={date.value}
+                  onChange$={(_, el) => (date.value = el.value)}
+                />
+              </Field>
+              <Field label="Received by" hint="Who signed for it at the client.">
+                <input class={input} value={receivedBy.value} onInput$={(_, el) => (receivedBy.value = el.value)} />
+              </Field>
+            </>
+          )}
+          {needsNo && (
+            <Field
+              label="DR number (BIR booklet)"
+              hint={
+                step.value === "number"
+                  ? "Digits only, as printed. A correction keeps the old number in the audit log."
+                  : "Digits only, as printed."
+              }
+            >
+              <input
+                class={input}
+                inputMode="numeric"
+                required={step.value !== "approve"}
+                value={no.value}
+                onInput$={(_, el) => (no.value = el.value)}
+              />
+            </Field>
+          )}
+          {(step.value === "cancel" || step.value === "void") && (
+            <>
+              <p class="text-sm">
+                {step.value === "void"
+                  ? "Its stock comes back on every PC. The DR stays in the list, marked void. This can't be undone."
+                  : "The DR stays in the list, marked cancelled. Its items can be requested again on a new DR."}
+              </p>
+              <Field label="Reason">
+                <input
+                  class={input}
+                  required={step.value === "void"}
+                  value={reason.value}
+                  onInput$={(_, el) => (reason.value = el.value)}
+                />
+              </Field>
+            </>
+          )}
+          <div class="flex justify-end gap-2">
+            <button type="button" class={btnSecondary} onClick$={() => (open.value = false)}>
+              Back
+            </button>
+            <button
+              class={step.value === "cancel" || step.value === "void" ? btnDanger : btnPrimary}
+              disabled={busy.value}
+            >
+              {step.value === "approve"
+                ? "Approve"
+                : step.value === "deliver"
+                  ? "Mark delivered"
+                  : step.value === "number"
+                    ? "Save number"
+                    : step.value === "void"
+                      ? "Void DR"
+                      : "Cancel DR"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
+});
+
+export default component$(() => {
+  const loc = useLocation();
+  const id = loc.url.searchParams.get("id");
+  return id ? <DrView key={id} id={id} /> : <DrList />;
+});
+
+export const head: DocumentHead = { title: "Delivery receipts · Sanco" };

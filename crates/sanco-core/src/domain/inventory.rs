@@ -36,6 +36,9 @@ pub enum StockKind {
     Receipt,
     Adjustment,
     Transfer,
+    /// A delivered DR (stock out). Recorded in Accounting, not as a stock
+    /// document.
+    Delivery,
 }
 
 impl StockKind {
@@ -44,6 +47,7 @@ impl StockKind {
             StockKind::Receipt => "receipt",
             StockKind::Adjustment => "adjustment",
             StockKind::Transfer => "transfer",
+            StockKind::Delivery => "delivery",
         }
     }
 
@@ -52,6 +56,7 @@ impl StockKind {
             "receipt" => Some(StockKind::Receipt),
             "adjustment" => Some(StockKind::Adjustment),
             "transfer" => Some(StockKind::Transfer),
+            "delivery" => Some(StockKind::Delivery),
             _ => None,
         }
     }
@@ -62,6 +67,7 @@ impl StockKind {
             StockKind::Receipt => series::STOCK_RECEIPT,
             StockKind::Adjustment => series::ADJUSTMENT,
             StockKind::Transfer => series::TRANSFER,
+            StockKind::Delivery => series::DR,
         }
     }
 }
@@ -216,11 +222,11 @@ struct Prepared {
 
 /// Net change a document makes to one lot.
 #[derive(Debug, Clone)]
-struct Effect {
-    item_id: String,
-    location_id: String,
-    expiry: Option<String>,
-    qty: i64,
+pub(crate) struct Effect {
+    pub item_id: String,
+    pub location_id: String,
+    pub expiry: Option<String>,
+    pub qty: i64,
 }
 
 fn live_location(conn: &Connection, id: &str) -> Result<()> {
@@ -239,6 +245,11 @@ fn live_location(conn: &Connection, id: &str) -> Result<()> {
 /// Checks a document against the current data, without writing anything.
 fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prepared> {
     let kind = input.kind;
+    if kind == StockKind::Delivery {
+        return Err(Error::Invalid(
+            "deliveries are recorded on DRs, in Accounting".into(),
+        ));
+    }
     let date =
         parse_date(&input.date).ok_or_else(|| Error::Invalid("enter a valid date".into()))?;
     if date.as_str() > today {
@@ -438,7 +449,7 @@ fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>> {
 }
 
 /// Fails if applying `effects` would take a lot below zero.
-fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: &str) -> Result<()> {
+pub(crate) fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: &str) -> Result<()> {
     for e in effects.iter().filter(|e| e.qty < 0) {
         let before: i64 = conn
             .prepare_cached(
@@ -478,21 +489,34 @@ fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: &str) -> Re
     Ok(())
 }
 
-/// Whether any stock document (posted or void) uses the location.
+/// Whether any stock document or DR (even a voided or cancelled one) uses
+/// the location.
 pub fn location_in_use(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM stock_docs WHERE _deleted = 0
-                        AND (location_id = ?1 OR to_location_id = ?1))",
+                        AND (location_id = ?1 OR to_location_id = ?1))
+             OR EXISTS (SELECT 1 FROM delivery_receipts WHERE _deleted = 0
+                        AND from_location_id = ?1)",
         [id],
         |r| r.get(0),
     )?)
 }
 
-/// Whether any stock document (posted or void) has a line for the item.
+/// Whether any stock document, BD request, booking or DR (in any status)
+/// has a line for the item.
 pub fn item_in_use(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM stock_doc_lines l
                         JOIN stock_docs d ON d.id = l.doc_id AND d._deleted = 0
+                        WHERE l._deleted = 0 AND l.item_id = ?1)
+             OR EXISTS (SELECT 1 FROM bd_lines l
+                        JOIN bd_requests d ON d.id = l.request_id AND d._deleted = 0
+                        WHERE l._deleted = 0 AND l.item_id = ?1)
+             OR EXISTS (SELECT 1 FROM booking_lines l
+                        JOIN bookings d ON d.id = l.booking_id AND d._deleted = 0
+                        WHERE l._deleted = 0 AND l.item_id = ?1)
+             OR EXISTS (SELECT 1 FROM dr_lines l
+                        JOIN delivery_receipts d ON d.id = l.dr_id AND d._deleted = 0
                         WHERE l._deleted = 0 AND l.item_id = ?1)",
         [id],
         |r| r.get(0),
@@ -745,18 +769,21 @@ pub fn expiring(conn: &Connection, today: &str, within_days: i64) -> Result<Vec<
     Ok(out)
 }
 
-/// An item's posted movements, newest first.
+/// An item's posted movements, newest first. `doc_id` is a stock
+/// document, or a DR for deliveries.
 pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.doc_id, n.no, m.kind, m.date, m.location_id, l.name, m.expiry, m.qty,
-                d.created_at
+                COALESCE(d.created_at, r.delivered_at, r.created_at, 0) AS at
          FROM v_stock_moves m
-         JOIN stock_docs d ON d.id = m.doc_id
-         LEFT JOIN doc_numbers n ON n.ref_id = m.doc_id AND n.ref_tbl = 'stock_docs'
+         LEFT JOIN stock_docs d ON d.id = m.doc_id AND m.kind <> 'delivery'
+         LEFT JOIN delivery_receipts r ON r.id = m.doc_id AND m.kind = 'delivery'
+         LEFT JOIN doc_numbers n ON n.ref_id = m.doc_id
+                                AND n.ref_tbl IN ('stock_docs', 'delivery_receipts')
                                 AND n._deleted = 0
          LEFT JOIN locations l ON l.id = m.location_id
          WHERE m.item_id = ?1
-         ORDER BY m.date DESC, d.created_at DESC, m.doc_id DESC, m.qty",
+         ORDER BY m.date DESC, at DESC, m.doc_id DESC, m.qty",
     )?;
     let rows = stmt.query_map([item_id], |r| {
         Ok((

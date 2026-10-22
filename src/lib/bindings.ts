@@ -78,6 +78,8 @@ export const commands = {
 	deleteChargeType: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_charge_type", { id })),
 	numberFormats: () => typedError<SeriesFormat[], string>(__TAURI_INVOKE("number_formats")),
 	setNumberFormat: (series: string, format: NumberFormat) => typedError<null, string>(__TAURI_INVOKE("set_number_format", { series, format })),
+	/**  Switches a series (DRs) between numbers typed by staff and automatic ones. */
+	setNumberMode: (series: string, manual: boolean) => typedError<null, string>(__TAURI_INVOKE("set_number_mode", { series, manual })),
 	listClients: () => typedError<ClientInfo[], string>(__TAURI_INVOKE("list_clients")),
 	getClient: (id: string) => typedError<{
 	id: string,
@@ -180,6 +182,71 @@ export const commands = {
 	 */
 	postStockDoc: (doc: StockDocInput) => typedError<string, string>(__TAURI_INVOKE("post_stock_doc", { doc })),
 	voidStockDoc: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_stock_doc", { id, reason })),
+	listBdRequests: () => typedError<BdInfo[], string>(__TAURI_INVOKE("list_bd_requests")),
+	getBdRequest: (id: string) => typedError<{
+	request: BdInfo,
+	lines: BdLine[],
+} | null, string>(__TAURI_INVOKE("get_bd_request", { id })),
+	/**  Creates (with a new shared number) or updates a request. Returns its id. */
+	saveBdRequest: (request: BdInput) => typedError<string, string>(__TAURI_INVOKE("save_bd_request", { request })),
+	deleteBdRequest: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_bd_request", { id })),
+	/**
+	 *  Turns a request into a draft booking for `client_id` (or the request's
+	 *  own client) and marks it won. Returns the booking's id.
+	 */
+	convertBdRequest: (id: string, clientId: string | null) => typedError<string, string>(__TAURI_INVOKE("convert_bd_request", { id, clientId })),
+	listBookings: () => typedError<BookingInfo[], string>(__TAURI_INVOKE("list_bookings")),
+	/**
+	 *  A booking with its lines and DRs. Accounting may read it too (editing
+	 *  a DR needs its booking).
+	 */
+	getBooking: (id: string) => typedError<{
+	booking: BookingInfo,
+	lines: BookingLine[],
+	drs: DrInfo[],
+} | null, string>(__TAURI_INVOKE("get_booking", { id })),
+	/**
+	 *  Creates a draft (with a new shared number) or saves a draft. Returns its
+	 *  id.
+	 */
+	saveBooking: (booking: BookingInput) => typedError<string, string>(__TAURI_INVOKE("save_booking", { booking })),
+	setBookingStatus: (id: string, action: BookingAction, reason: string) => typedError<null, string>(__TAURI_INVOKE("set_booking_status", { id, action, reason })),
+	/**  Deletes a draft booking. */
+	deleteBooking: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_booking", { id })),
+	listDrs: () => typedError<DrInfo[], string>(__TAURI_INVOKE("list_drs")),
+	getDr: (id: string) => typedError<{
+	dr: DrInfo,
+	lines: DrLine[],
+	/**  DR numbers are typed by staff (else given at approval). */
+	manual_numbers: boolean,
+} | null, string>(__TAURI_INVOKE("get_dr", { id })),
+	/**  Stock lots of a booking's items, for choosing a DR's lots. */
+	drLots: (bookingId: string) => typedError<StockLot[], string>(__TAURI_INVOKE("dr_lots", { bookingId })),
+	/**  Requests a DR for a confirmed booking. Returns its id. */
+	requestDr: (request: DrRequestInput) => typedError<string, string>(__TAURI_INVOKE("request_dr", { request })),
+	/**
+	 *  Edits a DR that isn't cancelled (header and lines; for a delivered DR
+	 *  also `delivery`). Needs edit in Accounting or Booking.
+	 */
+	updateDr: (id: string, request: DrRequestInput, delivery: {
+	/**  When the goods were delivered (not in the future). */
+	date: string,
+	/**  Who received them at the client. */
+	received_by: string,
+} | null) => typedError<null, string>(__TAURI_INVOKE("update_dr", { id, request, delivery })),
+	/**  Approves a requested DR. `no` is the DR (booklet) number, if known yet. */
+	approveDr: (id: string, no: string | null) => typedError<null, string>(__TAURI_INVOKE("approve_dr", { id, no })),
+	/**
+	 *  Marks an approved DR delivered (stock goes out). Needs the DR number by
+	 *  now: `no`, or the one it has.
+	 */
+	deliverDr: (id: string, delivery: DeliverInput, no: string | null) => typedError<null, string>(__TAURI_INVOKE("deliver_dr", { id, delivery, no })),
+	/**  Sets or corrects a DR's typed number. */
+	setDrNumber: (id: string, no: string) => typedError<null, string>(__TAURI_INVOKE("set_dr_number", { id, no })),
+	/**  Cancels a DR that wasn't delivered. */
+	cancelDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("cancel_dr", { id, reason })),
+	/**  Voids a delivered DR: its stock comes back. */
+	voidDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_dr", { id, reason })),
 };
 
 /* Types */
@@ -225,6 +292,187 @@ export type Backups = {
 	files: BackupFile[],
 	keep_daily: number,
 };
+
+export type BdDetail = {
+	request: BdInfo,
+	lines: BdLine[],
+};
+
+export type BdInfo = {
+	id: string,
+	no: string | null,
+	no_confirmed: boolean,
+	client_id: string | null,
+	client_code: string | null,
+	client_name: string | null,
+	prospect_name: string | null,
+	contact: string | null,
+	date: string,
+	status: BdStatus,
+	follow_up: string | null,
+	vat: boolean,
+	notes: string | null,
+	lost_reason: string | null,
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+	/**  Sum of the quoted lines, before VAT. */
+	quoted_net_c: number,
+	/**  The booking it was converted into. */
+	booking_id: string | null,
+	booking_no: string | null,
+	created_at: number,
+	created_by_name: string | null,
+};
+
+export type BdInput = {
+	/**  `None` creates a request. */
+	id: string | null,
+	/**  A client, or `None` with a prospect name. */
+	client_id: string | null,
+	prospect_name: string,
+	contact: string,
+	date: string,
+	/**
+	 *  Open, quoted or lost. Won is set by converting into a booking; a won
+	 *  request may keep it when edited.
+	 */
+	status: BdStatus,
+	follow_up: string | null,
+	vat: boolean,
+	notes: string,
+	lost_reason: string,
+	lines: BdLineInput[],
+};
+
+export type BdLine = {
+	id: string,
+	item_id: string | null,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	description: string | null,
+	qty: number,
+	price_c: number | null,
+	amount_c: number | null,
+};
+
+export type BdLineInput = {
+	/**  The line being edited; `None` for a new line. */
+	id: string | null,
+	/**  A catalog item, or `None` with a description. */
+	item_id: string | null,
+	description: string,
+	qty: number,
+	/**  Quoted net unit price. */
+	price_c: number | null,
+};
+
+export type BdStatus = "open" | "quoted" | 
+/**  Converted into a booking. */
+"won" | "lost";
+
+/**  A status change. */
+export type BookingAction = 
+/**  draft → confirmed: DRs can be requested. */
+"confirm" | 
+/**  confirmed → draft, to edit lines. Only without DRs. */
+"back_to_draft" | 
+/**  confirmed → closed: nothing more will be delivered. */
+"close" | 
+/**  closed → confirmed. */
+"reopen" | 
+/**  draft or confirmed → cancelled. Only without DRs. */
+"cancel";
+
+export type BookingDetail = {
+	booking: BookingInfo,
+	lines: BookingLine[],
+	drs: DrInfo[],
+};
+
+export type BookingInfo = {
+	id: string,
+	no: string | null,
+	/**  False while the number was given offline: it may still change. */
+	no_confirmed: boolean,
+	client_id: string | null,
+	client_code: string | null,
+	client_name: string | null,
+	bd_request_id: string | null,
+	bd_no: string | null,
+	date: string,
+	status: BookingStatus,
+	vat: boolean,
+	/**  VAT rate when the booking was last saved. */
+	vat_bp: number,
+	client_ref: string | null,
+	deliver_to: string | null,
+	notes: string | null,
+	totals: VatAmounts,
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+	progress: DeliveryProgress,
+	/**  DRs requested or approved, not yet delivered. */
+	open_drs: number,
+	created_at: number,
+	created_by_name: string | null,
+	confirmed_at: number | null,
+	confirmed_by_name: string | null,
+	closed_at: number | null,
+	closed_by_name: string | null,
+	cancel_reason: string | null,
+};
+
+export type BookingInput = {
+	/**  `None` creates a draft booking. */
+	id: string | null,
+	client_id: string,
+	date: string,
+	vat: boolean,
+	/**  The client's own PO or reference number. */
+	client_ref: string,
+	deliver_to: string,
+	notes: string,
+	lines: BookingLineInput[],
+};
+
+export type BookingLine = {
+	id: string,
+	item_id: string,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	tracks_expiry: boolean,
+	qty: number,
+	price_c: number,
+	price_rule: PriceSource,
+	notes: string | null,
+	amount_c: number,
+	/**  On DRs requested or approved, not yet delivered. */
+	pending: number,
+	delivered: number,
+	/**  Not on any DR yet (negative if DRs from offline PCs overshoot). */
+	remaining: number,
+	/**  Stripped without the costs permission. */
+	cost_c: number | null,
+	/**  Stripped without the margins permission. */
+	margin_bp: number | null,
+	below_cost: boolean,
+};
+
+export type BookingLineInput = {
+	/**  The line being edited; `None` for a new line. */
+	id: string | null,
+	item_id: string,
+	qty: number,
+	/**  Net unit price. `None` uses the price resolution. */
+	price_c: number | null,
+	notes: string,
+};
+
+export type BookingStatus = "draft" | "confirmed" | "closed" | "cancelled";
 
 export type ChargeMode = 
 /**  A PHP amount per unit, in centavos. */
@@ -362,6 +610,16 @@ export type CostSheetInput = {
 	lines: CostLineInput[],
 };
 
+export type DeliverInput = {
+	/**  When the goods were delivered (not in the future). */
+	date: string,
+	/**  Who received them at the client. */
+	received_by: string,
+};
+
+/**  How much of a booking has been delivered. */
+export type DeliveryProgress = "none" | "partial" | "full";
+
 export type DeviceInfo = {
 	/**  The device's site id. */
 	site: string,
@@ -374,6 +632,89 @@ export type DeviceInfo = {
 	last_seen: number | null,
 	this_pc: boolean,
 };
+
+export type DrDetail = {
+	dr: DrInfo,
+	lines: DrLine[],
+	/**  DR numbers are typed by staff (else given at approval). */
+	manual_numbers: boolean,
+};
+
+export type DrInfo = {
+	id: string,
+	/**  The DR (booklet) number; `None` until entered. */
+	no: string | null,
+	/**  False if other PCs were offline when the number was entered. */
+	no_confirmed: boolean,
+	/**  Typed by staff. */
+	no_manual: boolean,
+	/**  Another document has the same number (entered while offline). */
+	no_clash: boolean,
+	booking_id: string | null,
+	booking_no: string | null,
+	client_id: string | null,
+	client_code: string | null,
+	client_name: string | null,
+	date: string,
+	from_location_id: string | null,
+	from_location_name: string | null,
+	status: DrStatus,
+	/**  Cancelled after it was delivered: its stock came back. */
+	voided: boolean,
+	vat: boolean,
+	vat_bp: number,
+	totals: VatAmounts,
+	deliver_to: string | null,
+	notes: string | null,
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+	created_at: number,
+	created_by_name: string | null,
+	approved_at: number | null,
+	approved_by_name: string | null,
+	delivered_date: string | null,
+	delivered_at: number | null,
+	delivered_by_name: string | null,
+	received_by: string | null,
+	cancelled_at: number | null,
+	cancelled_by_name: string | null,
+	cancel_reason: string | null,
+};
+
+export type DrLine = {
+	id: string,
+	booking_line_id: string | null,
+	item_id: string,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	expiry: string | null,
+	qty: number,
+	price_c: number,
+	amount_c: number,
+};
+
+export type DrLineInput = {
+	/**  The DR line being edited; `None` for a new line. */
+	id: string | null,
+	booking_line_id: string,
+	/**  The lot. Required for items that track expiry, ignored otherwise. */
+	expiry: string | null,
+	qty: number,
+};
+
+export type DrRequestInput = {
+	booking_id: string,
+	/**  Planned delivery date. */
+	date: string,
+	from_location_id: string,
+	deliver_to: string,
+	notes: string,
+	lines: DrLineInput[],
+};
+
+export type DrStatus = "requested" | "approved" | "delivered" | "cancelled";
 
 /**  Values only some roles may see. */
 export type Field = 
@@ -579,6 +920,19 @@ export type PriceRule =
 /**  No rate, and no landed cost or margin to work from. */
 "none";
 
+/**  Where a line's price came from. */
+export type PriceSource = 
+/**  The client's manual rate. */
+"manual" | 
+/**  Landed cost at the client's margin tier. */
+"client_tier" | 
+/**  Landed cost at the item's default margin. */
+"item_default" | 
+/**  The price quoted on the BD request. */
+"quoted" | 
+/**  Typed in on the booking. */
+"custom";
+
 export type PricingSettings = {
 	/**  VAT rate in basis points (12% = 1200). */
 	vat_bp: number,
@@ -642,6 +996,13 @@ export type SeriesFormat = {
 	format: NumberFormat,
 	/**  What the next number would look like (sequence 1). */
 	example: string,
+	/**  The series can take numbers typed by staff instead. */
+	manual_allowed: boolean,
+	/**
+	 *  Staff type the numbers (the format then only applies after
+	 *  switching to automatic).
+	 */
+	manual: boolean,
 };
 
 /**  The signed-in user, with permissions as of now. */
@@ -706,7 +1067,12 @@ export type StockDocLine = {
 	qty: number,
 };
 
-export type StockKind = "receipt" | "adjustment" | "transfer";
+export type StockKind = "receipt" | "adjustment" | "transfer" | 
+/**
+ *  A delivered DR (stock out). Recorded in Accounting, not as a stock
+ *  document.
+ */
+"delivery";
 
 export type StockLineInput = {
 	item_id: string,

@@ -96,14 +96,14 @@ pub fn save(tx: &mut WriteTx, input: &LocationInput) -> Result<String> {
     }
 }
 
-/// Deletes a location that no stock document uses, even a voided one.
+/// Deletes a location that no stock document or DR uses, even a voided one.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(LOCATIONS, id)?.is_none() {
         return Err(Error::Invalid("that location no longer exists".into()));
     }
     if inventory::location_in_use(tx.conn(), id)? {
         return Err(Error::Invalid(
-            "this location has stock movements; mark it inactive instead".into(),
+            "this location has stock movements or DRs; mark it inactive instead".into(),
         ));
     }
     tx.delete(LOCATIONS, id)

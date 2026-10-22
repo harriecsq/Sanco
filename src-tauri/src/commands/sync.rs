@@ -77,6 +77,23 @@ pub async fn reserve_number(
         .map_err(|e| e.to_string())
 }
 
+/// Claims a number typed by staff (e.g. a DR booklet number) for `ref_id`
+/// with every reachable peer. Fails if another document has it.
+pub async fn reserve_exact_number(
+    state: &AppState,
+    series: &str,
+    no: &str,
+    ref_id: &str,
+) -> Result<Reservation, String> {
+    let node = state.node.lock().await;
+    let node = node
+        .as_ref()
+        .ok_or_else(|| "this PC is not set up yet".to_string())?;
+    node.reserve_exact(series, no, ref_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Shared database handle, for commands that read or write data.
 pub async fn db(state: &AppState) -> Result<Arc<Db>, String> {
     with_node(state, |n| n.db().clone()).await

@@ -13,10 +13,18 @@ import {
   useNavigate,
   type DocumentHead,
 } from "@builder.io/qwik-city";
-import { commands, type ClientInfo, type RateInfo } from "~/lib/bindings";
+import {
+  commands,
+  type BookingInfo,
+  type ClientInfo,
+  type DrInfo,
+  type RateInfo,
+} from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import {
+  formatDay,
   formatPct,
+  formatPeso,
   formatPesoOr,
   moneyText,
   parseCount,
@@ -35,6 +43,7 @@ import {
   rateForm,
   type RateForm,
 } from "~/components/rates/rates";
+import { BOOKING_STATUS, DrNo, DrStatusBadge, PROGRESS_LABEL, StatusBadge } from "~/components/sales/sales";
 import {
   Alert,
   Badge,
@@ -407,6 +416,8 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const client = useSignal<ClientInfo | null>(null);
   const missing = useSignal(false);
   const rates = useSignal<RateInfo[]>([]);
+  const bookings = useSignal<BookingInfo[]>([]);
+  const drs = useSignal<DrInfo[]>([]);
   const error = useSignal("");
   const form = useStore<Form>(blank());
   const editOpen = useSignal(false);
@@ -415,13 +426,32 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const rateOpen = useSignal(false);
 
   useLiveLoad(
-    ["clients", "doc_numbers", "client_item_rates", "items", "item_costs", "item_cost_charges", "settings"],
+    [
+      "clients",
+      "doc_numbers",
+      "client_item_rates",
+      "items",
+      "item_costs",
+      "item_cost_charges",
+      "settings",
+      "bookings",
+      "booking_lines",
+      "delivery_receipts",
+      "dr_lines",
+    ],
     $(async () => {
       try {
         const c = unwrap(await commands.getClient(id));
         client.value = c;
         missing.value = !c;
         rates.value = unwrap(await commands.listRates({ client_id: id, item_id: null }));
+        const user = session.user;
+        if (can(user, "bookings")) {
+          bookings.value = unwrap(await commands.listBookings()).filter((b) => b.client_id === id);
+        }
+        if (can(user, "bookings") || can(user, "accounting")) {
+          drs.value = unwrap(await commands.listDrs()).filter((d) => d.client_id === id);
+        }
       } catch (e) {
         error.value = errorText(e);
       }
@@ -535,12 +565,87 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
               }
             />
           </section>
-          <section class={[card, "p-5"]}>
-            <h2 class="font-semibold">Bookings, deliveries and balance</h2>
-            <p class={["mt-1", hint]}>
-              Bookings and DRs arrive in M7; balance, payments and checks in M8.
-            </p>
-          </section>
+          {can(session.user, "bookings") && (
+            <section class={[card, "overflow-x-auto"]}>
+              <h2 class="border-b border-line px-4 py-3 font-semibold">Bookings</h2>
+              {bookings.value.length === 0 ? (
+                <Empty>No bookings yet.</Empty>
+              ) : (
+                <table class={table}>
+                  <thead>
+                    <tr>
+                      <th class={th}>Number</th>
+                      <th class={th}>Date</th>
+                      <th class={th}>Items</th>
+                      <th class={[th, "text-right"]}>Gross</th>
+                      <th class={th}>Delivery</th>
+                      <th class={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bookings.value.map((b) => (
+                      <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
+                        <td class={[td, "whitespace-nowrap"]}>
+                          <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
+                            {b.no ?? "—"}
+                          </Link>
+                        </td>
+                        <td class={[td, "whitespace-nowrap"]}>{formatDay(b.date)}</td>
+                        <td class={td}>{b.summary}</td>
+                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
+                        <td class={td}>
+                          {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
+                        </td>
+                        <td class={td}>
+                          <StatusBadge s={BOOKING_STATUS[b.status]} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          )}
+          {(can(session.user, "bookings") || can(session.user, "accounting")) && (
+            <section class={[card, "overflow-x-auto"]}>
+              <h2 class="border-b border-line px-4 py-3 font-semibold">Delivery receipts</h2>
+              {drs.value.length === 0 ? (
+                <Empty>No DRs yet.</Empty>
+              ) : (
+                <table class={table}>
+                  <thead>
+                    <tr>
+                      <th class={th}>DR no.</th>
+                      <th class={th}>Date</th>
+                      <th class={th}>Items</th>
+                      <th class={[th, "text-right"]}>Gross</th>
+                      <th class={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drs.value.map((d) => (
+                      <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                        <td class={[td, "whitespace-nowrap"]}>
+                          <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
+                            <DrNo d={d} />
+                          </Link>
+                        </td>
+                        <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
+                        <td class={td}>{d.summary}</td>
+                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                        <td class={td}>
+                          <DrStatusBadge d={d} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p class={["border-t border-line px-4 py-2", hint]}>
+                Balance, payments and checks arrive in M8.
+              </p>
+            </section>
+          )}
         </div>
       </div>
       <ClientFormModal open={editOpen} form={form} />

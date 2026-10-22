@@ -31,7 +31,7 @@ export default component$(() => {
   const session = useSession();
   const formats = useSignal<SeriesFormat[]>([]);
   const error = useSignal("");
-  const editing = useStore({ series: "", label: "" });
+  const editing = useStore({ series: "", label: "", manual_allowed: false, manual: false, typed: false });
   const form = useStore<NumberFormat>({ prefix: "", year: true, reset_yearly: true, pad: 4 });
   const open = useSignal(false);
   const formError = useSignal("");
@@ -52,6 +52,9 @@ export default component$(() => {
     busy.value = true;
     formError.value = "";
     try {
+      if (editing.manual_allowed && editing.typed !== editing.manual) {
+        unwrap(await commands.setNumberMode(editing.series, editing.typed));
+      }
       unwrap(await commands.setNumberFormat(editing.series, { ...form }));
       open.value = false;
     } catch (e) {
@@ -75,6 +78,7 @@ export default component$(() => {
           <thead>
             <tr>
               <th class={th}>Series</th>
+              <th class={th}>Numbers</th>
               <th class={th}>Next looks like</th>
               <th class={th}>Prefix</th>
               <th class={th}>Year</th>
@@ -87,7 +91,8 @@ export default component$(() => {
             {formats.value.map((f) => (
               <tr key={f.series}>
                 <td class={[td, "font-medium"]}>{f.label}</td>
-                <td class={[td, "font-mono"]}>{f.example}</td>
+                <td class={td}>{f.manual ? "Typed from the booklet" : "Automatic"}</td>
+                <td class={[td, "font-mono"]}>{f.manual ? "—" : f.example}</td>
                 <td class={td}>{f.format.prefix || "—"}</td>
                 <td class={td}>{f.format.year ? "Shown" : "—"}</td>
                 <td class={td}>{f.format.reset_yearly ? "Yes" : "No"}</td>
@@ -99,6 +104,9 @@ export default component$(() => {
                       onClick$={() => {
                         editing.series = f.series;
                         editing.label = f.label;
+                        editing.manual_allowed = f.manual_allowed;
+                        editing.manual = f.manual;
+                        editing.typed = f.manual;
                         Object.assign(form, f.format);
                         formError.value = "";
                         open.value = true;
@@ -121,6 +129,32 @@ export default component$(() => {
       <Modal open={open} title={`Format: ${editing.label}`}>
         <form class="space-y-3" preventdefault:submit onSubmit$={save}>
           {formError.value && <Alert>{formError.value}</Alert>}
+          {editing.manual_allowed && (
+            <fieldset class="space-y-1 text-sm">
+              <legend class="mb-1 font-medium">Numbers</legend>
+              <label class="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="number-mode"
+                  class="accent-brand-500"
+                  checked={editing.typed}
+                  onChange$={() => (editing.typed = true)}
+                />
+                Typed by staff from the BIR booklet
+              </label>
+              <label class="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="number-mode"
+                  class="accent-brand-500"
+                  checked={!editing.typed}
+                  onChange$={() => (editing.typed = false)}
+                />
+                Given automatically in the format below
+              </label>
+              <p class={hint}>Numbers already given keep their text when this changes.</p>
+            </fieldset>
+          )}
           <Field label="Prefix" hint="Letters and digits only, e.g. DR.">
             <input
               class={input}

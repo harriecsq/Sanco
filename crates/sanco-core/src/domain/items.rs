@@ -225,15 +225,15 @@ pub fn save(tx: &mut WriteTx, input: &ItemInput, margins: bool) -> Result<String
     }
 }
 
-/// Deletes an item with its cost sheet and client rates. Items with stock
-/// movements can't be deleted.
+/// Deletes an item with its cost sheet and client rates. Items on stock
+/// movements or sales documents can't be deleted.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(ITEMS, id)?.is_none() {
         return Err(Error::Invalid("that item no longer exists".into()));
     }
     if inventory::item_in_use(tx.conn(), id)? {
         return Err(Error::Invalid(
-            "this item has stock movements; mark it inactive instead".into(),
+            "this item is on stock movements or sales documents; mark it inactive instead".into(),
         ));
     }
     for table in [ITEM_COSTS, ITEM_COST_CHARGES, CLIENT_ITEM_RATES] {

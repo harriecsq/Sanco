@@ -95,3 +95,20 @@ pub async fn set_number_format(
     })
     .await
 }
+
+/// Switches a series (DRs) between numbers typed by staff and automatic ones.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_number_mode(
+    state: State<'_, AppState>,
+    series: String,
+    manual: bool,
+) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Settings, Action::Edit).await?;
+    blocking(move || {
+        db.write(user.actor(), move |tx| {
+            settings::set_number_mode(tx, &series, manual)
+        })
+    })
+    .await
+}

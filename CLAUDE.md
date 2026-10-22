@@ -66,6 +66,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Call `invoke`/`commands.*` only in the browser (`useVisibleTask$`, event handlers).
   - No `routeLoader$` or `server$`.
   - No dynamic `[id]` routes. Use `?id=`.
+  - Inside `$()` and tasks: don't mutate module-level `let`s (wrap in a module-level function) or capture local functions (make them module-level). Put `q:slot` on each element, not on a `<>` fragment.
   - Route content is prerendered (in a hidden `q:template`) before anyone signs in. Load data with `useLiveLoad(tables, fn)` and read permissions inside `fn`, not at render. Visible tasks that load data use `{ strategy: "document-ready" }`.
 - **Permissions (RBAC)** are checked in Rust on every command, not just hidden in the UI. Start each command with `commands::require(&state, Module::X, Action::Y)` (or `require_save`, `require_view_any`, `require_admin`); it re-reads the user and roles from the database. Sensitive values (`Field::Costs`, `Field::Margins`) are stripped in Rust when `!user.perms.sees(field)` (DTOs have `strip(&perms)`), and saves ignore margin inputs from users who can't see margins.
 - **Seed rows** (default locations, charge types, roles) use `derived_id("<kind>", key)` and skip any existing row, even a deleted one. `domain::seed_defaults` runs at every node start. Roles are admin-editable: per module × action (view/create/edit/delete/approve), plus sensitive fields (costs, margins).
@@ -82,6 +83,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Joining: a join code (Crockford base32 of key + inviter `host:port` + checksum) → `GET /snapshot` → open as a copy (never `new_identity`) → `Db::finish_join`.
 - **Handshake** (`GET /hello`, `Db::check_peer`) rejects: schema mismatch, clock skew over 2 minutes either way, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
 - **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`Node::reserve_number` over HTTP, i.e. `numbering::reserve`, then `numbering::assign` inside the document's write). **Validate read-only before reserving** (e.g. `inventory::validate`): a write that fails after the reservation leaves the claim held, so the next document skips a number. Posted stock documents are never edited; they are voided and entered again. Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
+  - **Typed numbers:** DR numbers are typed from the BIR booklet unless Settings sets `number_mode.DR = auto`. They are claimed exactly (`numbering::reserve_exact`, `doc_numbers.manual = 1`) and are **never renumbered**: an offline clash gets to-dos for both users and a "used twice" badge until someone corrects one (`assign_or_change`).
 
 ## Business rules
 - **Margin is margin on price:** `price = cost ÷ (1 − margin%)`. ₱100 at 20% → ₱125.
@@ -93,7 +95,9 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   The UI shows which rule applied.
 - **VAT:** a checkbox on bookings, DRs and rates. The rate is in Settings (default 12%). `gross = net × (1 + VAT)`. Show net, VAT and gross.
 - **Landed cost** = supplier price × FX + the cost-sheet charge lines. Charge types are an editable list (Freight, Customs duty, Brokerage, Bank fees, Import VAT, …), each per-unit or percentage.
-- **DR number = BIR booklet number.** There is no separate manual reference.
+- **DR number = BIR booklet number.** There is no separate manual reference. It may be typed at approval and is required to mark the DR delivered.
+- **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR (requested → approved → delivered, or cancelled; a delivered DR is voided, which returns its stock). DR lines name their lot.
+- **Don't add edit locks** (user decision, 2026-10-22): BD requests (also won), bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
 
 ## Glossary
