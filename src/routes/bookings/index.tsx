@@ -46,6 +46,7 @@ import {
   StatusBadge,
   Totals,
 } from "~/components/sales/sales";
+import { CreditWarning } from "~/components/accounting/accounting";
 import {
   Alert,
   Badge,
@@ -253,6 +254,7 @@ const BookingFormModal = component$<{
     <Modal open={open} title={form.id ? "Edit booking" : "New booking"} wide>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
+        {form.client_id && <CreditWarning clientId={form.client_id} extraC={form.id ? 0 : net + vat} />}
         <div class="grid gap-3 sm:grid-cols-2">
           <Field label="Client">
             <select class={input} required onChange$={(_, el) => (form.client_id = el.value)}>
@@ -713,6 +715,11 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           </Link>
         )}
       </div>
+      {b.client_id && (b.status === "draft" || b.status === "confirmed") && (
+        <div class="mb-4">
+          <CreditWarning clientId={b.client_id} extraC={b.status === "draft" ? b.totals.gross_c : 0} />
+        </div>
+      )}
       <div class="grid gap-4 2xl:grid-cols-[22rem_minmax(0,1fr)]">
         <section class={[card, "self-start p-5"]}>
           <InfoList rows={rows} />

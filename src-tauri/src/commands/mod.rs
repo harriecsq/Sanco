@@ -2,6 +2,7 @@
 //! checks the signed-in user's permissions here, in Rust; the UI only hides
 //! what a user can't use.
 
+pub mod accounting;
 pub mod auth;
 pub mod bd;
 pub mod bookings;

@@ -111,6 +111,15 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::delivery::set_dr_number,
             commands::delivery::cancel_dr,
             commands::delivery::void_dr,
+            commands::accounting::list_payments,
+            commands::accounting::get_payment,
+            commands::accounting::payment_open_drs,
+            commands::accounting::save_payment,
+            commands::accounting::void_payment,
+            commands::accounting::check_step,
+            commands::accounting::receivables_report,
+            commands::accounting::client_balance,
+            commands::accounting::client_receivables,
         ])
         .dangerously_cast_bigints_to_number()
 }

@@ -74,6 +74,12 @@ export const formatDay = (date: string | null | undefined) => {
 export const todayManila = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(Date.now());
 
+/** `YYYY-MM-DD` plus `days` (may be negative). */
+export const addDays = (date: string, days: number) => {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+};
+
 /** A quantity with its unit: "1,200 box". */
 export const formatQty = (qty: number, unit?: string | null) =>
   `${qty.toLocaleString("en-PH")}${unit ? ` ${unit}` : ""}`;

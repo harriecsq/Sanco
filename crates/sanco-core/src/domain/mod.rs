@@ -12,7 +12,9 @@ pub mod delivery;
 pub mod inventory;
 pub mod items;
 pub mod locations;
+pub mod payments;
 pub mod pricing;
+pub mod receivables;
 pub mod roles;
 pub mod settings;
 pub mod suppliers;
@@ -110,6 +112,21 @@ pub(crate) fn line_summary<'a>(lines: impl IntoIterator<Item = (Option<&'a str>,
         parts.push(format!("+{} more", lines.len() - SHOWN));
     }
     parts.join(", ")
+}
+
+/// Centavos for messages: 123450 → "₱1,234.50".
+pub(crate) fn peso(c: i64) -> String {
+    let sign = if c < 0 { "-" } else { "" };
+    let c = c.unsigned_abs();
+    let digits = (c / 100).to_string();
+    let mut whole = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            whole.push(',');
+        }
+        whole.push(ch);
+    }
+    format!("{sign}₱{whole}.{:02}", c % 100)
 }
 
 /// `qty × price`, saturating.

@@ -19,9 +19,12 @@ use serde_json::json;
 
 use crate::domain::bookings::BookingStatus;
 use crate::domain::inventory::{self, Effect, StockLot};
+use crate::domain::payments::{self, DrPayment};
 use crate::domain::pricing::{self, VatAmounts};
+use crate::domain::receivables;
 use crate::domain::{
-    MAX_LINES, date_opt, line_amount, line_summary, replace_lines, require_date, settings, text_opt,
+    MAX_LINES, date_opt, line_amount, line_summary, peso, replace_lines, require_date, settings,
+    text_opt,
 };
 use crate::error::{Error, Result};
 use crate::repo::WriteTx;
@@ -140,6 +143,12 @@ pub struct DrInfo {
     pub cancelled_at: Option<i64>,
     pub cancelled_by_name: Option<String>,
     pub cancel_reason: Option<String>,
+    /// Paid by counting payments (delivered DRs only).
+    pub paid_c: i64,
+    /// Gross minus paid while delivered, else 0. Negative if overpaid.
+    pub balance_c: i64,
+    /// Delivery date plus the client's payment terms.
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -164,6 +173,8 @@ pub struct DrDetail {
     pub lines: Vec<DrLine>,
     /// DR numbers are typed by staff (else given at approval).
     pub manual_numbers: bool,
+    /// Payments allocated to it.
+    pub payments: Vec<DrPayment>,
 }
 
 // Writing -------------------------------------------------------------------
@@ -496,7 +507,27 @@ pub fn check_update(
             ));
         }
     }
-    prepare_request(conn, input, Some(&cur)).map(drop)
+    let p = prepare_request(conn, input, Some(&cur))?;
+    if cur.status == DrStatus::Delivered {
+        let paid = receivables::dr_paid(conn, id)?;
+        if paid > 0 {
+            let (vat, vat_bp): (i64, i64) = conn.query_row(
+                "SELECT COALESCE(vat, 0), COALESCE(vat_bp, 0) FROM delivery_receipts WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let net = p.lines.iter().map(|l| line_amount(l.qty, l.price_c)).sum();
+            let gross = pricing::with_vat(net, if vat != 0 { vat_bp } else { 0 }).gross_c;
+            if gross < paid {
+                return Err(Error::Invalid(format!(
+                    "payments of {} are applied to this DR; its total can't go below that ({} now). Change the payments first",
+                    peso(paid),
+                    peso(gross)
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Edits a DR that isn't cancelled: its date, location, address, notes and
@@ -686,6 +717,13 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
             "only a delivered DR can be voided; cancel it instead".into(),
         ));
     }
+    let paid = receivables::dr_paid(tx.conn(), id)?;
+    if paid > 0 {
+        return Err(Error::Invalid(format!(
+            "payments of {} are applied to this DR; take them off the payments first",
+            peso(paid)
+        )));
+    }
     let reason =
         text_opt(reason).ok_or_else(|| Error::Invalid("enter why the DR is voided".into()))?;
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
@@ -754,7 +792,7 @@ const SELECT: &str = "
            r.status, COALESCE(r.vat, 0), COALESCE(r.vat_bp, 0), r.deliver_to, r.notes,
            r.created_at, uc.display_name, r.approved_at, ua.display_name, r.delivered_date,
            r.delivered_at, ud.display_name, r.received_by, r.cancelled_at, ux.display_name,
-           r.cancel_reason
+           r.cancel_reason, c.terms_days
     FROM delivery_receipts r
     LEFT JOIN doc_numbers n ON n.ref_id = r.id AND n.series = 'DR' AND n._deleted = 0
     LEFT JOIN doc_numbers bn ON bn.ref_id = r.booking_id AND bn.series = 'BK' AND bn._deleted = 0
@@ -801,6 +839,9 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
         cancelled_at: r.get(26)?,
         cancelled_by_name: r.get(27)?,
         cancel_reason: r.get(28)?,
+        paid_c: 0,
+        balance_c: 0,
+        due_date: receivables::due_date(r.get::<_, Option<String>>(22)?.as_deref(), r.get(29)?),
         totals: pricing::with_vat(0, 0),
         summary: String::new(),
         item_ids: Vec::new(),
@@ -808,9 +849,15 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
     })
 }
 
-fn fill(d: &mut DrInfo, lines: &[DrLine]) {
+fn fill(d: &mut DrInfo, lines: &[DrLine], paid_c: i64) {
     let net = lines.iter().map(|l| l.amount_c).sum();
     d.totals = pricing::with_vat(net, if d.vat { d.vat_bp } else { 0 });
+    if d.status == DrStatus::Delivered {
+        d.paid_c = paid_c;
+        d.balance_c = d.totals.gross_c - paid_c;
+    } else {
+        d.due_date = None;
+    }
     d.summary = line_summary(lines.iter().map(|l| (l.item_code.as_deref(), l.qty)));
     d.item_ids = lines.iter().map(|l| l.item_id.clone()).collect();
     d.item_ids.sort();
@@ -823,6 +870,7 @@ fn list_where(conn: &Connection, booking: Option<&str>) -> Result<Vec<DrInfo>> {
     for (dr, line) in lines_of(conn, None)? {
         by_dr.entry(dr).or_default().push(line);
     }
+    let paid = receivables::paid_by_dr(conn)?;
     let mut stmt = conn.prepare(&format!(
         "{SELECT} AND (?1 IS NULL OR r.booking_id = ?1)
          ORDER BY COALESCE(r.delivered_date, r.date) DESC, r.created_at DESC, r.id DESC"
@@ -832,7 +880,8 @@ fn list_where(conn: &Connection, booking: Option<&str>) -> Result<Vec<DrInfo>> {
     for row in rows {
         let mut d = row?;
         let lines = by_dr.remove(&d.id).unwrap_or_default();
-        fill(&mut d, &lines);
+        let p = paid.get(&d.id).copied().unwrap_or(0);
+        fill(&mut d, &lines, p);
         out.push(d);
     }
     Ok(out)
@@ -858,11 +907,12 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<DrDetail>> {
         .into_iter()
         .map(|(_, l)| l)
         .collect();
-    fill(&mut dr, &lines);
+    fill(&mut dr, &lines, receivables::dr_paid(conn, id)?);
     Ok(Some(DrDetail {
         dr,
         lines,
         manual_numbers: numbering::is_manual(conn, series::DR)?,
+        payments: payments::for_dr(conn, id)?,
     }))
 }
 

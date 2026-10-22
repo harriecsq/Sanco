@@ -219,6 +219,8 @@ export const commands = {
 	lines: DrLine[],
 	/**  DR numbers are typed by staff (else given at approval). */
 	manual_numbers: boolean,
+	/**  Payments allocated to it. */
+	payments: DrPayment[],
 } | null, string>(__TAURI_INVOKE("get_dr", { id })),
 	/**  Stock lots of a booking's items, for choosing a DR's lots. */
 	drLots: (bookingId: string) => typedError<StockLot[], string>(__TAURI_INVOKE("dr_lots", { bookingId })),
@@ -247,10 +249,63 @@ export const commands = {
 	cancelDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("cancel_dr", { id, reason })),
 	/**  Voids a delivered DR: its stock comes back. */
 	voidDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_dr", { id, reason })),
+	listPayments: () => typedError<PaymentInfo[], string>(__TAURI_INVOKE("list_payments")),
+	getPayment: (id: string) => typedError<{
+	payment: PaymentInfo,
+	allocations: AllocationInfo[],
+} | null, string>(__TAURI_INVOKE("get_payment", { id })),
+	/**
+	 *  The client's delivered DRs a payment can be allocated to. `payment_id`
+	 *  is the payment being edited, `replaces_id` a check being replaced.
+	 */
+	paymentOpenDrs: (clientId: string, paymentId: string | null, replacesId: string | null) => typedError<OpenDr[], string>(__TAURI_INVOKE("payment_open_drs", { clientId, paymentId, replacesId })),
+	/**
+	 *  Records a payment (with a new shared number) or edits one. Returns its
+	 *  id.
+	 */
+	savePayment: (payment: PaymentInput) => typedError<string, string>(__TAURI_INVOKE("save_payment", { payment })),
+	/**  Voids a payment: the DRs it paid owe again. */
+	voidPayment: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_payment", { id, reason })),
+	/**  Deposits, clears or bounces a check, or takes it back a step. */
+	checkStep: (id: string, step: CheckStepInput) => typedError<null, string>(__TAURI_INVOKE("check_step", { id, step })),
+	/**  Every client's balance and aging today, with the unpaid DRs. */
+	receivablesReport: () => typedError<ReceivablesReport, string>(__TAURI_INVOKE("receivables_report")),
+	/**  One client's balance today, for client pages and booking credit checks. */
+	clientBalance: (clientId: string) => typedError<ClientBalance, string>(__TAURI_INVOKE("client_balance", { clientId })),
+	/**  A client's unpaid delivered DRs, oldest first. */
+	clientReceivables: (clientId: string) => typedError<ReceivableDr[], string>(__TAURI_INVOKE("client_receivables", { clientId })),
 };
 
 /* Types */
 export type Action = "view" | "create" | "edit" | "delete" | "approve";
+
+/**  Amounts per aging bucket. */
+export type Aging = {
+	not_due_c: number,
+	d1_30_c: number,
+	d31_60_c: number,
+	d61_90_c: number,
+	over_90_c: number,
+};
+
+export type AgingBucket = "not_due" | "days1_to30" | "days31_to60" | "days61_to90" | "over90";
+
+export type AllocationInfo = {
+	dr_id: string,
+	dr_no: string | null,
+	delivered_date: string | null,
+	/**  False if the DR was voided since: the amount is back as credit. */
+	delivered: boolean,
+	gross_c: number,
+	amount_c: number,
+	/**  What the DR still owes, after every counting payment. */
+	dr_balance_c: number,
+};
+
+export type AllocationInput = {
+	dr_id: string,
+	amount_c: number,
+};
 
 export type AuditEntry = {
 	id: string,
@@ -498,11 +553,82 @@ export type ChargeTypeInput = {
 	active: boolean,
 };
 
+export type CheckInfo = {
+	bank: string | null,
+	check_no: string | null,
+	check_date: string | null,
+	/**  Post-dated: the check date is after today. */
+	pdc: boolean,
+	status: CheckStatus,
+	deposited_date: string | null,
+	deposit_account: string | null,
+	cleared_date: string | null,
+	bounced_date: string | null,
+	bounce_reason: string | null,
+	/**  The posted payment that replaces this check. */
+	replaced_by_id: string | null,
+	replaced_by_no: string | null,
+};
+
+export type CheckInput = {
+	bank: string,
+	check_no: string,
+	check_date: string,
+};
+
+export type CheckStatus = "on_hand" | "deposited" | "cleared" | "bounced" | 
+/**  Not stored: a posted payment replaces it. */
+"replaced";
+
+export type CheckStep = 
+/**  on hand (or bounced) → deposited: `date`, `account`. */
+"deposit" | 
+/**  deposited → cleared: `date`. */
+"clear" | 
+/**  deposited or cleared → bounced: `date`, `reason`. */
+"bounce" | 
+/**
+ *  Back one step: deposited → on hand, cleared → deposited, bounced →
+ *  deposited (or on hand if it never was).
+ */
+"undo";
+
+export type CheckStepInput = {
+	step: CheckStep,
+	date: string,
+	account: string,
+	reason: string,
+};
+
 /**  A row to pick in a select: master data for other modules' forms. */
 export type Choice = {
 	id: string,
 	label: string,
 	active: boolean,
+};
+
+export type ClientBalance = {
+	client_id: string,
+	client_code: string | null,
+	client_name: string | null,
+	terms_days: number | null,
+	credit_limit_c: number | null,
+	/**  Owed on delivered DRs, by days past due. */
+	aging: Aging,
+	/**  Owed on delivered DRs (positive balances). */
+	outstanding_c: number,
+	/**  Of that, past due. */
+	overdue_c: number,
+	/**  Paid but not applied to a DR, plus DRs paid more than their total. */
+	credit_c: number,
+	/**  Outstanding minus credit. */
+	balance_c: number,
+	/**  Checks on hand or deposited, not cleared yet, that count as paid. */
+	uncleared_c: number,
+	open_drs: number,
+	overpaid_drs: number,
+	/**  Days past due of the oldest unpaid DR, if any is overdue. */
+	oldest_overdue_days: number | null,
 };
 
 export type ClientInfo = {
@@ -638,6 +764,8 @@ export type DrDetail = {
 	lines: DrLine[],
 	/**  DR numbers are typed by staff (else given at approval). */
 	manual_numbers: boolean,
+	/**  Payments allocated to it. */
+	payments: DrPayment[],
 };
 
 export type DrInfo = {
@@ -680,6 +808,12 @@ export type DrInfo = {
 	cancelled_at: number | null,
 	cancelled_by_name: string | null,
 	cancel_reason: string | null,
+	/**  Paid by counting payments (delivered DRs only). */
+	paid_c: number,
+	/**  Gross minus paid while delivered, else 0. Negative if overpaid. */
+	balance_c: number,
+	/**  Delivery date plus the client's payment terms. */
+	due_date: string | null,
 };
 
 export type DrLine = {
@@ -702,6 +836,17 @@ export type DrLineInput = {
 	/**  The lot. Required for items that track expiry, ignored otherwise. */
 	expiry: string | null,
 	qty: number,
+};
+
+/**  A payment allocated to a DR, for the DR's page. */
+export type DrPayment = {
+	payment_id: string,
+	no: string | null,
+	date: string,
+	method: PayMethod,
+	check_status: CheckStatus | null,
+	amount_c: number,
+	counts: boolean,
 };
 
 export type DrRequestInput = {
@@ -852,6 +997,89 @@ export type NumberFormat = {
 	pad: number,
 };
 
+/**  A delivered DR a payment can be allocated to. */
+export type OpenDr = {
+	dr_id: string,
+	no: string | null,
+	delivered_date: string | null,
+	due_date: string | null,
+	gross_c: number,
+	/**  Paid by other counting payments. */
+	paid_other_c: number,
+	/**  Gross minus that: the most this payment can allocate. */
+	open_c: number,
+	/**  Allocated by this payment now. */
+	allocated_c: number,
+};
+
+export type PayMethod = "cash" | "check" | "bank_transfer";
+
+export type PaymentDetail = {
+	payment: PaymentInfo,
+	allocations: AllocationInfo[],
+};
+
+export type PaymentInfo = {
+	id: string,
+	no: string | null,
+	/**  False while the number was given offline: it may still change. */
+	no_confirmed: boolean,
+	client_id: string | null,
+	client_code: string | null,
+	client_name: string | null,
+	date: string,
+	method: PayMethod,
+	amount_c: number,
+	/**  Allocated to delivered DRs. */
+	applied_c: number,
+	/**  Amount minus applied (negative if offline edits overshoot). */
+	unapplied_c: number,
+	/**
+	 *  Reduces the client's balance: posted, and not a bounced or replaced
+	 *  check.
+	 */
+	counts: boolean,
+	reference: string | null,
+	or_no: string | null,
+	notes: string | null,
+	check: CheckInfo | null,
+	replaces_id: string | null,
+	replaces_no: string | null,
+	status: PaymentStatus,
+	dr_nos: string[],
+	created_at: number,
+	created_by_name: string | null,
+	voided_at: number | null,
+	voided_by_name: string | null,
+	void_reason: string | null,
+};
+
+export type PaymentInput = {
+	/**  `None` records a new payment. */
+	id: string | null,
+	client_id: string,
+	/**  When it was received (not in the future). */
+	date: string,
+	method: PayMethod,
+	amount_c: number,
+	/**  Bank transfer reference, deposit slip, … */
+	reference: string,
+	/**  Official/collection receipt number from the booklet, if issued. */
+	or_no: string,
+	notes: string,
+	/**  Required for checks. */
+	check: CheckInput | null,
+	/**
+	 *  A check of the client's (bounced or on hand) this payment replaces.
+	 *  Only when recording a payment.
+	 */
+	replaces_id: string | null,
+	/**  Zero amounts are left out. */
+	allocations: AllocationInput[],
+};
+
+export type PaymentStatus = "posted" | "void";
+
 export type PcSettings = {
 	/**  Start Sanco (hidden in the tray) when someone signs in to Windows. */
 	autostart: boolean,
@@ -973,6 +1201,35 @@ export type RateInput = {
 	price_c: number | null,
 	vat: boolean,
 	notes: string,
+};
+
+/**  A delivered DR with a balance (positive: owed; negative: overpaid). */
+export type ReceivableDr = {
+	dr_id: string,
+	no: string | null,
+	client_id: string | null,
+	client_code: string | null,
+	client_name: string | null,
+	delivered_date: string | null,
+	due_date: string | null,
+	/**  Days past the due date; zero or negative while not due. */
+	days_overdue: number,
+	bucket: AgingBucket,
+	gross_c: number,
+	paid_c: number,
+	balance_c: number,
+};
+
+export type ReceivablesReport = {
+	as_of: string,
+	/**  Clients with a balance, credit or uncleared checks. */
+	clients: ClientBalance[],
+	/**  Delivered DRs that aren't fully paid (or are overpaid). */
+	drs: ReceivableDr[],
+	totals: Aging,
+	outstanding_c: number,
+	credit_c: number,
+	uncleared_c: number,
 };
 
 export type RoleInfo = {

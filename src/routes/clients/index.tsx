@@ -16,8 +16,10 @@ import {
 import {
   commands,
   type BookingInfo,
+  type ClientBalance,
   type ClientInfo,
   type DrInfo,
+  type PaymentInfo,
   type RateInfo,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
@@ -44,6 +46,13 @@ import {
   type RateForm,
 } from "~/components/rates/rates";
 import { BOOKING_STATUS, DrNo, DrStatusBadge, PROGRESS_LABEL, StatusBadge } from "~/components/sales/sales";
+import {
+  METHOD_LABEL,
+  PaymentBadge,
+  PaymentFormModal,
+  blankPayment,
+  checkText,
+} from "~/components/accounting/accounting";
 import {
   Alert,
   Badge,
@@ -410,6 +419,38 @@ const ClientList = component$(() => {
   );
 });
 
+/** A client's balance: owed, overdue, credit and limit. */
+const BalanceList = component$<{ b: ClientBalance }>(({ b }) => {
+  const over = b.credit_limit_c != null && b.balance_c > b.credit_limit_c;
+  return (
+    <dl class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-sm">
+      <dt class="text-ink-muted">Owed on {b.open_drs} DR(s)</dt>
+      <dd class="text-right tabular-nums">{formatPeso(b.outstanding_c)}</dd>
+      <dt class="text-ink-muted">Of that, overdue</dt>
+      <dd class={["text-right tabular-nums", b.overdue_c > 0 && "text-danger"]}>{formatPeso(b.overdue_c)}</dd>
+      <dt class="text-ink-muted">Credit (paid, not applied)</dt>
+      <dd class="text-right tabular-nums">{formatPeso(b.credit_c)}</dd>
+      <dt class="font-semibold">Balance</dt>
+      <dd class="text-right font-semibold tabular-nums">{formatPeso(b.balance_c)}</dd>
+      <dt class="text-ink-muted">Credit limit</dt>
+      <dd class="text-right tabular-nums">
+        {b.credit_limit_c == null ? "No limit" : formatPeso(b.credit_limit_c)}
+        {over && (
+          <span class="ml-1">
+            <Badge tone="danger">over</Badge>
+          </span>
+        )}
+      </dd>
+      {b.uncleared_c > 0 && (
+        <>
+          <dt class="text-ink-muted">Paid by uncleared checks</dt>
+          <dd class="text-right tabular-nums">{formatPeso(b.uncleared_c)}</dd>
+        </>
+      )}
+    </dl>
+  );
+});
+
 const ClientDetail = component$<{ id: string }>(({ id }) => {
   const session = useSession();
   const nav = useNavigate();
@@ -418,6 +459,10 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const rates = useSignal<RateInfo[]>([]);
   const bookings = useSignal<BookingInfo[]>([]);
   const drs = useSignal<DrInfo[]>([]);
+  const balance = useSignal<ClientBalance | null>(null);
+  const payments = useSignal<PaymentInfo[]>([]);
+  const payOpen = useSignal(false);
+  const pay = useStore(blankPayment(id));
   const error = useSignal("");
   const form = useStore<Form>(blank());
   const editOpen = useSignal(false);
@@ -438,6 +483,8 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
       "booking_lines",
       "delivery_receipts",
       "dr_lines",
+      "payments",
+      "payment_allocations",
     ],
     $(async () => {
       try {
@@ -451,6 +498,10 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         }
         if (can(user, "bookings") || can(user, "accounting")) {
           drs.value = unwrap(await commands.listDrs()).filter((d) => d.client_id === id);
+        }
+        balance.value = unwrap(await commands.clientBalance(id));
+        if (can(user, "accounting")) {
+          payments.value = unwrap(await commands.listPayments()).filter((p) => p.client_id === id);
         }
       } catch (e) {
         error.value = errorText(e);
@@ -512,6 +563,7 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         </div>
       )}
       <div class="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
+        <div class="space-y-4 self-start">
         <section class={[card, "p-5"]}>
           <h2 class="mb-3 font-semibold">Details</h2>
           <InfoList
@@ -530,6 +582,26 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
             ]}
           />
         </section>
+        {balance.value && (
+          <section class={[card, "p-5"]}>
+            <div class="mb-3 flex items-center justify-between">
+              <h2 class="font-semibold">Balance</h2>
+              {can(session.user, "accounting", "create") && (
+                <button
+                  class={btnSecondary}
+                  onClick$={() => {
+                    Object.assign(pay, blankPayment(id));
+                    payOpen.value = true;
+                  }}
+                >
+                  Record payment
+                </button>
+              )}
+            </div>
+            <BalanceList b={balance.value} />
+          </section>
+        )}
+        </div>
         <div class="space-y-4">
           <section class={card}>
             <div class="flex items-center justify-between border-b border-line px-4 py-3">
@@ -619,6 +691,7 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
                       <th class={th}>Date</th>
                       <th class={th}>Items</th>
                       <th class={[th, "text-right"]}>Gross</th>
+                      <th class={[th, "text-right"]}>Balance</th>
                       <th class={th}>Status</th>
                     </tr>
                   </thead>
@@ -633,6 +706,9 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
                         <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
                         <td class={td}>{d.summary}</td>
                         <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                        <td class={[td, "text-right tabular-nums"]}>
+                          {d.status === "delivered" ? (d.balance_c === 0 ? "Paid" : formatPeso(d.balance_c)) : "—"}
+                        </td>
                         <td class={td}>
                           <DrStatusBadge d={d} />
                         </td>
@@ -641,15 +717,61 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
                   </tbody>
                 </table>
               )}
-              <p class={["border-t border-line px-4 py-2", hint]}>
-                Balance, payments and checks arrive in M8.
-              </p>
+            </section>
+          )}
+          {can(session.user, "accounting") && (
+            <section class={[card, "overflow-x-auto"]}>
+              <h2 class="border-b border-line px-4 py-3 font-semibold">Payments and checks</h2>
+              {payments.value.length === 0 ? (
+                <Empty>No payments yet.</Empty>
+              ) : (
+                <table class={table}>
+                  <thead>
+                    <tr>
+                      <th class={th}>No.</th>
+                      <th class={th}>Received</th>
+                      <th class={th}>Method</th>
+                      <th class={[th, "text-right"]}>Amount</th>
+                      <th class={th}>Applied to</th>
+                      <th class={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payments.value.map((p) => (
+                      <tr key={p.id} class={p.counts ? "" : "text-ink-muted"}>
+                        <td class={[td, "whitespace-nowrap"]}>
+                          <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.id}`}>
+                            {p.no ?? "—"}
+                          </Link>
+                        </td>
+                        <td class={[td, "whitespace-nowrap"]}>{formatDay(p.date)}</td>
+                        <td class={td}>
+                          {METHOD_LABEL[p.method]}
+                          {p.check && <span class={[hint, "block"]}>{checkText(p)}</span>}
+                        </td>
+                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
+                        <td class={td}>{p.dr_nos.length ? p.dr_nos.map((n) => `DR ${n}`).join(", ") : "—"}</td>
+                        <td class={td}>
+                          <PaymentBadge p={p} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </section>
           )}
         </div>
       </div>
       <ClientFormModal open={editOpen} form={form} />
       <RateModal open={rateOpen} form={rate} lock="client" />
+      <PaymentFormModal
+        open={payOpen}
+        form={pay}
+        saved$={$(async (pid: string) => {
+          await nav(`/accounting/payments/?id=${pid}`);
+        })}
+      />
       <Confirm
         open={deleteOpen}
         title={`Delete ${c.name}?`}

@@ -21,7 +21,7 @@ The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hoppe
 - Rust stable (MSVC), edition 2024, Cargo workspace.
 
 ## Commands
-- `npm run app`: run the desktop app (`tauri dev`, Vite on port 5173).
+- `npm run app`: run the desktop app (`tauri dev`, Vite on port 5173). After adding a route folder, restart it: a running Vite won't client-navigate to new routes.
 - `npm run build`: build the frontend, typecheck and lint (needs to pass).
 - `npm run bindings`: regenerate `src/lib/bindings.ts`. Debug app starts also regenerate it. Commit the file.
 - `cargo test -p sanco-core -p sanco-net`: core, sync and network tests. Keep tests in these crates, because Tauri test binaries crash on Windows (`STATUS_ENTRYPOINT_NOT_FOUND`, missing comctl32 manifest).
@@ -99,6 +99,8 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR (requested → approved → delivered, or cancelled; a delivered DR is voided, which returns its stock). DR lines name their lot.
 - **Don't add edit locks** (user decision, 2026-10-22): BD requests (also won), bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
+- **Payments** (cash, check, bank transfer) get automatic `PAY` numbers plus an optional OR/CR no. A check is a payment with check fields; it counts as paid from receipt until it bounces or is replaced (a posted payment with `replaces_id`; "replaced" is never stored). Allocations go only to the client's delivered DRs (derived ids, cleared not deleted); the unapplied rest is credit. A DR with payments applied can't be voided or edited below what's paid.
+- **Receivables** = delivered DR gross − counting allocations (`v_receivables`). Aging counts days past due = delivery + client terms.
 
 ## Glossary
 - **BD:** Business Development. Client and prospect requests and inquiries (open → quoted → won/lost).

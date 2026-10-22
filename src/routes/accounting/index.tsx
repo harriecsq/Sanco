@@ -15,7 +15,8 @@ import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { DrRequestModal } from "~/components/sales/dr-request";
 import { DR_STATUS, DrNo, DrStatusBadge, Totals } from "~/components/sales/sales";
-import { Alert, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { CHECK_STATUS, METHOD_LABEL } from "~/components/accounting/accounting";
 import {
   btnDanger,
   btnPrimary,
@@ -29,6 +30,8 @@ import {
 } from "~/components/ui/styles";
 
 const TABLES = [
+  "payments",
+  "payment_allocations",
   "delivery_receipts",
   "dr_lines",
   "bookings",
@@ -137,6 +140,7 @@ const DrList = component$(() => {
                 <th class={th}>From</th>
                 <th class={th}>Items</th>
                 <th class={[th, "text-right"]}>Gross</th>
+                <th class={[th, "text-right"]}>Balance</th>
                 <th class={th}>Status</th>
               </tr>
             </thead>
@@ -165,6 +169,17 @@ const DrList = component$(() => {
                   <td class={td}>{d.from_location_name ?? "—"}</td>
                   <td class={td}>{d.summary}</td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                  <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                    {d.status !== "delivered" ? (
+                      "—"
+                    ) : d.balance_c === 0 ? (
+                      <Badge tone="brand">Paid</Badge>
+                    ) : (
+                      <span class={d.balance_c < 0 ? "text-amber-800" : d.due_date && d.due_date < todayManila() ? "text-danger" : ""}>
+                        {formatPeso(d.balance_c)}
+                      </span>
+                    )}
+                  </td>
                   <td class={td}>
                     <DrStatusBadge d={d} />
                   </td>
@@ -393,6 +408,68 @@ const DrView = component$<{ id: string }>(({ id }) => {
           </div>
         </section>
       </div>
+      {(d.status === "delivered" || det.payments.length > 0) && (
+        <section class={[card, "mt-4 overflow-x-auto"]}>
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+            <div>
+              <h2 class="font-semibold">Payments</h2>
+              {d.due_date && (
+                <p class={hint}>
+                  Due {formatDay(d.due_date)}
+                  {d.balance_c > 0 && d.due_date < todayManila() && " · overdue"}
+                </p>
+              )}
+            </div>
+            {d.status === "delivered" && (
+              <div class="text-right text-sm">
+                <span class="text-ink-muted">Paid</span>{" "}
+                <span class="tabular-nums">{formatPeso(d.paid_c)}</span>
+                <span class="mx-2 text-line">|</span>
+                <span class="text-ink-muted">{d.balance_c < 0 ? "Overpaid" : "Balance"}</span>{" "}
+                <span class={["font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
+                  {formatPeso(Math.abs(d.balance_c))}
+                </span>
+              </div>
+            )}
+          </div>
+          {det.payments.length === 0 ? (
+            <Empty>No payments applied yet.</Empty>
+          ) : (
+            <table class={table}>
+              <thead>
+                <tr>
+                  <th class={th}>Payment</th>
+                  <th class={th}>Received</th>
+                  <th class={th}>Method</th>
+                  <th class={[th, "text-right"]}>Applied</th>
+                </tr>
+              </thead>
+              <tbody>
+                {det.payments.map((p) => (
+                  <tr key={p.payment_id} class={p.counts ? "" : "text-ink-muted"}>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      {can(user, "accounting") ? (
+                        <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.payment_id}`}>
+                          {p.no ?? "—"}
+                        </Link>
+                      ) : (
+                        (p.no ?? "—")
+                      )}
+                    </td>
+                    <td class={[td, "whitespace-nowrap"]}>{formatDay(p.date)}</td>
+                    <td class={td}>
+                      {METHOD_LABEL[p.method]}
+                      {p.check_status && <span class="ml-2 text-xs">({CHECK_STATUS[p.check_status].label.toLowerCase()})</span>}
+                      {!p.counts && <span class={[hint, "block"]}>doesn't count</span>}
+                    </td>
+                    <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
       {d.booking_id && <DrRequestModal open={editOpen} bookingId={d.booking_id} dr={det} />}
       <Modal open={open} title={STEP_TITLE[step.value]}>

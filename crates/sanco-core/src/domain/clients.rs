@@ -187,13 +187,14 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     let used: bool = tx.conn().query_row(
         "SELECT EXISTS (SELECT 1 FROM bd_requests WHERE client_id = ?1 AND _deleted = 0)
              OR EXISTS (SELECT 1 FROM bookings WHERE client_id = ?1 AND _deleted = 0)
-             OR EXISTS (SELECT 1 FROM delivery_receipts WHERE client_id = ?1 AND _deleted = 0)",
+             OR EXISTS (SELECT 1 FROM delivery_receipts WHERE client_id = ?1 AND _deleted = 0)
+             OR EXISTS (SELECT 1 FROM payments WHERE client_id = ?1 AND _deleted = 0)",
         [id],
         |r| r.get(0),
     )?;
     if used {
         return Err(Error::Invalid(
-            "this client has requests, bookings or DRs; mark it inactive instead".into(),
+            "this client has requests, bookings, DRs or payments; mark it inactive instead".into(),
         ));
     }
     let rates: Vec<String> = {

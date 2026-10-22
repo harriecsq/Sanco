@@ -343,6 +343,36 @@ pub static TABLES: &[TableDef] = &[
             int("price_c"),
         ],
     },
+    TableDef {
+        name: "payments",
+        cols: &[
+            text("client_id"),
+            text("date"),
+            text("method"),
+            int("amount_c"),
+            text("reference"),
+            text("or_no"),
+            text("notes"),
+            text("check_bank"),
+            text("check_no"),
+            text("check_date"),
+            text("check_status"),
+            text("deposited_date"),
+            text("deposit_account"),
+            text("cleared_date"),
+            text("bounced_date"),
+            text("bounce_reason"),
+            text("replaces_id"),
+            text("status"),
+            int("voided_at"),
+            text("voided_by"),
+            text("void_reason"),
+        ],
+    },
+    TableDef {
+        name: "payment_allocations",
+        cols: &[text("payment_id"), text("dr_id"), int("amount_c")],
+    },
 ];
 
 pub fn table(name: &str) -> Result<&'static TableDef> {
