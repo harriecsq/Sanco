@@ -17,6 +17,7 @@ import {
   Splash,
 } from "~/components/shell/gate";
 import { Sidebar } from "~/components/shell/sidebar";
+import { UpdateBanner } from "~/components/shell/update-banner";
 
 // The whole app sits behind this gate: setup → first admin → sign-in →
 // app shell. Status and session come from Rust and refresh on its events.
@@ -71,6 +72,7 @@ export default component$(() => {
     <div class="flex h-screen">
       <Sidebar />
       <main class="min-w-0 flex-1 overflow-y-auto bg-surface-muted">
+        <UpdateBanner />
         <div class="mx-auto max-w-6xl px-6 py-6">
           <Slot />
         </div>

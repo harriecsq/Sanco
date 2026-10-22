@@ -1,4 +1,5 @@
 import { type QRL, useVisibleTask$ } from "@builder.io/qwik";
+import { useLocation } from "@builder.io/qwik-city";
 import { listen } from "@tauri-apps/api/event";
 import { useSession } from "./session";
 
@@ -30,5 +31,21 @@ export function useLiveLoad(tables: string[] | null, fn: QRL<() => unknown>) {
     cleanup(() => {
       off.then((f) => f());
     });
+  }, { strategy: "document-ready" });
+}
+
+/**
+ * Like `useLiveLoad`, and also reloads when the query string changes (for
+ * screens whose loader reads filters such as a date range).
+ */
+export function useLiveLoadUrl(tables: string[] | null, fn: QRL<() => unknown>) {
+  const session = useSession();
+  const loc = useLocation();
+  useLiveLoad(tables, fn);
+  // eslint-disable-next-line qwik/no-use-visible-task
+  useVisibleTask$(({ track }) => {
+    const search = track(() => loc.url.search);
+    if (!session.user || search === undefined) return;
+    fn();
   }, { strategy: "document-ready" });
 }

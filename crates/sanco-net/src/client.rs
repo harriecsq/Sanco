@@ -14,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 use crate::error::{Error, Result};
 use crate::server::{PokeBody, SNAPSHOT_HEADER};
 use crate::token::Token;
+use crate::update::{self, UpdateInfo};
 
 #[derive(Clone)]
 pub struct PeerClient {
@@ -84,6 +85,31 @@ impl PeerClient {
         }
         file.sync_all().await?;
         Ok(info)
+    }
+
+    /// What installer the peer can send, or `None` if it has none.
+    pub async fn update_info(&self, addr: &str) -> Result<Option<UpdateInfo>> {
+        match self.json(addr, self.get(addr, "/update")).await {
+            Ok(info) => Ok(Some(info)),
+            Err(Error::Status { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Downloads the peer's installer and checks it against `info`.
+    pub async fn installer(&self, addr: &str, info: &UpdateInfo) -> Result<Vec<u8>> {
+        let mut res = self
+            .send(addr, self.get(addr, "/update/installer"))
+            .await?;
+        let mut bytes = Vec::with_capacity(info.size as usize);
+        while let Some(chunk) = res.chunk().await.map_err(|e| unreachable(addr, e))? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() as u64 > info.size {
+                break;
+            }
+        }
+        update::verify(addr, info, &bytes)?;
+        Ok(bytes)
     }
 
     fn get(&self, addr: &str, path: &str) -> RequestBuilder {

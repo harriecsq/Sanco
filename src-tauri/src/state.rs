@@ -23,6 +23,11 @@ pub struct Args {
     pub name: Option<String>,
     /// Start hidden in the tray (used by autostart).
     pub minimized: bool,
+    /// Installer to share with older peers instead of the copy next to the
+    /// app (testing).
+    pub installer: Option<PathBuf>,
+    /// Version reported to peers instead of the build's (testing updates).
+    pub app_version: Option<String>,
 }
 
 impl Args {
@@ -39,7 +44,14 @@ impl Args {
                 Some((f, v)) => (f.to_string(), Some(v.to_string())),
                 None => (arg, None),
             };
-            let known = ["--data-dir", "--port", "--host", "--name"];
+            let known = [
+                "--data-dir",
+                "--port",
+                "--host",
+                "--name",
+                "--installer",
+                "--app-version",
+            ];
             if !known.contains(&flag.as_str()) {
                 continue;
             }
@@ -50,6 +62,8 @@ impl Args {
                 "--data-dir" => out.data_dir = Some(value.into()),
                 "--port" => out.port = value.parse().ok(),
                 "--host" => out.host = Some(value),
+                "--installer" => out.installer = Some(value.into()),
+                "--app-version" => out.app_version = Some(value),
                 _ => out.name = Some(value),
             }
         }
@@ -71,6 +85,10 @@ pub struct AppState {
     pub port: u16,
     pub host: Option<String>,
     pub extra_instance: bool,
+    /// This build's version (or `--app-version`).
+    pub app_version: String,
+    /// This version's installer, shared with peers on older versions.
+    pub installer: PathBuf,
     /// The sync node, once this PC has created or joined a workspace.
     pub node: Mutex<Option<Node>>,
     /// Why the node isn't running, if it failed to start.
@@ -94,6 +112,10 @@ impl AppState {
             name: args.name.unwrap_or_else(computer_name),
             port: args.port.unwrap_or(sanco_net::DEFAULT_PORT),
             host: args.host,
+            app_version: args
+                .app_version
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").into()),
+            installer: args.installer.unwrap_or_else(installer_path),
             node: Mutex::new(None),
             error: std::sync::Mutex::new(None),
             removed: std::sync::Mutex::new(false),
@@ -146,7 +168,8 @@ impl AppState {
     /// Starts syncing. Emits `sync-status` when peers change and
     /// `renumbered` when this PC's documents got new numbers.
     pub async fn start(&self, db: Db, changes: LocalChanges) -> Result<(), String> {
-        let mut cfg = NodeConfig::new(&self.name, env!("CARGO_PKG_VERSION"));
+        let mut cfg = NodeConfig::new(&self.name, &self.app_version);
+        cfg.installer = Some(self.installer.clone());
         cfg.port = self.port;
         cfg.host = self.host.clone();
         let app = self.app.clone();
@@ -416,3 +439,11 @@ fn computer_name() -> String {
 
 /// Timeout for downloading a join snapshot's first bytes.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The installer copy the NSIS setup leaves next to the app.
+fn installer_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join(sanco_net::update::INSTALLER_NAME)))
+        .unwrap_or_else(|| sanco_net::update::INSTALLER_NAME.into())
+}

@@ -313,6 +313,31 @@ export const commands = {
 	 */
 	receivePo: (receipt: ReceiptInput) => typedError<string, string>(__TAURI_INVOKE("receive_po", { receipt })),
 	voidPoReceipt: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_po_receipt", { id, reason })),
+	dashboard: () => typedError<Dashboard, string>(__TAURI_INVOKE("dashboard")),
+	listTodos: (includeDone: boolean) => typedError<TodoInfo[], string>(__TAURI_INVOKE("list_todos", { includeDone })),
+	/**  Creates or edits a to-do. Returns its id. */
+	saveTodo: (todo: TodoInput) => typedError<string, string>(__TAURI_INVOKE("save_todo", { todo })),
+	setTodoDone: (id: string, done: boolean) => typedError<null, string>(__TAURI_INVOKE("set_todo_done", { id, done })),
+	deleteTodo: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_todo", { id })),
+	reportSales: (range: DateRange, group: SalesGroup) => typedError<SalesRow[], string>(__TAURI_INVOKE("report_sales", { range, group })),
+	reportMargin: (range: DateRange) => typedError<MarginRow[], string>(__TAURI_INVOKE("report_margin", { range })),
+	reportPoSpend: (range: DateRange) => typedError<SpendRow[], string>(__TAURI_INVOKE("report_po_spend", { range })),
+	reportBd: (range: DateRange) => typedError<BdRow[], string>(__TAURI_INVOKE("report_bd", { range })),
+	reportReceivables: () => typedError<ReceivablesReport, string>(__TAURI_INVOKE("report_receivables")),
+	/**  Every payment and check: collections, PDC calendar, bounced checks. */
+	reportPayments: () => typedError<PaymentInfo[], string>(__TAURI_INVOKE("report_payments")),
+	/**  Every lot in stock (expiring ones carry `days_left`). */
+	reportStock: () => typedError<StockLot[], string>(__TAURI_INVOKE("report_stock")),
+	/**
+	 *  Writes a CSV to the Downloads folder (UTF-8 with BOM, so Excel shows ₱)
+	 *  and returns its path. `name` is like "sales-by-client".
+	 */
+	saveCsv: (name: string, content: string) => typedError<string, string>(__TAURI_INVOKE("save_csv", { name, content })),
+	/**  Opens Explorer with the file selected. */
+	showInFolder: (path: string) => typedError<null, string>(__TAURI_INVOKE("show_in_folder", { path })),
+	updateStatus: () => typedError<UpdateStatus, string>(__TAURI_INVOKE("update_status")),
+	/**  Downloads the installer from the PC at `addr`, starts it and quits. */
+	installUpdate: (addr: string) => typedError<null, string>(__TAURI_INVOKE("install_update", { addr })),
 };
 
 /* Types */
@@ -460,6 +485,22 @@ export type BdLineInput = {
 	qty: number,
 	/**  Quoted net unit price. */
 	price_c: number | null,
+};
+
+export type BdRow = {
+	/**  `YYYY-MM` of the request date. */
+	month: string,
+	total: number,
+	open: number,
+	quoted: number,
+	won: number,
+	lost: number,
+	/**  Won ÷ (won + lost), in basis points. */
+	win_rate_bp: number | null,
+	/**  Quoted prices of won requests, before VAT. */
+	won_net_c: number,
+	/**  Quoted prices of lost requests, before VAT. */
+	lost_net_c: number,
 };
 
 export type BdStatus = "open" | "quoted" | 
@@ -775,6 +816,17 @@ export type CostSheetInput = {
 	lines: CostLineInput[],
 };
 
+export type Dashboard = {
+	as_of: string,
+	kpis: Kpi[],
+	issues: Issue[],
+};
+
+export type DateRange = {
+	from: string | null,
+	to: string | null,
+};
+
 export type DeliverInput = {
 	/**  When the goods were delivered (not in the future). */
 	date: string,
@@ -913,6 +965,14 @@ export type FieldDiff = {
 	current: string,
 };
 
+export type Issue = {
+	key: string,
+	title: string,
+	detail: string,
+	count: number,
+	href: string,
+};
+
 export type ItemInfo = {
 	id: string,
 	code: string,
@@ -978,6 +1038,20 @@ export type ItemSuggestions = {
 	units: string[],
 };
 
+export type Kpi = {
+	key: string,
+	/**  The module it belongs to (for grouping). */
+	module: Module,
+	label: string,
+	value: number,
+	/**  `value` is centavos. */
+	money: boolean,
+	hint: string,
+	tone: Tone,
+	/**  Screen with the matching list. */
+	href: string,
+};
+
 export type Labeled<T> = {
 	id: T,
 	label: string,
@@ -1013,6 +1087,22 @@ export type LocationQty = {
 	qty: number,
 };
 
+export type MarginRow = {
+	item_id: string,
+	code: string | null,
+	name: string,
+	unit: string | null,
+	qty: number,
+	/**  Sales before VAT. */
+	net_c: number,
+	/**  Today's landed cost per unit, if the cost sheet is complete. */
+	unit_cost_c: number | null,
+	cost_c: number | null,
+	margin_c: number | null,
+	/**  Margin on price. */
+	margin_bp: number | null,
+};
+
 export type Module = "dashboard" | "bd" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
 
 export type NewUser = {
@@ -1034,6 +1124,13 @@ export type NumberFormat = {
 	reset_yearly: boolean,
 	/**  Minimum digits of the sequence number. */
 	pad: number,
+};
+
+export type OlderPeer = {
+	name: string | null,
+	version: string,
+	/**  It can't sync with this PC until it is updated (other schema). */
+	blocked: boolean,
 };
 
 /**  A delivered DR a payment can be allocated to. */
@@ -1214,6 +1311,8 @@ export type PoInfo = {
 	ordered_qty: number,
 	received_qty: number,
 	progress: ReceiveProgress,
+	/**  Some line got more than ordered (offline PCs received it twice). */
+	over_received: boolean,
 	/**  Posted receiving reports. */
 	receipt_count: number,
 	created_at: number,
@@ -1474,6 +1573,22 @@ export type RoleInput = {
 	perms: Perms,
 };
 
+export type SalesGroup = "client" | "item" | "month";
+
+export type SalesRow = {
+	/**  Client id, item id or `YYYY-MM`. */
+	key: string,
+	code: string | null,
+	label: string,
+	/**  Delivered DRs counted. */
+	drs: number,
+	/**  Units (item grouping only). */
+	qty: number | null,
+	net_c: number,
+	vat_c: number,
+	gross_c: number,
+};
+
 export type SeriesFormat = {
 	series: string,
 	label: string,
@@ -1496,6 +1611,23 @@ export type SessionUser = {
 	display_name: string,
 	roles: string[],
 	perms: Perms,
+};
+
+export type SpendRow = {
+	supplier_id: string,
+	supplier_code: string | null,
+	supplier_name: string,
+	/**  POs dated in the range, ordered or later (not drafts or cancelled). */
+	po_count: number,
+	/**  Their totals in PHP at each PO's FX. */
+	ordered_php_c: number,
+	/**  POs whose PHP total is unknown (unpriced lines or no FX). */
+	incomplete_pos: number,
+	/**  TT payments dated in the range. */
+	tt_count: number,
+	paid_php_c: number,
+	/**  TT payments without an FX rate (left out of `paid_php_c`). */
+	tt_without_fx: number,
 };
 
 export type StockDocDetail = {
@@ -1645,6 +1777,37 @@ export type SupplierInput = {
 	active: boolean,
 };
 
+export type TodoInfo = {
+	id: string,
+	title: string,
+	notes: string | null,
+	due: string | null,
+	assignee_id: string | null,
+	assignee_name: string | null,
+	done: boolean,
+	/**  The document this to-do is about. */
+	ref_tbl: string | null,
+	ref_id: string | null,
+	/**  That document's number, if it has one. */
+	ref_no: string | null,
+	created_at: number,
+	/**  `None` for to-dos the app wrote. */
+	created_by: string | null,
+	created_by_name: string | null,
+};
+
+export type TodoInput = {
+	id: string | null,
+	title: string,
+	notes: string,
+	/**  `YYYY-MM-DD`, or blank. */
+	due: string | null,
+	/**  `None` = shared with everyone. */
+	assignee_id: string | null,
+};
+
+export type Tone = "normal" | "warn" | "bad";
+
 export type TtInfo = {
 	id: string,
 	po_id: string,
@@ -1675,6 +1838,22 @@ export type TtInput = {
 	/**  Bank reference of the transfer. */
 	reference: string,
 	notes: string,
+};
+
+export type UpdateOffer = {
+	version: string,
+	/**  The PC that has it. */
+	from_name: string | null,
+	addr: string,
+};
+
+export type UpdateStatus = {
+	current: string,
+	offer: UpdateOffer | null,
+	/**  Peers on an older version. */
+	older: OlderPeer[],
+	/**  This PC has its installer to share with them. */
+	can_share: boolean,
 };
 
 export type UserInfo = {

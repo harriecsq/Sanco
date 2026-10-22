@@ -72,7 +72,11 @@ const PoList = component$(() => {
         (!f.status ||
           (f.status === "to_receive"
             ? ["ordered", "shipped", "arrived"].includes(p.status) && p.progress !== "full"
-            : p.status === f.status)),
+            : f.status === "late"
+              ? (p.status === "ordered" || p.status === "shipped") && !!p.expected_date && p.expected_date < todayManila()
+              : f.status === "over"
+                ? p.over_received
+                : p.status === f.status)),
     );
   });
   const costs = pos.value.some((p) => p.total_minor != null);
@@ -108,6 +112,8 @@ const PoList = component$(() => {
                 label: PO_STATUS[s].label,
               })),
               { value: "to_receive", label: "Still to receive" },
+              { value: "late", label: "Late (past expected date)" },
+              { value: "over", label: "Received more than ordered" },
             ],
           },
           {

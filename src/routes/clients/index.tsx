@@ -307,7 +307,8 @@ const ClientList = component$(() => {
           [c.code, c.name, c.contact_person, c.tin, c.phone].some((v) =>
             v?.toLowerCase().includes(q),
           )) &&
-        (!f.status || (f.status === "active") === c.active),
+        (!f.status ||
+          (f.status === "duplicate" ? c.duplicate_name : (f.status === "active") === c.active)),
     );
   });
 
@@ -339,6 +340,7 @@ const ClientList = component$(() => {
             options: [
               { value: "active", label: "Active" },
               { value: "inactive", label: "Inactive" },
+              { value: "duplicate", label: "Duplicate names" },
             ],
           },
         ]}

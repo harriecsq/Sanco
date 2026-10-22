@@ -86,10 +86,14 @@ impl Pc {
     }
 
     async fn restart(&mut self) {
+        self.restart_with(config(self.name)).await;
+    }
+
+    async fn restart_with(&mut self, cfg: NodeConfig) {
         let node = Node::start(
             self.db.clone(),
             self.changes.clone(),
-            config(self.name),
+            cfg,
             Arc::new(|_| {}),
         )
         .await
@@ -341,4 +345,54 @@ async fn numbers_are_claimed_over_http() {
         started.elapsed() < Duration::from_millis(500),
         "offline peer was waited for"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn newer_peer_shares_its_installer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Pc::first(dir.path(), "a").await;
+    let code = a.node().invite_code().unwrap();
+    let mut b = Pc::join(dir.path(), "b", &code).await;
+    wait_until("connected", || b.peer_state(&a) == Some(PeerState::Online)).await;
+    assert_eq!(b.node().update_offer(), None);
+
+    // A was updated to 0.2.0 and has its installer; B still runs 0.1.0.
+    let installer = dir.path().join("sanco-setup.exe");
+    let exe = b"MZ pretend this is Sanco 0.2.0".to_vec();
+    std::fs::write(&installer, &exe).unwrap();
+    let port = a.node().port();
+    a.stop().await;
+    let mut cfg = config("a");
+    cfg.port = port;
+    cfg.app_version = "0.2.0".into();
+    cfg.installer = Some(installer.clone());
+    a.restart_with(cfg).await;
+    b.node().sync_now().await;
+    let offer = b.node().update_offer().expect("an update offer");
+    assert_eq!(offer.version, "0.2.0");
+    assert_eq!(offer.name.as_deref(), Some("a"));
+    // A doesn't offer B's older version.
+    a.node().sync_now().await;
+    assert_eq!(a.node().update_offer(), None);
+
+    let path = b
+        .node()
+        .download_update(&offer.addr, &dir.path().join("updates"))
+        .await
+        .unwrap();
+    assert!(path.ends_with("Sanco_0.2.0_x64-setup.exe"));
+    assert_eq!(std::fs::read(&path).unwrap(), exe);
+    // B can't take an "update" from a PC with the same or an older version.
+    let b_addr = b.node().addr().unwrap();
+    assert!(a.node().download_update(&b_addr, dir.path()).await.is_err());
+
+    // Without an installer file, the offer stays but the download explains.
+    std::fs::remove_file(&installer).unwrap();
+    let err = b
+        .node()
+        .download_update(&offer.addr, &dir.path().join("updates"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no installer"), "{err}");
+    b.stop().await;
 }

@@ -36,6 +36,7 @@ use crate::joincode::JoinCode;
 use crate::server;
 use crate::tailscale;
 use crate::token::{SyncKey, Token};
+use crate::update::{self, UpdateOffer};
 
 /// How often the device row and Tailscale address are re-checked.
 const DEVICE_CHECK: Duration = Duration::from_secs(10 * 60);
@@ -61,6 +62,9 @@ pub struct NodeConfig {
     pub claim_timeout: Duration,
     /// Rows per pulled batch.
     pub batch_limit: usize,
+    /// This version's installer, shared with peers that run an older
+    /// version (`GET /update`). `None` when there is none (dev builds).
+    pub installer: Option<std::path::PathBuf>,
 }
 
 impl NodeConfig {
@@ -76,6 +80,7 @@ impl NodeConfig {
             timeout: Duration::from_secs(5),
             claim_timeout: Duration::from_secs(2),
             batch_limit: 500,
+            installer: None,
         }
     }
 }
@@ -309,6 +314,55 @@ impl Node {
             .await
     }
 
+    /// The newest version a known peer runs, if newer than ours. Peers seen
+    /// recently (online or blocked) come before offline ones.
+    pub fn update_offer(&self) -> Option<UpdateOffer> {
+        let ours = &self.inner.cfg.app_version;
+        self.peers()
+            .into_iter()
+            .filter_map(|p| {
+                let v = p.app_version.clone()?;
+                update::is_newer(&v, ours).then_some((p, v))
+            })
+            .max_by(|(a, va), (b, vb)| {
+                update::compare(va, vb).then_with(|| {
+                    let reachable = |p: &PeerStatus| p.state != PeerState::Offline;
+                    reachable(a).cmp(&reachable(b))
+                })
+            })
+            .map(|(p, version)| UpdateOffer {
+                version,
+                addr: p.addr,
+                name: p.name,
+            })
+    }
+
+    /// Downloads the installer of a newer version from `addr` into `dir`
+    /// and returns its path. Refuses anything not newer than this app.
+    pub async fn download_update(&self, addr: &str, dir: &std::path::Path) -> Result<std::path::PathBuf> {
+        let client = PeerClient::new(self.inner.token.clone(), Duration::from_secs(30));
+        let info = client.update_info(addr).await?.ok_or_else(|| Error::Status {
+            addr: addr.into(),
+            status: 404,
+            message: "that PC has no installer to share (it was not installed with the setup program)".into(),
+        })?;
+        if !update::is_newer(&info.version, &self.inner.cfg.app_version) {
+            return Err(Error::Protocol {
+                addr: addr.into(),
+                reason: format!("its installer is version {}, not newer", info.version),
+            });
+        }
+        let bytes = client.installer(addr, &info).await?;
+        tokio::fs::create_dir_all(dir).await?;
+        let name = format!("Sanco_{}_x64-setup.exe", info.version.replace(['/', '\\', ':'], "_"));
+        let path = dir.join(name);
+        let tmp = path.with_extension("partial");
+        tokio::fs::write(&tmp, &bytes).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        tracing::info!(version = %info.version, %addr, "downloaded an update");
+        Ok(path)
+    }
+
     /// Stops the server and loops, and waits for them.
     pub async fn shutdown(mut self) {
         let _ = self.stop.send(true);
@@ -509,6 +563,7 @@ impl Inner {
 
     async fn pull_from(&self, addr: &str) -> Result<(Hello, ApplyReport, bool)> {
         let hello = self.client.hello(addr).await?;
+        self.note_hello(addr, &hello);
         let h = hello.clone();
         self.blocking(move |db| db.check_peer(&h)).await?;
 
@@ -581,6 +636,18 @@ impl Inner {
                 }
             })
             .collect())
+    }
+
+    /// Remembers who answers at `addr` and its version, even if the pull is
+    /// then refused (another schema needs exactly this to offer an update).
+    fn note_hello(&self, addr: &str, hello: &Hello) {
+        let mut peers = self.peers();
+        let p = peers
+            .entry(addr.to_string())
+            .or_insert_with(|| PeerStatus::new(addr));
+        p.site = Some(hello.site.clone());
+        p.name = Some(hello.name.clone());
+        p.app_version = Some(hello.app_version.clone());
     }
 
     fn record_ok(&self, addr: &str, hello: &Hello, report: ApplyReport) {

@@ -27,6 +27,7 @@ The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hoppe
 - `cargo test -p sanco-core -p sanco-net`: core, sync and network tests. Keep tests in these crates, because Tauri test binaries crash on Windows (`STATUS_ENTRYPOINT_NOT_FOUND`, missing comctl32 manifest).
 - Several instances on one PC: `target/debug/sanco.exe --data-dir .dev/b --port 7472 --host 127.0.0.1` (flags also `--name`; `.dev/` is gitignored) next to `npm run app`. Headless peer: `cargo run -p sanco-net --example node -- --data-dir .dev/x --port 7480 --host 127.0.0.1 --create NAME | --join CODE`.
   - Instances started with `--data-dir` skip the single-instance lock and autostart. `--minimized` starts hidden in the tray.
+  - Testing updates: `--app-version 9.9.0` reports another version to peers, `--installer PATH` shares that file instead of `sanco-setup.exe` next to the exe.
   - Driving the UI from a script: start an instance with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9301` and its own `WEBVIEW2_USER_DATA_FOLDER`, then use the Chrome DevTools Protocol on that port (Node 24 has `WebSocket` built in).
 - `cargo clippy --workspace`: needs to stay clean.
 - `npx tauri build`: NSIS installer.
@@ -37,7 +38,7 @@ Cargo.toml              workspace
 crates/sanco-core/      pure Rust: db, sync, domain, repo. No Tauri dependency.
 crates/sanco-net/       sync transport: axum server, HTTP client, sync loop, join codes. No Tauri.
 src-tauri/              Tauri shell: commands/, state (CLI flags, session, opens the db, runs the node), tray
-  windows/hooks.nsh     NSIS hooks: firewall rule for the sync port
+  windows/hooks.nsh     NSIS hooks: firewall rule for the sync port, installer copy (sanco-setup.exe) for updates
 src/                    QwikCity SPA
   routes/               one folder per module; query params, no [id] routes
   routes/layout.tsx     the gate: setup → first admin → sign-in → app shell
@@ -49,7 +50,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 
 ## Architecture rules
 - **One write path.** All writes go through `sanco-core/src/repo.rs` (`db.write(actor, |tx| tx.insert/update/upsert/delete(...))`). It stamps the HLC and `_vv`, bumps `row_versions`, writes `audit_log` and fires the change listener (`ChangeEvent`, origin Local/Remote) so the shell can emit `db-changed` and poke peers.
-- **No stored derived values.** Stock on hand, receivables, PO receiving status and landed cost are SQL views or computed values, never columns.
+- **No stored derived values.** Stock on hand, receivables, PO receiving status and landed cost are SQL views or computed values, never columns. Dashboard KPIs and data issues (negative stock, numbers used twice, overpaid DRs, duplicates, …) are computed on request too (`domain/dashboard.rs`), not written as to-dos.
 - **Generated child rows** use deterministic IDs: `ids::derived_id(source_id, kind)` (UUIDv5). Client-item rates use `derived_id(client, item)`. Deletes always win the merge, so a derived-id row can never come back once deleted: clear it (e.g. null price) instead of deleting it.
 - **No SQLite foreign keys or UNIQUE constraints** on replicated tables (only the `id` primary key), because rows can arrive out of order. Duplicates are flagged by invariant checks instead.
 - **New replicated table:** add it to `db/registry.rs` and a new migration, with the standard meta columns first (`id, _hlc, _site, _vv, _deleted, created_at, created_by, updated_by`). `registry_matches_schema` in `tests/repo.rs` checks they agree. Columns are TEXT or INTEGER only.
@@ -82,6 +83,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Peers get a `POST /poke` after local commits and after a pull that accepted rows (so changes relay). Every PC also pulls every 30 s.
   - Peers are the replicated `devices` rows (id = site id, host = Tailscale IPv4) plus addresses that poked us. Plain HTTP: WireGuard already encrypts.
   - Joining: a join code (Crockford base32 of key + inviter `host:port` + checksum) → `GET /snapshot` → open as a copy (never `new_identity`) → `Db::finish_join`.
+  - **Updates** (`sanco-net/src/update.rs`): the installer copies itself next to the app; every PC serves it (`GET /update`, `/update/installer`). A peer's `app_version` is recorded from `/hello` even when the handshake then refuses it. A newer version shows a banner; "Update now" downloads it (size + SHA-256 checked), runs it with `/P /R` and quits. Bump the version in `Cargo.toml` (workspace) **and** `tauri.conf.json`.
 - **Handshake** (`GET /hello`, `Db::check_peer`) rejects: schema mismatch, clock skew over 2 minutes either way, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
 - **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`Node::reserve_number` over HTTP, i.e. `numbering::reserve`, then `numbering::assign` inside the document's write). **Validate read-only before reserving** (e.g. `inventory::validate`): a write that fails after the reservation leaves the claim held, so the next document skips a number. Posted stock documents are never edited; they are voided and entered again. Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
   - **Typed numbers:** DR numbers are typed from the BIR booklet unless Settings sets `number_mode.DR = auto`. They are claimed exactly (`numbering::reserve_exact`, `doc_numbers.manual = 1`) and are **never renumbered**: an offline clash gets to-dos for both users and a "used twice" badge until someone corrects one (`assign_or_change`).

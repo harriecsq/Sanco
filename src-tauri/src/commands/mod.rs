@@ -8,14 +8,17 @@ pub mod bd;
 pub mod bookings;
 pub mod clients;
 pub mod config;
+pub mod dashboard;
 pub mod delivery;
 pub mod inventory;
 pub mod items;
 pub mod locations;
 pub mod orders;
+pub mod reports;
 pub mod settings;
 pub mod suppliers;
 pub mod sync;
+pub mod update;
 pub mod users;
 
 use std::sync::Arc;

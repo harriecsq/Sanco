@@ -127,7 +127,7 @@ async fn status(state: &AppState) -> WorkspaceStatus {
         addr,
         port,
         data_dir: state.data_dir.display().to_string(),
-        app_version: env!("CARGO_PKG_VERSION").into(),
+        app_version: state.app_version.clone(),
         error: state.error(),
         needs_admin,
         removed: state.is_removed(),

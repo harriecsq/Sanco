@@ -133,6 +133,22 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::orders::get_po_receipt,
             commands::orders::receive_po,
             commands::orders::void_po_receipt,
+            commands::dashboard::dashboard,
+            commands::dashboard::list_todos,
+            commands::dashboard::save_todo,
+            commands::dashboard::set_todo_done,
+            commands::dashboard::delete_todo,
+            commands::reports::report_sales,
+            commands::reports::report_margin,
+            commands::reports::report_po_spend,
+            commands::reports::report_bd,
+            commands::reports::report_receivables,
+            commands::reports::report_payments,
+            commands::reports::report_stock,
+            commands::reports::save_csv,
+            commands::reports::show_in_folder,
+            commands::update::update_status,
+            commands::update::install_update,
         ])
         .dangerously_cast_bigints_to_number()
 }

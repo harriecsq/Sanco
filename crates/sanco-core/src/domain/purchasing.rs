@@ -228,6 +228,8 @@ pub struct PoInfo {
     pub ordered_qty: i64,
     pub received_qty: i64,
     pub progress: ReceiveProgress,
+    /// Some line got more than ordered (offline PCs received it twice).
+    pub over_received: bool,
     /// Posted receiving reports.
     pub receipt_count: i64,
     pub created_at: i64,
@@ -1046,6 +1048,7 @@ fn po_from_row(r: &rusqlite::Row) -> rusqlite::Result<PoInfo> {
         ordered_qty: 0,
         received_qty: 0,
         progress: ReceiveProgress::None,
+        over_received: false,
         receipt_count: 0,
     })
 }
@@ -1145,6 +1148,7 @@ fn fill(po: &mut PoInfo, lines: &[PoLine], payments: &[TtInfo], receipts: i64) {
     po.ordered_qty = lines.iter().map(|l| l.qty).sum();
     po.received_qty = lines.iter().map(|l| l.received).sum();
     po.receipt_count = receipts;
+    po.over_received = lines.iter().any(|l| l.received > l.qty);
     po.progress = if !lines.is_empty() && lines.iter().all(|l| l.received >= l.qty) {
         ReceiveProgress::Full
     } else if lines.iter().any(|l| l.received > 0) {

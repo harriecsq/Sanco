@@ -10,6 +10,8 @@
 //! | `POST /poke` | [`PokeBody`] → 204; we pull from the caller soon |
 //! | `POST /numbers/claim` | [`NumberClaim`] → [`ClaimReply`](sanco_core::sync::numbering::ClaimReply) |
 //! | `GET /snapshot` | → database file, info in the [`SNAPSHOT_HEADER`] header |
+//! | `GET /update` | → [`UpdateInfo`](crate::UpdateInfo) of this version's installer, or 404 |
+//! | `GET /update/installer` | → the installer file |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -28,6 +30,7 @@ use serde_json::json;
 use crate::error::Error;
 use crate::node::Inner;
 use crate::tailscale;
+use crate::update;
 
 /// JSON [`SnapshotInfo`](sanco_core::sync::peer::SnapshotInfo) of a snapshot download.
 pub const SNAPSHOT_HEADER: &str = "x-sanco-snapshot";
@@ -52,6 +55,8 @@ pub(crate) fn router(node: Arc<Inner>) -> Router {
         .route("/poke", post(poke))
         .route("/numbers/claim", post(claim))
         .route("/snapshot", get(snapshot))
+        .route("/update", get(update_info))
+        .route("/update/installer", get(update_installer))
         .layer(middleware::from_fn_with_state(node.clone(), guard))
         .with_state(node)
 }
@@ -165,4 +170,38 @@ impl IntoResponse for ApiError {
         tracing::warn!(error = %self.0, "sync request failed");
         reject(StatusCode::INTERNAL_SERVER_ERROR, &self.0.to_string())
     }
+}
+
+/// This version's installer, read fresh (it is small and rarely asked for).
+async fn installer(node: &Inner) -> Result<Option<(update::UpdateInfo, Vec<u8>)>, ApiError> {
+    let Some(path) = node.cfg.installer.clone() else {
+        return Ok(None);
+    };
+    let version = node.cfg.app_version.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        path.is_file().then(|| update::describe(&path, &version)).transpose()
+    })
+    .await
+    .map_err(|e| Error::Task(e.to_string()))?;
+    Ok(read?)
+}
+
+async fn update_info(State(node): State<Arc<Inner>>) -> Result<Response, ApiError> {
+    Ok(match installer(&node).await? {
+        Some((info, _)) => Json(info).into_response(),
+        None => reject(StatusCode::NOT_FOUND, "this PC has no installer to share"),
+    })
+}
+
+async fn update_installer(State(node): State<Arc<Inner>>) -> Result<Response, ApiError> {
+    let Some((info, bytes)) = installer(&node).await? else {
+        return Ok(reject(StatusCode::NOT_FOUND, "this PC has no installer to share"));
+    };
+    tracing::info!(version = %info.version, size = info.size, "sent the installer to a peer");
+    let mut res = bytes.into_response();
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    Ok(res)
 }
