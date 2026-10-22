@@ -20,7 +20,7 @@ export default component$(() => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "delivery_receipts"],
+    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
     $(async () => {
       try {
         lots.value = unwrap(await commands.expiringStock(MAX_WINDOW));

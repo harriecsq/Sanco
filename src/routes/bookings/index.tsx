@@ -579,6 +579,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
   const drOpen = useSignal(false);
   const action = useSignal<BookingAction>("confirm");
   const actionOpen = useSignal(false);
+  // Through a computed signal: a prop computed inline from `action` is
+  // treated as constant by the optimizer, so the title would go stale.
+  const actionTitle = useComputed$(() => ACTION_TEXT[action.value].title);
   const reason = useSignal("");
   const actionError = useSignal("");
   const busy = useSignal(false);
@@ -832,7 +835,7 @@ const BookingView = component$<{ id: string }>(({ id }) => {
       >
         <p>This deletes the draft on every PC. Its number isn't given out again.</p>
       </Confirm>
-      <Modal open={actionOpen} title={ACTION_TEXT[action.value].title}>
+      <Modal open={actionOpen} title={actionTitle.value}>
         <form
           class="space-y-3"
           preventdefault:submit

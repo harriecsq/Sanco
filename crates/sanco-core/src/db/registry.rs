@@ -373,6 +373,73 @@ pub static TABLES: &[TableDef] = &[
         name: "payment_allocations",
         cols: &[text("payment_id"), text("dr_id"), int("amount_c")],
     },
+    TableDef {
+        name: "purchase_orders",
+        cols: &[
+            text("supplier_id"),
+            text("date"),
+            text("currency"),
+            text("fx_rate"),
+            text("expected_date"),
+            text("status"),
+            text("supplier_ref"),
+            text("notes"),
+            int("ordered_at"),
+            text("ordered_by"),
+            text("shipped_date"),
+            text("arrived_date"),
+            int("closed_at"),
+            text("closed_by"),
+            text("cancel_reason"),
+        ],
+    },
+    TableDef {
+        name: "po_lines",
+        cols: &[
+            text("po_id"),
+            int("line_no"),
+            text("item_id"),
+            int("qty"),
+            int("price_minor"),
+            text("notes"),
+        ],
+    },
+    TableDef {
+        name: "supplier_payments",
+        cols: &[
+            text("po_id"),
+            text("date"),
+            text("currency"),
+            int("amount_minor"),
+            text("fx_rate"),
+            text("reference"),
+            text("notes"),
+        ],
+    },
+    TableDef {
+        name: "po_receipts",
+        cols: &[
+            text("po_id"),
+            text("date"),
+            text("location_id"),
+            text("notes"),
+            text("status"),
+            int("voided_at"),
+            text("voided_by"),
+            text("void_reason"),
+        ],
+    },
+    TableDef {
+        name: "po_receipt_lines",
+        cols: &[
+            text("receipt_id"),
+            int("line_no"),
+            text("po_line_id"),
+            text("item_id"),
+            text("expiry"),
+            int("qty"),
+        ],
+    },
 ];
 
 pub fn table(name: &str) -> Result<&'static TableDef> {

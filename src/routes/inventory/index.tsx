@@ -62,7 +62,7 @@ const StockList = component$(() => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "delivery_receipts"],
+    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
     $(async () => {
       try {
         stock.value = unwrap(await commands.stockOverview());
@@ -224,6 +224,7 @@ const MOVE_LABEL: Record<StockKind, string> = {
   adjustment: "Adjustment",
   transfer: "Transfer",
   delivery: "Delivered DR",
+  po_receipt: "Received on PO",
 };
 
 const ItemStockDetail = component$<{ id: string }>(({ id }) => {
@@ -235,7 +236,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "delivery_receipts", "doc_numbers"],
+    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts", "doc_numbers"],
     $(async () => {
       try {
         const all = unwrap(await commands.stockOverview());
@@ -359,7 +360,9 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                         href={
                           m.kind === "delivery"
                             ? `/accounting/?id=${m.doc_id}`
-                            : `/inventory/movements/?id=${m.doc_id}`
+                            : m.kind === "po_receipt"
+                              ? `/orders/receiving/?id=${m.doc_id}`
+                              : `/inventory/movements/?id=${m.doc_id}`
                         }
                       >
                         {m.no ?? KIND_LABEL[m.kind]}

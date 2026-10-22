@@ -17,6 +17,7 @@ export const KIND_LABEL: Record<StockKind, string> = {
   adjustment: "Adjustment",
   transfer: "Transfer",
   delivery: "Delivery",
+  po_receipt: "PO receipt",
 };
 
 /** Lot picker values besides an expiry date. */
@@ -121,7 +122,7 @@ export const StockDocModal = component$<{
   const busy = useSignal(false);
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "delivery_receipts"],
+    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
     $(async () => {
       try {
         data.value = {

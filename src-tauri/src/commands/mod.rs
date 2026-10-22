@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod inventory;
 pub mod items;
 pub mod locations;
+pub mod orders;
 pub mod settings;
 pub mod suppliers;
 pub mod sync;

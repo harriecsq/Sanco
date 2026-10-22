@@ -14,6 +14,7 @@ pub mod items;
 pub mod locations;
 pub mod payments;
 pub mod pricing;
+pub mod purchasing;
 pub mod receivables;
 pub mod roles;
 pub mod settings;

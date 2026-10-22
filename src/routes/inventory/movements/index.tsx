@@ -40,7 +40,7 @@ const DocList = component$(() => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["stock_docs", "stock_doc_lines", "items", "locations", "doc_numbers", "users"],
+    ["stock_docs", "stock_doc_lines", "po_receipts", "items", "locations", "doc_numbers", "users"],
     $(async () => {
       try {
         docs.value = unwrap(await commands.listStockDocs());
@@ -161,7 +161,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
   const busy = useSignal(false);
 
   useLiveLoad(
-    ["stock_docs", "stock_doc_lines", "items", "locations", "doc_numbers", "users"],
+    ["stock_docs", "stock_doc_lines", "po_receipts", "items", "locations", "doc_numbers", "users"],
     $(async () => {
       try {
         const d = unwrap(await commands.getStockDoc(id));

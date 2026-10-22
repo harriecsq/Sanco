@@ -15,7 +15,7 @@ export default component$(() => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "suppliers", "stock_docs", "stock_doc_lines", "delivery_receipts"],
+    ["items", "suppliers", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
     $(async () => {
       try {
         stock.value = unwrap(await commands.stockOverview());

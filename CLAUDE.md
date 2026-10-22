@@ -67,6 +67,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - No `routeLoader$` or `server$`.
   - No dynamic `[id]` routes. Use `?id=`.
   - Inside `$()` and tasks: don't mutate module-level `let`s (wrap in a module-level function) or capture local functions (make them module-level). Put `q:slot` on each element, not on a `<>` fragment.
+  - A child component prop computed inline from a signal (`title={MAP[sig.value].title}`) can be treated as constant and go stale. Pass a `useComputed$` signal's `.value` instead.
   - Route content is prerendered (in a hidden `q:template`) before anyone signs in. Load data with `useLiveLoad(tables, fn)` and read permissions inside `fn`, not at render. Visible tasks that load data use `{ strategy: "document-ready" }`.
 - **Permissions (RBAC)** are checked in Rust on every command, not just hidden in the UI. Start each command with `commands::require(&state, Module::X, Action::Y)` (or `require_save`, `require_view_any`, `require_admin`); it re-reads the user and roles from the database. Sensitive values (`Field::Costs`, `Field::Margins`) are stripped in Rust when `!user.perms.sees(field)` (DTOs have `strip(&perms)`), and saves ignore margin inputs from users who can't see margins.
 - **Seed rows** (default locations, charge types, roles) use `derived_id("<kind>", key)` and skip any existing row, even a deleted one. `domain::seed_defaults` runs at every node start. Roles are admin-editable: per module × action (view/create/edit/delete/approve), plus sensitive fields (costs, margins).
@@ -101,6 +102,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
 - **Payments** (cash, check, bank transfer) get automatic `PAY` numbers plus an optional OR/CR no. A check is a payment with check fields; it counts as paid from receipt until it bounces or is replaced (a posted payment with `replaces_id`; "replaced" is never stored). Allocations go only to the client's delivered DRs (derived ids, cleared not deleted); the unapplied rest is credit. A DR with payments applied can't be voided or edited below what's paid.
 - **Receivables** = delivered DR gross − counting allocations (`v_receivables`). Aging counts days past due = delivery + client terms.
+- **Purchase orders** (draft → ordered → shipped → arrived → closed, or cancelled) stay editable except when cancelled; a received line can't be removed or go below what was received. Goods come in through receiving reports (`RR`, one location, expiry per line), which are void-and-re-enter like stock documents; received quantities are computed (`v_po_received`). PO prices, totals, FX and TT payments are cost data (`Field::Costs`). Receiving never changes cost sheets; a PO button copies its prices and FX into them on request.
 
 ## Glossary
 - **BD:** Business Development. Client and prospect requests and inquiries (open → quoted → won/lost).

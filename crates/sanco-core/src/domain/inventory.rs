@@ -39,6 +39,9 @@ pub enum StockKind {
     /// A delivered DR (stock out). Recorded in Accounting, not as a stock
     /// document.
     Delivery,
+    /// A receiving report of a purchase order (stock in). Recorded in
+    /// Order, not as a stock document.
+    PoReceipt,
 }
 
 impl StockKind {
@@ -48,6 +51,7 @@ impl StockKind {
             StockKind::Adjustment => "adjustment",
             StockKind::Transfer => "transfer",
             StockKind::Delivery => "delivery",
+            StockKind::PoReceipt => "po_receipt",
         }
     }
 
@@ -57,6 +61,7 @@ impl StockKind {
             "adjustment" => Some(StockKind::Adjustment),
             "transfer" => Some(StockKind::Transfer),
             "delivery" => Some(StockKind::Delivery),
+            "po_receipt" => Some(StockKind::PoReceipt),
             _ => None,
         }
     }
@@ -68,6 +73,7 @@ impl StockKind {
             StockKind::Adjustment => series::ADJUSTMENT,
             StockKind::Transfer => series::TRANSFER,
             StockKind::Delivery => series::DR,
+            StockKind::PoReceipt => series::RECEIVING,
         }
     }
 }
@@ -206,6 +212,8 @@ pub struct StockMove {
     /// Positive in, negative out.
     pub qty: i64,
     pub created_at: i64,
+    /// The purchase order of a PO receiving report.
+    pub po_id: Option<String>,
 }
 
 // Writing -------------------------------------------------------------------
@@ -229,7 +237,7 @@ pub(crate) struct Effect {
     pub qty: i64,
 }
 
-fn live_location(conn: &Connection, id: &str) -> Result<()> {
+pub(crate) fn live_location(conn: &Connection, id: &str) -> Result<()> {
     let found: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM locations WHERE id = ?1 AND _deleted = 0)",
         [id],
@@ -248,6 +256,11 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
     if kind == StockKind::Delivery {
         return Err(Error::Invalid(
             "deliveries are recorded on DRs, in Accounting".into(),
+        ));
+    }
+    if kind == StockKind::PoReceipt {
+        return Err(Error::Invalid(
+            "goods from a purchase order are received in Order".into(),
         ));
     }
     let date =
@@ -432,7 +445,9 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     .map(drop)
 }
 
-fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>> {
+/// Net change a posted document (stock document, delivered DR or PO
+/// receiving report) makes to each lot.
+pub(crate) fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>> {
     let mut stmt = conn.prepare_cached(
         "SELECT item_id, location_id, expiry, SUM(qty) FROM v_stock_moves
          WHERE doc_id = ?1 GROUP BY item_id, location_id, expiry",
@@ -489,21 +504,22 @@ pub(crate) fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: 
     Ok(())
 }
 
-/// Whether any stock document or DR (even a voided or cancelled one) uses
-/// the location.
+/// Whether any stock document, DR or PO receiving report (even a voided or
+/// cancelled one) uses the location.
 pub fn location_in_use(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM stock_docs WHERE _deleted = 0
                         AND (location_id = ?1 OR to_location_id = ?1))
              OR EXISTS (SELECT 1 FROM delivery_receipts WHERE _deleted = 0
-                        AND from_location_id = ?1)",
+                        AND from_location_id = ?1)
+             OR EXISTS (SELECT 1 FROM po_receipts WHERE _deleted = 0 AND location_id = ?1)",
         [id],
         |r| r.get(0),
     )?)
 }
 
-/// Whether any stock document, BD request, booking or DR (in any status)
-/// has a line for the item.
+/// Whether any stock document, BD request, booking, DR or PO (in any
+/// status) has a line for the item.
 pub fn item_in_use(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM stock_doc_lines l
@@ -517,6 +533,9 @@ pub fn item_in_use(conn: &Connection, id: &str) -> Result<bool> {
                         WHERE l._deleted = 0 AND l.item_id = ?1)
              OR EXISTS (SELECT 1 FROM dr_lines l
                         JOIN delivery_receipts d ON d.id = l.dr_id AND d._deleted = 0
+                        WHERE l._deleted = 0 AND l.item_id = ?1)
+             OR EXISTS (SELECT 1 FROM po_lines l
+                        JOIN purchase_orders d ON d.id = l.po_id AND d._deleted = 0
                         WHERE l._deleted = 0 AND l.item_id = ?1)",
         [id],
         |r| r.get(0),
@@ -770,16 +789,20 @@ pub fn expiring(conn: &Connection, today: &str, within_days: i64) -> Result<Vec<
 }
 
 /// An item's posted movements, newest first. `doc_id` is a stock
-/// document, or a DR for deliveries.
+/// document, a DR for deliveries or a receiving report for PO receipts.
 pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.doc_id, n.no, m.kind, m.date, m.location_id, l.name, m.expiry, m.qty,
-                COALESCE(d.created_at, r.delivered_at, r.created_at, 0) AS at
+                COALESCE(d.created_at, r.delivered_at, r.created_at, p.created_at, 0) AS at,
+                p.po_id
          FROM v_stock_moves m
-         LEFT JOIN stock_docs d ON d.id = m.doc_id AND m.kind <> 'delivery'
+         LEFT JOIN stock_docs d ON d.id = m.doc_id
+                               AND m.kind NOT IN ('delivery', 'po_receipt')
          LEFT JOIN delivery_receipts r ON r.id = m.doc_id AND m.kind = 'delivery'
+         LEFT JOIN po_receipts p ON p.id = m.doc_id AND m.kind = 'po_receipt'
          LEFT JOIN doc_numbers n ON n.ref_id = m.doc_id
-                                AND n.ref_tbl IN ('stock_docs', 'delivery_receipts')
+                                AND n.ref_tbl IN ('stock_docs', 'delivery_receipts',
+                                                  'po_receipts')
                                 AND n._deleted = 0
          LEFT JOIN locations l ON l.id = m.location_id
          WHERE m.item_id = ?1
@@ -798,6 +821,7 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
                 expiry: r.get(6)?,
                 qty: r.get(7)?,
                 created_at: r.get(8)?,
+                po_id: r.get(9)?,
             },
         ))
     })?;

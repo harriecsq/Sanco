@@ -120,6 +120,19 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::accounting::receivables_report,
             commands::accounting::client_balance,
             commands::accounting::client_receivables,
+            commands::orders::list_pos,
+            commands::orders::get_po,
+            commands::orders::save_po,
+            commands::orders::set_po_status,
+            commands::orders::delete_po,
+            commands::orders::po_to_cost_sheets,
+            commands::orders::list_po_payments,
+            commands::orders::save_po_payment,
+            commands::orders::delete_po_payment,
+            commands::orders::list_po_receipts,
+            commands::orders::get_po_receipt,
+            commands::orders::receive_po,
+            commands::orders::void_po_receipt,
         ])
         .dangerously_cast_bigints_to_number()
 }

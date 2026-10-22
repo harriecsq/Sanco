@@ -274,6 +274,45 @@ export const commands = {
 	clientBalance: (clientId: string) => typedError<ClientBalance, string>(__TAURI_INVOKE("client_balance", { clientId })),
 	/**  A client's unpaid delivered DRs, oldest first. */
 	clientReceivables: (clientId: string) => typedError<ReceivableDr[], string>(__TAURI_INVOKE("client_receivables", { clientId })),
+	listPos: () => typedError<PoInfo[], string>(__TAURI_INVOKE("list_pos")),
+	/**  A PO with its lines, TT payments and receiving reports. */
+	getPo: (id: string) => typedError<{
+	po: PoInfo,
+	lines: PoLine[],
+	/**  Empty without the costs permission. */
+	payments: TtInfo[],
+	receipts: ReceiptInfo[],
+} | null, string>(__TAURI_INVOKE("get_po", { id })),
+	/**  Creates a draft (with a new shared number) or saves a PO. Returns its id. */
+	savePo: (po: PoInput) => typedError<string, string>(__TAURI_INVOKE("save_po", { po })),
+	setPoStatus: (id: string, change: PoStatusInput) => typedError<null, string>(__TAURI_INVOKE("set_po_status", { id, change })),
+	/**  Deletes a draft PO without payments. */
+	deletePo: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_po", { id })),
+	/**
+	 *  Copies the PO's prices, currency and FX into its items' cost sheets.
+	 *  Returns the item codes updated.
+	 */
+	poToCostSheets: (id: string) => typedError<string[], string>(__TAURI_INVOKE("po_to_cost_sheets", { id })),
+	/**  Every TT payment. Needs the costs permission. */
+	listPoPayments: () => typedError<TtInfo[], string>(__TAURI_INVOKE("list_po_payments")),
+	/**  Adds or saves a TT payment. Returns its id. */
+	savePoPayment: (payment: TtInput) => typedError<string, string>(__TAURI_INVOKE("save_po_payment", { payment })),
+	deletePoPayment: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_po_payment", { id })),
+	listPoReceipts: () => typedError<ReceiptInfo[], string>(__TAURI_INVOKE("list_po_receipts")),
+	/**
+	 *  A receiving report with its lines. Inventory may read it too (an item's
+	 *  stock history links to it).
+	 */
+	getPoReceipt: (id: string) => typedError<{
+	receipt: ReceiptInfo,
+	lines: ReceiptLine[],
+} | null, string>(__TAURI_INVOKE("get_po_receipt", { id })),
+	/**
+	 *  Posts a receiving report with a new shared number: the goods are in
+	 *  stock. Returns its id.
+	 */
+	receivePo: (receipt: ReceiptInput) => typedError<string, string>(__TAURI_INVOKE("receive_po", { receipt })),
+	voidPoReceipt: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_po_receipt", { id, reason })),
 };
 
 /* Types */
@@ -1118,6 +1157,137 @@ export type Perms = {
 	fields?: Field[],
 };
 
+/**  A status change. */
+export type PoAction = 
+/**  draft → ordered: sent to the supplier. */
+"order" | 
+/**  ordered → draft. Only before anything was received. */
+"back_to_draft" | 
+/**  ordered → shipped, on a date. */
+"ship" | 
+/**  ordered or shipped → arrived, on a date. */
+"arrive" | 
+/**  ordered, shipped or arrived → closed: nothing more will come. */
+"close" | 
+/**  closed → back to where it was. */
+"reopen" | 
+/**  → cancelled. Only before anything was received. */
+"cancel";
+
+export type PoDetail = {
+	po: PoInfo,
+	lines: PoLine[],
+	/**  Empty without the costs permission. */
+	payments: TtInfo[],
+	receipts: ReceiptInfo[],
+};
+
+export type PoInfo = {
+	id: string,
+	no: string | null,
+	/**  False while the number was given offline: it may still change. */
+	no_confirmed: boolean,
+	supplier_id: string | null,
+	supplier_code: string | null,
+	supplier_name: string | null,
+	date: string,
+	currency: string,
+	/**  Stripped without the costs permission. */
+	fx_rate: string | null,
+	expected_date: string | null,
+	status: PoStatus,
+	supplier_ref: string | null,
+	notes: string | null,
+	/**  Priced lines, in the PO's currency. Stripped without costs. */
+	total_minor: number | null,
+	/**  The total in PHP at the PO's FX. Stripped without costs. */
+	total_php_c: number | null,
+	/**  TT payments in the PO's currency. Stripped without costs. */
+	paid_minor: number | null,
+	/**  All TT payments in PHP, each at its own FX. Stripped without costs. */
+	paid_php_c: number | null,
+	/**  Lines without a price yet. */
+	unpriced_lines: number,
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+	ordered_qty: number,
+	received_qty: number,
+	progress: ReceiveProgress,
+	/**  Posted receiving reports. */
+	receipt_count: number,
+	created_at: number,
+	created_by_name: string | null,
+	ordered_at: number | null,
+	ordered_by_name: string | null,
+	shipped_date: string | null,
+	arrived_date: string | null,
+	closed_at: number | null,
+	closed_by_name: string | null,
+	cancel_reason: string | null,
+};
+
+export type PoInput = {
+	/**  `None` creates a draft PO. */
+	id: string | null,
+	supplier_id: string,
+	date: string,
+	/**  Ignored (kept, or the supplier's) for users who can't see costs. */
+	currency: string,
+	/**
+	 *  PHP per unit of `currency`; blank if not known yet. Ignored for PHP
+	 *  and for users who can't see costs.
+	 */
+	fx_rate: string,
+	/**  Expected arrival, `YYYY-MM-DD` or blank. */
+	expected_date: string,
+	/**  The supplier's proforma invoice or order number. */
+	supplier_ref: string,
+	notes: string,
+	lines: PoLineInput[],
+};
+
+export type PoLine = {
+	id: string,
+	item_id: string,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	tracks_expiry: boolean,
+	qty: number,
+	/**  Stripped without the costs permission. */
+	price_minor: number | null,
+	/**  Stripped without the costs permission. */
+	amount_minor: number | null,
+	notes: string | null,
+	received: number,
+	/**  Still to come (negative if receipts from offline PCs overshoot). */
+	remaining: number,
+};
+
+export type PoLineInput = {
+	/**  The line being edited; `None` for a new line. */
+	id: string | null,
+	item_id: string,
+	qty: number,
+	/**
+	 *  Unit price in the PO's currency (minor units). `None` = not known
+	 *  yet. Ignored for users who can't see costs.
+	 */
+	price_minor: number | null,
+	notes: string,
+};
+
+export type PoStatus = "draft" | "ordered" | "shipped" | "arrived" | "closed" | "cancelled";
+
+export type PoStatusInput = {
+	action: PoAction,
+	/**  Shipped or arrival date for `ship`/`arrive`; blank = today. */
+	date: string,
+	/**  Why a PO is cancelled. */
+	reason: string,
+};
+
 export type PriceQuote = {
 	rule: PriceRule,
 	/**  Unit price before VAT. */
@@ -1203,6 +1373,60 @@ export type RateInput = {
 	notes: string,
 };
 
+export type ReceiptDetail = {
+	receipt: ReceiptInfo,
+	lines: ReceiptLine[],
+};
+
+export type ReceiptInfo = {
+	id: string,
+	no: string | null,
+	no_confirmed: boolean,
+	po_id: string,
+	po_no: string | null,
+	supplier_id: string | null,
+	supplier_name: string | null,
+	date: string,
+	location_id: string | null,
+	location_name: string | null,
+	notes: string | null,
+	voided: boolean,
+	voided_at: number | null,
+	voided_by_name: string | null,
+	void_reason: string | null,
+	created_at: number,
+	created_by_name: string | null,
+	summary: string,
+	item_ids: string[],
+	line_count: number,
+};
+
+export type ReceiptInput = {
+	po_id: string,
+	date: string,
+	location_id: string,
+	notes: string,
+	lines: ReceiptLineInput[],
+};
+
+export type ReceiptLine = {
+	id: string,
+	po_line_id: string | null,
+	item_id: string,
+	item_code: string | null,
+	item_name: string | null,
+	unit: string | null,
+	expiry: string | null,
+	qty: number,
+};
+
+export type ReceiptLineInput = {
+	po_line_id: string,
+	/**  Required for items that track expiry; ignored for others. */
+	expiry: string | null,
+	qty: number,
+};
+
 /**  A delivered DR with a balance (positive: owed; negative: overpaid). */
 export type ReceivableDr = {
 	dr_id: string,
@@ -1231,6 +1455,9 @@ export type ReceivablesReport = {
 	credit_c: number,
 	uncleared_c: number,
 };
+
+/**  How much of a PO has been received. */
+export type ReceiveProgress = "none" | "partial" | "full";
 
 export type RoleInfo = {
 	id: string,
@@ -1329,7 +1556,12 @@ export type StockKind = "receipt" | "adjustment" | "transfer" |
  *  A delivered DR (stock out). Recorded in Accounting, not as a stock
  *  document.
  */
-"delivery";
+"delivery" | 
+/**
+ *  A receiving report of a purchase order (stock in). Recorded in
+ *  Order, not as a stock document.
+ */
+"po_receipt";
 
 export type StockLineInput = {
 	item_id: string,
@@ -1369,6 +1601,8 @@ export type StockMove = {
 	/**  Positive in, negative out. */
 	qty: number,
 	created_at: number,
+	/**  The purchase order of a PO receiving report. */
+	po_id: string | null,
 };
 
 export type SupplierChoice = {
@@ -1409,6 +1643,38 @@ export type SupplierInput = {
 	address: string,
 	notes: string,
 	active: boolean,
+};
+
+export type TtInfo = {
+	id: string,
+	po_id: string,
+	po_no: string | null,
+	supplier_id: string | null,
+	supplier_name: string | null,
+	date: string,
+	currency: string,
+	amount_minor: number,
+	fx_rate: string | null,
+	/**  The amount in PHP, if the FX is known. */
+	php_c: number | null,
+	reference: string | null,
+	notes: string | null,
+	created_at: number,
+	created_by_name: string | null,
+};
+
+export type TtInput = {
+	/**  `None` adds a payment. */
+	id: string | null,
+	po_id: string,
+	date: string,
+	currency: string,
+	amount_minor: number,
+	/**  PHP per unit of `currency`. Required unless PHP. */
+	fx_rate: string,
+	/**  Bank reference of the transfer. */
+	reference: string,
+	notes: string,
 };
 
 export type UserInfo = {

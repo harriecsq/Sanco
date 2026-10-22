@@ -136,7 +136,7 @@ pub fn update(tx: &mut WriteTx, input: &SupplierInput) -> Result<()> {
     tx.update(SUPPLIERS, id, data(input)?).map(drop)
 }
 
-/// Deletes a supplier that no item points to.
+/// Deletes a supplier that no item or purchase order points to.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(SUPPLIERS, id)?.is_none() {
         return Err(Error::Invalid("that supplier no longer exists".into()));
@@ -149,6 +149,16 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if items > 0 {
         return Err(Error::Invalid(format!(
             "{items} item(s) still use this supplier; change them first or deactivate the supplier"
+        )));
+    }
+    let pos: i64 = tx.conn().query_row(
+        "SELECT COUNT(*) FROM purchase_orders WHERE supplier_id = ?1 AND _deleted = 0",
+        [id],
+        |r| r.get(0),
+    )?;
+    if pos > 0 {
+        return Err(Error::Invalid(format!(
+            "this supplier has {pos} purchase order(s); deactivate it instead"
         )));
     }
     tx.delete(SUPPLIERS, id)

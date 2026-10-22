@@ -12,7 +12,7 @@ use tauri::State;
 use crate::commands::{Choice, blocking, require, require_save, require_view_any, signed_in};
 use crate::state::AppState;
 
-fn require_costs(user: &SessionUser) -> Result<(), String> {
+pub(crate) fn require_costs(user: &SessionUser) -> Result<(), String> {
     if user.perms.sees(Field::Costs) {
         Ok(())
     } else {
