@@ -46,3 +46,6 @@ lerna-debug.log*
 
 # Local test instances (--data-dir .dev/a)
 /.dev
+
+# graphify knowledge graph (local, rebuilt by graphify update)
+/graphify-out
