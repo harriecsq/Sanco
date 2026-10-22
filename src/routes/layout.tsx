@@ -18,6 +18,7 @@ import {
 } from "~/components/shell/gate";
 import { Sidebar } from "~/components/shell/sidebar";
 import { UpdateBanner } from "~/components/shell/update-banner";
+import { installDatePicker } from "~/lib/date-picker";
 
 // The whole app sits behind this gate: setup → first admin → sign-in →
 // app shell. Status and session come from Rust and refresh on its events.
@@ -40,6 +41,7 @@ export default component$(() => {
   // eslint-disable-next-line qwik/no-use-visible-task
   useVisibleTask$(
     ({ cleanup }) => {
+      installDatePicker();
       refresh();
       // Startup opens the database in the background; poll until it's done.
       const poll = setInterval(() => {
