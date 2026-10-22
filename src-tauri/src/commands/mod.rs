@@ -3,7 +3,12 @@
 //! what a user can't use.
 
 pub mod auth;
+pub mod clients;
+pub mod config;
+pub mod items;
+pub mod locations;
 pub mod settings;
+pub mod suppliers;
 pub mod sync;
 pub mod users;
 
@@ -11,6 +16,8 @@ use std::sync::Arc;
 
 use sanco_core::Db;
 use sanco_core::domain::auth::{Action, Module, SessionUser, load_user};
+use serde::Serialize;
+use specta::Type;
 
 use crate::state::AppState;
 
@@ -51,6 +58,38 @@ pub async fn require(
     let (db, user) = signed_in(state).await?;
     user.require(module, action).map_err(|e| e.to_string())?;
     Ok((db, user))
+}
+
+/// Like [`require`], with `create` for a new row and `edit` otherwise.
+pub async fn require_save(
+    state: &AppState,
+    module: Module,
+    is_new: bool,
+) -> Result<(Arc<Db>, SessionUser), String> {
+    let action = if is_new { Action::Create } else { Action::Edit };
+    require(state, module, action).await
+}
+
+/// Succeeds if the user may view any of `modules`.
+pub async fn require_view_any(
+    state: &AppState,
+    modules: &[Module],
+) -> Result<(Arc<Db>, SessionUser), String> {
+    let (db, user) = signed_in(state).await?;
+    if !modules.iter().any(|m| user.perms.can(*m, Action::View)) {
+        // Fails, with the first module named in the message.
+        user.require(modules[0], Action::View)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok((db, user))
+}
+
+/// A row to pick in a select: master data for other modules' forms.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct Choice {
+    pub id: String,
+    pub label: String,
+    pub active: bool,
 }
 
 pub async fn require_admin(state: &AppState) -> Result<(Arc<Db>, SessionUser), String> {

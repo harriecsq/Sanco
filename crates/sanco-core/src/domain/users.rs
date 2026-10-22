@@ -88,6 +88,7 @@ pub fn create_first_admin(db: &Db, input: NewUser) -> Result<SessionUser> {
             return Err(Error::Invalid("this workspace already has users".into()));
         }
         roles::seed(tx)?;
+        crate::domain::seed_defaults_tx(tx)?;
         let input = NewUser {
             role_ids: vec![roles::admin_role_id()],
             ..input

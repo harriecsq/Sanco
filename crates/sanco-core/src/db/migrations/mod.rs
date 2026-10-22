@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("0001_init.sql"),
     include_str!("0002_numbering.sql"),
     include_str!("0003_workspace.sql"),
+    include_str!("0004_master_data.sql"),
 ];
 
 /// Schema version this build writes. Peers must match it to sync.

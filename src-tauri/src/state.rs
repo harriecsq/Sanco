@@ -176,7 +176,19 @@ impl AppState {
                 });
             }
         });
-        let started = Node::start(Arc::new(db), changes, cfg, on_event).await;
+        // Default locations and charge types, for workspaces made before
+        // they existed. Idempotent, with fixed ids.
+        let db = Arc::new(db);
+        let seed = db.clone();
+        if let Err(e) =
+            tauri::async_runtime::spawn_blocking(move || sanco_core::domain::seed_defaults(&seed))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+        {
+            log::warn!("seeding defaults failed: {e}");
+        }
+        let started = Node::start(db, changes, cfg, on_event).await;
         let mut slot = self.node.lock().await;
         match started {
             Ok(node) => {

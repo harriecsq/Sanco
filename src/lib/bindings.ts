@@ -69,6 +69,99 @@ export const commands = {
 	auditTables: () => __TAURI_INVOKE<string[]>("audit_tables"),
 	pcSettings: () => typedError<PcSettings, string>(__TAURI_INVOKE("pc_settings")),
 	setAutostart: (enabled: boolean) => typedError<null, string>(__TAURI_INVOKE("set_autostart", { enabled })),
+	companyInfo: () => typedError<Company, string>(__TAURI_INVOKE("company_info")),
+	setCompanyInfo: (company: Company) => typedError<null, string>(__TAURI_INVOKE("set_company_info", { company })),
+	pricingSettings: () => typedError<PricingSettings, string>(__TAURI_INVOKE("pricing_settings")),
+	setVatRate: (vatBp: number) => typedError<null, string>(__TAURI_INVOKE("set_vat_rate", { vatBp })),
+	listChargeTypes: () => typedError<ChargeTypeInfo[], string>(__TAURI_INVOKE("list_charge_types")),
+	saveChargeType: (charge: ChargeTypeInput) => typedError<string, string>(__TAURI_INVOKE("save_charge_type", { charge })),
+	deleteChargeType: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_charge_type", { id })),
+	numberFormats: () => typedError<SeriesFormat[], string>(__TAURI_INVOKE("number_formats")),
+	setNumberFormat: (series: string, format: NumberFormat) => typedError<null, string>(__TAURI_INVOKE("set_number_format", { series, format })),
+	listClients: () => typedError<ClientInfo[], string>(__TAURI_INVOKE("list_clients")),
+	getClient: (id: string) => typedError<{
+	id: string,
+	code: string | null,
+	/**  False while the code was given offline: it may still change. */
+	code_confirmed: boolean,
+	name: string,
+	contact_person: string | null,
+	phone: string | null,
+	email: string | null,
+	tin: string | null,
+	address: string | null,
+	terms_days: number | null,
+	/**  Stripped without the margins permission. */
+	margin_tier_bp: number | null,
+	credit_limit_c: number | null,
+	notes: string | null,
+	active: boolean,
+	/**  Another live client has the same name (e.g. both added offline). */
+	duplicate_name: boolean,
+	rate_count: number,
+	created_at: number,
+} | null, string>(__TAURI_INVOKE("get_client", { id })),
+	/**  Creates (with a new shared code) or updates a client. Returns its id. */
+	saveClient: (client: ClientInput) => typedError<string, string>(__TAURI_INVOKE("save_client", { client })),
+	deleteClient: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_client", { id })),
+	/**  Every client, for pickers in other modules. */
+	clientOptions: () => typedError<Choice[], string>(__TAURI_INVOKE("client_options")),
+	listSuppliers: () => typedError<SupplierInfo[], string>(__TAURI_INVOKE("list_suppliers")),
+	/**  Creates (with a new shared code) or updates a supplier. Returns its id. */
+	saveSupplier: (supplier: SupplierInput) => typedError<string, string>(__TAURI_INVOKE("save_supplier", { supplier })),
+	deleteSupplier: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_supplier", { id })),
+	/**  Every supplier with its default currency, for pickers. */
+	supplierOptions: () => typedError<SupplierChoice[], string>(__TAURI_INVOKE("supplier_options")),
+	/**  Every location. Readable by anyone signed in: other modules pick from it. */
+	listLocations: () => typedError<LocationInfo[], string>(__TAURI_INVOKE("list_locations")),
+	saveLocation: (location: LocationInput) => typedError<string, string>(__TAURI_INVOKE("save_location", { location })),
+	deleteLocation: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_location", { id })),
+	listItems: () => typedError<ItemInfo[], string>(__TAURI_INVOKE("list_items")),
+	getItem: (id: string) => typedError<{
+	id: string,
+	code: string,
+	name: string,
+	unit: string | null,
+	category: string | null,
+	supplier_id: string | null,
+	supplier_name: string | null,
+	tracks_expiry: boolean,
+	reorder_level: number | null,
+	/**  Stripped without the margins permission. */
+	default_margin_bp: number | null,
+	notes: string | null,
+	active: boolean,
+	/**  Another live item has the same code. */
+	duplicate_code: boolean,
+	/**  Stripped without the costs permission. */
+	landed_cost_c: number | null,
+	/**  Landed cost at the default margin, before VAT. */
+	base_price_c: number | null,
+	created_at: number,
+} | null, string>(__TAURI_INVOKE("get_item", { id })),
+	itemSuggestions: () => typedError<ItemSuggestions, string>(__TAURI_INVOKE("item_suggestions")),
+	saveItem: (item: ItemInput) => typedError<string, string>(__TAURI_INVOKE("save_item", { item })),
+	deleteItem: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_item", { id })),
+	getCostSheet: (itemId: string) => typedError<{
+	item_id: string,
+	currency: string,
+	supplier_price_minor: number | null,
+	fx_rate: string | null,
+	notes: string | null,
+	lines: CostLine[],
+	landed: LandedCost | null,
+	/**  When the sheet itself was last saved, if ever (UTC ms). */
+	changed_at: number | null,
+} | null, string>(__TAURI_INVOKE("get_cost_sheet", { itemId })),
+	saveCostSheet: (sheet: CostSheetInput) => typedError<null, string>(__TAURI_INVOKE("save_cost_sheet", { sheet })),
+	/**  Client rates, by client and/or item. Clients screens show them too. */
+	listRates: (filter: RateFilter) => typedError<RateInfo[], string>(__TAURI_INVOKE("list_rates", { filter })),
+	/**  Sets or clears (price `None`) a client's rate for an item. */
+	saveRate: (rate: RateInput) => typedError<null, string>(__TAURI_INVOKE("save_rate", { rate })),
+	/**  The price a client pays for an item, and which rule produced it. */
+	priceQuote: (clientId: string, itemId: string) => typedError<PriceQuote, string>(__TAURI_INVOKE("price_quote", { clientId, itemId })),
+	/**  Every item, for pickers in other modules. */
+	itemOptions: () => typedError<Choice[], string>(__TAURI_INVOKE("item_options")),
 };
 
 /* Types */
@@ -115,6 +208,85 @@ export type Backups = {
 	keep_daily: number,
 };
 
+export type ChargeMode = 
+/**  A PHP amount per unit, in centavos. */
+"per_unit" | 
+/**  Basis points of the PHP base cost (supplier price × FX). */
+"pct";
+
+export type ChargeTypeInfo = {
+	id: string,
+	name: string,
+	mode: ChargeMode,
+	sort: number,
+	active: boolean,
+	/**  Cost sheets with a value for this charge. */
+	used_by: number,
+};
+
+export type ChargeTypeInput = {
+	id: string | null,
+	name: string,
+	mode: ChargeMode,
+	sort: number,
+	active: boolean,
+};
+
+/**  A row to pick in a select: master data for other modules' forms. */
+export type Choice = {
+	id: string,
+	label: string,
+	active: boolean,
+};
+
+export type ClientInfo = {
+	id: string,
+	code: string | null,
+	/**  False while the code was given offline: it may still change. */
+	code_confirmed: boolean,
+	name: string,
+	contact_person: string | null,
+	phone: string | null,
+	email: string | null,
+	tin: string | null,
+	address: string | null,
+	terms_days: number | null,
+	/**  Stripped without the margins permission. */
+	margin_tier_bp: number | null,
+	credit_limit_c: number | null,
+	notes: string | null,
+	active: boolean,
+	/**  Another live client has the same name (e.g. both added offline). */
+	duplicate_name: boolean,
+	rate_count: number,
+	created_at: number,
+};
+
+export type ClientInput = {
+	/**  `None` creates a client. */
+	id: string | null,
+	name: string,
+	contact_person: string,
+	phone: string,
+	email: string,
+	tin: string,
+	address: string,
+	terms_days: number | null,
+	/**  Ignored for users who can't see margins (the stored tier stays). */
+	margin_tier_bp: number | null,
+	credit_limit_c: number | null,
+	notes: string,
+	active: boolean,
+};
+
+export type Company = {
+	name: string,
+	address: string,
+	tin: string,
+	phone: string,
+	email: string,
+};
+
 export type ConflictInfo = {
 	id: string,
 	tbl: string,
@@ -129,6 +301,47 @@ export type ConflictInfo = {
 	row_deleted: boolean,
 	/**  Columns where the lost version differs from the current row. */
 	fields: FieldDiff[],
+};
+
+export type CostLine = {
+	charge_type_id: string,
+	name: string,
+	mode: ChargeMode,
+	/**  Centavos per unit, or basis points of the base cost. */
+	value: number | null,
+	/**  What the line adds per unit, once the base cost is known. */
+	amount_c: number | null,
+	/**  Inactive charge types only appear while they have a value. */
+	active: boolean,
+};
+
+export type CostLineInput = {
+	charge_type_id: string,
+	mode: ChargeMode,
+	/**  `None` clears the line. */
+	value: number | null,
+};
+
+export type CostSheetInfo = {
+	item_id: string,
+	currency: string,
+	supplier_price_minor: number | null,
+	fx_rate: string | null,
+	notes: string | null,
+	lines: CostLine[],
+	landed: LandedCost | null,
+	/**  When the sheet itself was last saved, if ever (UTC ms). */
+	changed_at: number | null,
+};
+
+export type CostSheetInput = {
+	item_id: string,
+	currency: string,
+	supplier_price_minor: number | null,
+	/**  PHP per unit of `currency`. Ignored for PHP. */
+	fx_rate: string,
+	notes: string,
+	lines: CostLineInput[],
 };
 
 export type DeviceInfo = {
@@ -157,9 +370,77 @@ export type FieldDiff = {
 	current: string,
 };
 
+export type ItemInfo = {
+	id: string,
+	code: string,
+	name: string,
+	unit: string | null,
+	category: string | null,
+	supplier_id: string | null,
+	supplier_name: string | null,
+	tracks_expiry: boolean,
+	reorder_level: number | null,
+	/**  Stripped without the margins permission. */
+	default_margin_bp: number | null,
+	notes: string | null,
+	active: boolean,
+	/**  Another live item has the same code. */
+	duplicate_code: boolean,
+	/**  Stripped without the costs permission. */
+	landed_cost_c: number | null,
+	/**  Landed cost at the default margin, before VAT. */
+	base_price_c: number | null,
+	created_at: number,
+};
+
+export type ItemInput = {
+	id: string | null,
+	code: string,
+	name: string,
+	unit: string,
+	category: string,
+	supplier_id: string | null,
+	tracks_expiry: boolean,
+	reorder_level: number | null,
+	/**  Ignored for users who can't see margins. */
+	default_margin_bp: number | null,
+	notes: string,
+	active: boolean,
+};
+
+export type ItemSuggestions = {
+	categories: string[],
+	units: string[],
+};
+
 export type Labeled<T> = {
 	id: T,
 	label: string,
+};
+
+/**  The numbers a cost sheet produces. */
+export type LandedCost = {
+	/**  Supplier price × FX. */
+	base_c: number,
+	/**  Sum of the charge lines. */
+	charges_c: number,
+	total_c: number,
+};
+
+export type LocationInfo = {
+	id: string,
+	name: string,
+	notes: string | null,
+	sort: number,
+	active: boolean,
+};
+
+export type LocationInput = {
+	id: string | null,
+	name: string,
+	notes: string,
+	sort: number,
+	active: boolean,
 };
 
 export type Module = "dashboard" | "bd" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
@@ -169,6 +450,20 @@ export type NewUser = {
 	display_name: string,
 	password: string,
 	role_ids: string[],
+};
+
+/**
+ *  Display format of a series. Stored as JSON in the setting
+ *  [`format_key`]; missing fields fall back to [`NumberFormat::default_for`].
+ */
+export type NumberFormat = {
+	prefix: string,
+	/**  Show the year, e.g. `DR-2026-0001`. */
+	year: boolean,
+	/**  Restart at 1 each year (Manila time). */
+	reset_yearly: boolean,
+	/**  Minimum digits of the sequence number. */
+	pad: number,
 };
 
 export type PcSettings = {
@@ -209,6 +504,78 @@ export type Perms = {
 	fields?: Field[],
 };
 
+export type PriceQuote = {
+	rule: PriceRule,
+	/**  Unit price before VAT. */
+	net_c: number | null,
+	/**
+	 *  The manual rate's VAT checkbox. `None` when no rate applied: the
+	 *  booking or DR decides.
+	 */
+	vat: boolean | null,
+	/**  VAT and gross at the current rate, if VAT applies. */
+	vat_amounts: VatAmounts | null,
+	vat_bp: number,
+	/**  Stripped without the costs permission. */
+	cost_c: number | null,
+	/**  Margin on price. Stripped without the margins permission. */
+	margin_bp: number | null,
+	below_cost: boolean,
+};
+
+/**  Which rule produced a price. */
+export type PriceRule = 
+/**  The manual client-item rate. */
+"manual" | 
+/**  Landed cost at the client's margin tier. */
+"client_tier" | 
+/**  Landed cost at the item's default margin. */
+"item_default" | 
+/**  No rate, and no landed cost or margin to work from. */
+"none";
+
+export type PricingSettings = {
+	/**  VAT rate in basis points (12% = 1200). */
+	vat_bp: number,
+};
+
+export type RateFilter = {
+	client_id: string | null,
+	item_id: string | null,
+};
+
+export type RateInfo = {
+	id: string,
+	client_id: string,
+	client_code: string | null,
+	client_name: string,
+	item_id: string,
+	item_code: string,
+	item_name: string,
+	unit: string | null,
+	price_c: number,
+	vat: boolean,
+	vat_amounts: VatAmounts,
+	notes: string | null,
+	/**  When the rate was last changed (UTC ms). */
+	changed_at: number,
+	/**  Stripped without the costs permission. */
+	cost_c: number | null,
+	/**  Stripped without the margins permission. */
+	margin_bp: number | null,
+	/**  Shown to everyone, so nobody sells below cost by accident. */
+	below_cost: boolean,
+};
+
+export type RateInput = {
+	client_id: string,
+	item_id: string,
+	/**  Net unit price. `None` clears the rate. */
+	price_c: number | null,
+	vat: boolean,
+	notes: string,
+};
+
 export type RoleInfo = {
 	id: string,
 	name: string,
@@ -224,6 +591,14 @@ export type RoleInput = {
 	perms: Perms,
 };
 
+export type SeriesFormat = {
+	series: string,
+	label: string,
+	format: NumberFormat,
+	/**  What the next number would look like (sequence 1). */
+	example: string,
+};
+
 /**  The signed-in user, with permissions as of now. */
 export type SessionUser = {
 	id: string,
@@ -231,6 +606,46 @@ export type SessionUser = {
 	display_name: string,
 	roles: string[],
 	perms: Perms,
+};
+
+export type SupplierChoice = {
+	id: string,
+	label: string,
+	active: boolean,
+	currency: string,
+};
+
+export type SupplierInfo = {
+	id: string,
+	code: string | null,
+	code_confirmed: boolean,
+	name: string,
+	/**  TW | CN | OTHER */
+	country: string,
+	/**  Default currency of its POs and prices. */
+	currency: string,
+	contact_person: string | null,
+	phone: string | null,
+	email: string | null,
+	address: string | null,
+	notes: string | null,
+	active: boolean,
+	duplicate_name: boolean,
+	item_count: number,
+	created_at: number,
+};
+
+export type SupplierInput = {
+	id: string | null,
+	name: string,
+	country: string,
+	currency: string,
+	contact_person: string,
+	phone: string,
+	email: string,
+	address: string,
+	notes: string,
+	active: boolean,
 };
 
 export type UserInfo = {
@@ -252,6 +667,12 @@ export type UserUpdate = {
 	display_name: string,
 	active: boolean,
 	role_ids: string[],
+};
+
+export type VatAmounts = {
+	net_c: number,
+	vat_c: number,
+	gross_c: number,
 };
 
 export type WorkspaceStatus = {

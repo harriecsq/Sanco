@@ -51,6 +51,7 @@ pub mod series {
 /// Display format of a series. Stored as JSON in the setting
 /// [`format_key`]; missing fields fall back to [`NumberFormat::default_for`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct NumberFormat {
     pub prefix: String,
     /// Show the year, e.g. `DR-2026-0001`.

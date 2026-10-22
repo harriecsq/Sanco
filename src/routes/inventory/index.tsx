@@ -5,7 +5,7 @@ import { ModulePlaceholder } from "~/components/shell/placeholder";
 export default component$(() => (
   <ModulePlaceholder
     module="inventory"
-    title="Inventory"
+    title="Stock"
     milestone="M6"
     items={[
       "Stock on hand by item, location and expiry",

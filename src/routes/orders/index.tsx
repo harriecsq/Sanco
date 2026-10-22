@@ -5,10 +5,9 @@ import { ModulePlaceholder } from "~/components/shell/placeholder";
 export default component$(() => (
   <ModulePlaceholder
     module="orders"
-    title="Order"
+    title="Purchase orders"
     milestone="M9"
     items={[
-      "Suppliers",
       "Purchase orders and TT payments",
       "Receiving into stock with expiry dates",
     ]}

@@ -3,8 +3,11 @@ import {
   Slot,
   useSignal,
   useVisibleTask$,
+  type QRL,
   type Signal,
 } from "@builder.io/qwik";
+import { errorText } from "~/lib/result";
+import { btnDanger, btnSecondary } from "./styles";
 
 export const PageHeader = component$<{ title: string; subtitle?: string }>(
   ({ title, subtitle }) => (
@@ -117,3 +120,75 @@ export const NoAccess = component$(() => (
     </p>
   </div>
 ));
+
+/** A labelled form control: the control goes in the slot. */
+export const Field = component$<{ label: string; hint?: string; class?: string }>(
+  ({ label: text, hint: help, class: cls }) => (
+    <label class={["block space-y-1", cls]}>
+      <span class="block text-sm font-medium text-ink">{text}</span>
+      <Slot />
+      {help && <span class="block text-xs text-ink-muted">{help}</span>}
+    </label>
+  ),
+);
+
+/** Label/value pairs for detail views. */
+export const InfoList = component$<{ rows: [string, string][] }>(({ rows }) => (
+  <dl class="grid grid-cols-[9rem_1fr] gap-x-3 gap-y-1.5 text-sm">
+    {rows.map(([k, v]) => (
+      <div key={k} class="contents">
+        <dt class="text-ink-muted">{k}</dt>
+        <dd class="break-words whitespace-pre-line">{v || "—"}</dd>
+      </div>
+    ))}
+  </dl>
+));
+
+/** Asks before something that can't be undone. `onConfirm$` runs on yes. */
+export const Confirm = component$<{
+  open: Signal<boolean>;
+  title: string;
+  confirmLabel?: string;
+  onConfirm$: QRL<() => unknown>;
+}>(({ open, title, confirmLabel = "Delete", onConfirm$ }) => {
+  const busy = useSignal(false);
+  const error = useSignal("");
+  return (
+    <Modal open={open} title={title}>
+      <div class="space-y-3">
+        {error.value && <Alert>{error.value}</Alert>}
+        <div class="text-sm">
+          <Slot />
+        </div>
+        <div class="flex justify-end gap-2">
+          <button
+            type="button"
+            class={btnSecondary}
+            onClick$={() => (open.value = false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy.value}
+            class={btnDanger}
+            onClick$={async () => {
+              busy.value = true;
+              error.value = "";
+              try {
+                await onConfirm$();
+                open.value = false;
+              } catch (e) {
+                error.value = errorText(e);
+              } finally {
+                busy.value = false;
+              }
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+});

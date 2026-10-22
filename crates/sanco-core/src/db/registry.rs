@@ -144,6 +144,88 @@ pub static TABLES: &[TableDef] = &[
             int("confirmed"),
         ],
     },
+    TableDef {
+        name: "clients",
+        cols: &[
+            text("name"),
+            text("contact_person"),
+            text("phone"),
+            text("email"),
+            text("tin"),
+            text("address"),
+            int("terms_days"),
+            int("margin_tier_bp"),
+            int("credit_limit_c"),
+            text("notes"),
+            int("active"),
+        ],
+    },
+    TableDef {
+        name: "suppliers",
+        cols: &[
+            text("name"),
+            text("country"),
+            text("currency"),
+            text("contact_person"),
+            text("phone"),
+            text("email"),
+            text("address"),
+            text("notes"),
+            int("active"),
+        ],
+    },
+    TableDef {
+        name: "locations",
+        cols: &[text("name"), text("notes"), int("sort"), int("active")],
+    },
+    TableDef {
+        name: "charge_types",
+        cols: &[text("name"), text("mode"), int("sort"), int("active")],
+    },
+    TableDef {
+        name: "items",
+        cols: &[
+            text("code"),
+            text("name"),
+            text("unit"),
+            text("category"),
+            text("supplier_id"),
+            int("tracks_expiry"),
+            int("reorder_level"),
+            int("default_margin_bp"),
+            text("notes"),
+            int("active"),
+        ],
+    },
+    TableDef {
+        name: "item_costs",
+        cols: &[
+            text("item_id"),
+            text("currency"),
+            int("supplier_price_minor"),
+            text("fx_rate"),
+            text("notes"),
+        ],
+    },
+    TableDef {
+        name: "item_cost_charges",
+        cols: &[
+            text("item_id"),
+            text("charge_type_id"),
+            text("mode"),
+            int("value"),
+        ],
+    },
+    TableDef {
+        name: "client_item_rates",
+        cols: &[
+            text("client_id"),
+            text("item_id"),
+            int("price_c"),
+            int("vat"),
+            text("notes"),
+        ],
+    },
 ];
 
 pub fn table(name: &str) -> Result<&'static TableDef> {

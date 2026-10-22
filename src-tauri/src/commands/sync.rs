@@ -5,6 +5,7 @@ use std::sync::Arc;
 use sanco_core::Db;
 use sanco_core::domain::auth::{self, SessionUser};
 use sanco_core::domain::users::{self, NewUser};
+use sanco_core::sync::numbering::Reservation;
 use sanco_net::{LocalChanges, Node, PeerState};
 use serde::Serialize;
 use specta::Type;
@@ -58,6 +59,22 @@ pub async fn with_node<T>(state: &AppState, f: impl FnOnce(&Node) -> T) -> Resul
             .unwrap_or_else(|| "this PC is not set up yet".into())
     })?;
     Ok(f(node))
+}
+
+/// Reserves the next shared number of `series` for the new row `ref_id`,
+/// claiming it with every reachable peer.
+pub async fn reserve_number(
+    state: &AppState,
+    series: &str,
+    ref_id: &str,
+) -> Result<Reservation, String> {
+    let node = state.node.lock().await;
+    let node = node
+        .as_ref()
+        .ok_or_else(|| "this PC is not set up yet".to_string())?;
+    node.reserve_number(series, ref_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Shared database handle, for commands that read or write data.

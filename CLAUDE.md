@@ -56,6 +56,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Units:**
   - Money is `i64` centavos (minor units for foreign currency).
   - FX rates are decimal text (`rust_decimal`).
+  - Percentages (margins, VAT, % charges) are integer basis points in `*_bp` columns: 20% = 2000. Round half away from zero.
   - Quantities are integers in the base unit.
   - Timestamps are UTC milliseconds, displayed in Asia/Manila.
   - Calendar dates are `YYYY-MM-DD`.
@@ -66,7 +67,8 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - No `routeLoader$` or `server$`.
   - No dynamic `[id]` routes. Use `?id=`.
   - Route content is prerendered (in a hidden `q:template`) before anyone signs in. Load data with `useLiveLoad(tables, fn)` and read permissions inside `fn`, not at render. Visible tasks that load data use `{ strategy: "document-ready" }`.
-- **Permissions (RBAC)** are checked in Rust on every command, not just hidden in the UI. Start each command with `commands::require(&state, Module::X, Action::Y)` (or `require_admin`); it re-reads the user and roles from the database. Sensitive values (`Field::Costs`, `Field::Margins`) are stripped in Rust when `!user.perms.sees(field)`. Roles are admin-editable: per module × action (view/create/edit/delete/approve), plus sensitive fields (costs, margins).
+- **Permissions (RBAC)** are checked in Rust on every command, not just hidden in the UI. Start each command with `commands::require(&state, Module::X, Action::Y)` (or `require_save`, `require_view_any`, `require_admin`); it re-reads the user and roles from the database. Sensitive values (`Field::Costs`, `Field::Margins`) are stripped in Rust when `!user.perms.sees(field)` (DTOs have `strip(&perms)`), and saves ignore margin inputs from users who can't see margins.
+- **Seed rows** (default locations, charge types, roles) use `derived_id("<kind>", key)` and skip any existing row, even a deleted one. `domain::seed_defaults` runs at every node start. Roles are admin-editable: per module × action (view/create/edit/delete/approve), plus sensitive fields (costs, margins).
 
 ## Sync
 - **Merge:** whole-row, keep the greatest `(deleted, hlc, site)`, so deletes win, then last writer. Each row carries a version vector `_vv` (site → last HLC it wrote). If neither side's `_vv` covers the other, the edits were concurrent: the losing version goes to `conflicts` (deterministic id and HLC taken from the lost version, so every PC records the same row) and is shown on the Dashboard.
