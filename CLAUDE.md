@@ -102,6 +102,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR (requested → approved → delivered, or cancelled; a delivered DR is voided, which returns its stock). DR lines name their lot.
 - **Don't add edit locks** (user decision, 2026-10-22): BD requests (also won), bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
+- **Bank accounts** are the company's own accounts (Accounting → Bank accounts). Check deposits, bank transfers received and TT payments pick one (`bank_account_id`); the check's own "bank" is the client's bank and stays free text. No running balance is kept, only what the app moved. Used accounts are made inactive, not deleted.
 - **Payments** (cash, check, bank transfer) get automatic `PAY` numbers plus an optional OR/CR no. A check is a payment with check fields; it counts as paid from receipt until it bounces or is replaced (a posted payment with `replaces_id`; "replaced" is never stored). Allocations go only to the client's delivered DRs (derived ids, cleared not deleted); the unapplied rest is credit. A DR with payments applied can't be voided or edited below what's paid.
 - **Receivables** = delivered DR gross − counting allocations (`v_receivables`). Aging counts days past due = delivery + client terms.
 - **Purchase orders** (draft → ordered → shipped → arrived → closed, or cancelled) stay editable except when cancelled; a received line can't be removed or go below what was received. Goods come in through receiving reports (`RR`, one location, expiry per line), which are void-and-re-enter like stock documents; received quantities are computed (`v_po_received`). PO prices, totals, FX and TT payments are cost data (`Field::Costs`). Receiving never changes cost sheets; a PO button copies its prices and FX into them on request.
@@ -116,7 +117,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Margin tier:** a client's default margin %.
 
 ## Modules
-Dashboard · Business Development · Booking · Accounting (DR, receivables, checks, payments) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
+Dashboard · Business Development · Booking · Accounting (DR, receivables, checks, payments, bank accounts) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
 
 ## UI
 - **Theme:** white surfaces. Brand teal-green `brand-500 #13876F` for primary actions, active nav, links and focus. `brand-50 #E8F5F1` for subtle fills. Text is `ink #1F2937`.

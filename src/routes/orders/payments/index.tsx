@@ -99,6 +99,7 @@ export default component$(() => {
                   <td class={[td, "text-right tabular-nums"]}>{t.php_c == null ? "—" : formatPeso(t.php_c)}</td>
                   <td class={td}>
                     {t.reference ?? "—"}
+                    {t.bank_account_name && <span class={[hint, "block"]}>from {t.bank_account_name}</span>}
                     {t.notes && <span class={[hint, "block"]}>{t.notes}</span>}
                   </td>
                 </tr>

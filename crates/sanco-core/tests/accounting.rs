@@ -229,6 +229,7 @@ fn pay_input(
             check_no: "0012345".into(),
             check_date: "2026-11-15".into(),
         }),
+        bank_account_id: None,
         replaces_id: None,
         allocations: allocs
             .iter()
@@ -258,7 +259,7 @@ fn step(db: &Db, actor: &Actor, id: &str, step: CheckStep, date: &str, reason: &
         CheckStepInput {
             step,
             date: date.into(),
-            account: "BDO 1234".into(),
+            bank_account_id: None,
             reason: reason.into(),
         },
     );

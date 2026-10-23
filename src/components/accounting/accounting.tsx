@@ -22,6 +22,7 @@ import { useLiveLoad } from "~/lib/events";
 import { formatDay, formatPeso, moneyText, parseMoney, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Badge, Field, Modal } from "~/components/ui/ui";
+import { BankAccountSelect } from "~/components/accounting/bank-account-select";
 import {
   btnDanger,
   btnGhost,
@@ -46,6 +47,7 @@ export const MONEY_TABLES = [
   "clients",
   "doc_numbers",
   "users",
+  "bank_accounts",
 ];
 
 export const METHOD_LABEL: Record<PayMethod, string> = {
@@ -115,6 +117,8 @@ export interface PaymentForm {
   bank: string;
   check_no: string;
   check_date: string;
+  /** Bank transfers: received into. */
+  bank_account_id: string;
   replaces_id: string;
   /** dr_id → amount text. */
   allocs: Record<string, string>;
@@ -132,6 +136,7 @@ export const blankPayment = (client_id = "", replaces_id = ""): PaymentForm => (
   bank: "",
   check_no: "",
   check_date: todayManila(),
+  bank_account_id: "",
   replaces_id,
   allocs: {},
 });
@@ -150,6 +155,7 @@ export const paymentForm = (d: PaymentDetail): PaymentForm => {
     bank: p.check?.bank ?? "",
     check_no: p.check?.check_no ?? "",
     check_date: p.check?.check_date ?? "",
+    bank_account_id: p.method === "bank_transfer" ? (p.bank_account_id ?? "") : "",
     replaces_id: p.replaces_id ?? "",
     allocs: Object.fromEntries(d.allocations.map((a) => [a.dr_id, moneyText(a.amount_c)])),
   };
@@ -270,6 +276,7 @@ export const PaymentFormModal = component$<{
             form.method === "check"
               ? { bank: form.bank, check_no: form.check_no, check_date: form.check_date }
               : null,
+          bank_account_id: form.method === "bank_transfer" ? form.bank_account_id || null : null,
           replaces_id: form.replaces_id || null,
           allocations,
         }),
@@ -378,8 +385,23 @@ export const PaymentFormModal = component$<{
             </Field>
           </div>
         )}
-        {form.method !== "check" && (
-          <Field label={form.method === "bank_transfer" ? "Transfer reference" : "Reference"}>
+        {form.method === "bank_transfer" && (
+          <div class="grid gap-3 sm:grid-cols-2">
+            <Field label="Received into">
+              <BankAccountSelect
+                value={form.bank_account_id}
+                onPick$={(id) => {
+                  form.bank_account_id = id;
+                }}
+              />
+            </Field>
+            <Field label="Transfer reference">
+              <input class={input} value={form.reference} onInput$={(_, el) => (form.reference = el.value)} />
+            </Field>
+          </div>
+        )}
+        {form.method === "cash" && (
+          <Field label="Reference">
             <input class={input} value={form.reference} onInput$={(_, el) => (form.reference = el.value)} />
           </Field>
         )}
@@ -551,7 +573,7 @@ export const CheckStepModal = component$<{
       const s = step.value;
       error.value = "";
       reason.value = "";
-      account.value = p?.check?.deposit_account ?? "";
+      account.value = p?.bank_account_id ?? "";
       const checkDate = p?.check?.check_date ?? "";
       const today = todayManila();
       date.value = s === "deposit" && checkDate > today ? checkDate : today;
@@ -569,7 +591,7 @@ export const CheckStepModal = component$<{
         await commands.checkStep(p.id, {
           step: step.value,
           date: date.value,
-          account: account.value,
+          bank_account_id: account.value || null,
           reason: reason.value,
         }),
       );
@@ -621,8 +643,13 @@ export const CheckStepModal = component$<{
           </Field>
         )}
         {s === "deposit" && (
-          <Field label="Deposited to" hint="Bank account, e.g. BDO 1234.">
-            <input class={input} value={account.value} onInput$={(_, el) => (account.value = el.value)} />
+          <Field label="Deposited to">
+            <BankAccountSelect
+              value={account.value}
+              onPick$={(id) => {
+                account.value = id;
+              }}
+            />
           </Field>
         )}
         {s === "bounce" && (

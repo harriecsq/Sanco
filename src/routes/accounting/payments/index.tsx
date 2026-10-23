@@ -69,7 +69,7 @@ const PaymentList = component$(() => {
     return payments.value.filter(
       (p) =>
         (!q ||
-          [p.no, p.client_name, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, ...p.dr_nos].some(
+          [p.no, p.client_name, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.dr_nos].some(
             (v) => v?.toLowerCase().includes(q),
           )) &&
         (!f.from || p.date >= f.from) &&
@@ -252,6 +252,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
     if (c.cleared_date) rows.push(["Cleared", formatDay(c.cleared_date)]);
     if (c.bounced_date) rows.push(["Bounced", `${formatDay(c.bounced_date)}: ${c.bounce_reason ?? ""}`]);
   } else {
+    if (p.method === "bank_transfer") rows.push(["Received into", p.bank_account_name ?? ""]);
     rows.push(["Reference", p.reference ?? ""]);
   }
   rows.push(["Notes", p.notes ?? ""], ["Recorded", `${formatDateTime(p.created_at)} by ${p.created_by_name ?? "—"}`]);

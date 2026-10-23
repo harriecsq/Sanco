@@ -19,7 +19,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::domain::{MAX_LINES, peso, require_date, require_text, text_opt};
+use crate::domain::{MAX_LINES, bank_accounts, peso, require_date, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids::derived_id;
 use crate::repo::WriteTx;
@@ -79,7 +79,7 @@ impl CheckStatus {
         }
     }
 
-    fn parse(s: Option<&str>) -> Self {
+    pub(crate) fn parse(s: Option<&str>) -> Self {
         match s {
             Some("deposited") => CheckStatus::Deposited,
             Some("cleared") => CheckStatus::Cleared,
@@ -129,6 +129,9 @@ pub struct PaymentInput {
     pub notes: String,
     /// Required for checks.
     pub check: Option<CheckInput>,
+    /// Bank transfers: the account it was received into. Ignored for other
+    /// methods (a check's account is set when it is deposited).
+    pub bank_account_id: Option<String>,
     /// A check of the client's (bounced or on hand) this payment replaces.
     /// Only when recording a payment.
     pub replaces_id: Option<String>,
@@ -140,7 +143,7 @@ pub struct PaymentInput {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStep {
-    /// on hand (or bounced) → deposited: `date`, `account`.
+    /// on hand (or bounced) → deposited: `date`, `bank_account_id`.
     Deposit,
     /// deposited → cleared: `date`.
     Clear,
@@ -156,7 +159,8 @@ pub enum CheckStep {
 pub struct CheckStepInput {
     pub step: CheckStep,
     pub date: String,
-    pub account: String,
+    /// The account it was deposited to.
+    pub bank_account_id: Option<String>,
     pub reason: String,
 }
 
@@ -170,6 +174,8 @@ pub struct CheckInfo {
     pub pdc: bool,
     pub status: CheckStatus,
     pub deposited_date: Option<String>,
+    /// The bank account's name (typed text for checks deposited before
+    /// bank accounts existed).
     pub deposit_account: Option<String>,
     pub cleared_date: Option<String>,
     pub bounced_date: Option<String>,
@@ -203,6 +209,9 @@ pub struct PaymentInfo {
     pub or_no: Option<String>,
     pub notes: Option<String>,
     pub check: Option<CheckInfo>,
+    /// Received into (bank transfers) or deposited to (checks).
+    pub bank_account_id: Option<String>,
+    pub bank_account_name: Option<String>,
     pub replaces_id: Option<String>,
     pub replaces_no: Option<String>,
     pub status: PaymentStatus,
@@ -274,6 +283,7 @@ pub fn allocation_id(payment_id: &str, dr_id: &str) -> String {
 struct Prepared {
     date: String,
     check: Option<(String, String, String)>,
+    bank_account: Option<String>,
     replaces: Option<String>,
     allocations: BTreeMap<String, i64>,
 }
@@ -282,17 +292,20 @@ struct Prepared {
 struct Current {
     method: PayMethod,
     replaces: Option<String>,
+    bank_account: Option<String>,
 }
 
 fn current(conn: &Connection, id: &str) -> Result<Current> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = conn
+    type Row = (Option<String>, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = conn
         .query_row(
-            "SELECT method, status, replaces_id FROM payments WHERE id = ?1 AND _deleted = 0",
+            "SELECT method, status, replaces_id, bank_account_id FROM payments
+             WHERE id = ?1 AND _deleted = 0",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let (method, status, replaces) =
+    let (method, status, replaces, bank_account) =
         row.ok_or_else(|| Error::Invalid("that payment no longer exists".into()))?;
     if status.as_deref() == Some("void") {
         return Err(Error::Invalid("this payment is void".into()));
@@ -300,6 +313,7 @@ fn current(conn: &Connection, id: &str) -> Result<Current> {
     Ok(Current {
         method: PayMethod::parse(method.as_deref()),
         replaces,
+        bank_account,
     })
 }
 
@@ -403,6 +417,14 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
         }
         _ => None,
     };
+    let bank_account = match input.method {
+        PayMethod::BankTransfer => bank_accounts::usable(
+            conn,
+            input.bank_account_id.as_deref(),
+            cur.as_ref().and_then(|c| c.bank_account.as_deref()),
+        )?,
+        _ => None,
+    };
     // The replaced check is fixed when the payment is recorded.
     let replaces = match &cur {
         Some(c) => c.replaces.clone(),
@@ -478,6 +500,7 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     Ok(Prepared {
         date,
         check,
+        bank_account,
         replaces,
         allocations,
     })
@@ -522,7 +545,7 @@ fn fields(input: &PaymentInput, p: &Prepared) -> serde_json::Value {
         Some((b, n, d)) => (Some(b.clone()), Some(n.clone()), Some(d.clone())),
         None => (None, None, None),
     };
-    json!({
+    let mut v = json!({
         "date": p.date,
         "amount_c": input.amount_c,
         "reference": text_opt(&input.reference),
@@ -531,7 +554,12 @@ fn fields(input: &PaymentInput, p: &Prepared) -> serde_json::Value {
         "check_bank": bank,
         "check_no": no,
         "check_date": date,
-    })
+    });
+    // A check's account belongs to its deposit step.
+    if input.method == PayMethod::BankTransfer {
+        v["bank_account_id"] = json!(p.bank_account);
+    }
+    v
 }
 
 /// Records a payment with the number reserved for it (`res.ref_id` is the
@@ -651,7 +679,12 @@ fn step_patch(
             json!({
                 "check_status": CheckStatus::Deposited.as_str(),
                 "deposited_date": d,
-                "deposit_account": text_opt(&input.account),
+                "bank_account_id": bank_accounts::usable(
+                    conn,
+                    input.bank_account_id.as_deref(),
+                    cur.bank_account.as_deref(),
+                )?,
+                "deposit_account": null,
                 "cleared_date": null,
                 "bounced_date": null,
                 "bounce_reason": null,
@@ -686,6 +719,7 @@ fn step_patch(
                 "check_status": CheckStatus::OnHand.as_str(),
                 "deposited_date": null,
                 "deposit_account": null,
+                "bank_account_id": null,
             }),
             CheckStatus::Cleared => json!({
                 "check_status": CheckStatus::Deposited.as_str(),
@@ -728,12 +762,13 @@ const SELECT: &str = "
     SELECT p.id, n.no, COALESCE(n.confirmed, 1), p.client_id, cn.no, c.name, p.date, p.method,
            COALESCE(p.amount_c, 0), COALESCE(v.counts, 0), p.reference, p.or_no, p.notes,
            p.check_bank, p.check_no, p.check_date, p.check_status, p.deposited_date,
-           p.deposit_account, p.cleared_date, p.bounced_date, p.bounce_reason,
+           COALESCE(ba.name, p.deposit_account), p.cleared_date, p.bounced_date, p.bounce_reason,
            (SELECT r.id FROM payments r WHERE r.replaces_id = p.id AND r._deleted = 0
             AND r.status = 'posted' ORDER BY r.created_at, r.id LIMIT 1),
            p.replaces_id, rn.no, p.status, p.created_at, uc.display_name, p.voided_at,
-           uv.display_name, p.void_reason
+           uv.display_name, p.void_reason, p.bank_account_id, ba.name
     FROM payments p
+    LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
     LEFT JOIN v_payment_counts v ON v.payment_id = p.id
     LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PAY' AND n._deleted = 0
     LEFT JOIN clients c ON c.id = p.client_id
@@ -788,6 +823,8 @@ fn from_row(r: &rusqlite::Row, today: &str) -> rusqlite::Result<PaymentInfo> {
         or_no: r.get(11)?,
         notes: r.get(12)?,
         check,
+        bank_account_id: r.get(31)?,
+        bank_account_name: r.get(32)?,
         replaces_id: r.get(23)?,
         replaces_no: r.get(24)?,
         status: if r.get::<_, Option<String>>(25)?.as_deref() == Some("void") {

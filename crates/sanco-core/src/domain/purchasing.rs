@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::domain::auth::{Field, Perms};
+use crate::domain::bank_accounts;
 use crate::domain::inventory::{self, Effect};
 use crate::domain::items::{self, ITEM_COSTS};
 use crate::domain::pricing::{self, check_currency};
@@ -172,6 +173,8 @@ pub struct TtInput {
     pub fx_rate: String,
     /// Bank reference of the transfer.
     pub reference: String,
+    /// The bank account it was paid from.
+    pub bank_account_id: Option<String>,
     pub notes: String,
 }
 
@@ -290,6 +293,9 @@ pub struct TtInfo {
     /// The amount in PHP, if the FX is known.
     pub php_c: Option<i64>,
     pub reference: Option<String>,
+    /// Paid from.
+    pub bank_account_id: Option<String>,
+    pub bank_account_name: Option<String>,
     pub notes: Option<String>,
     pub created_at: i64,
     pub created_by_name: Option<String>,
@@ -774,16 +780,7 @@ pub fn save_payment(tx: &mut WriteTx, input: &TtInput) -> Result<String> {
         }
         (_, text) => Some(pricing::parse_fx(text)?.to_string()),
     };
-    let data = json!({
-        "po_id": input.po_id,
-        "date": date,
-        "currency": currency,
-        "amount_minor": input.amount_minor,
-        "fx_rate": fx,
-        "reference": text_opt(&input.reference),
-        "notes": text_opt(&input.notes),
-    });
-    match &input.id {
+    let stored = match &input.id {
         Some(id) => {
             let row = tx
                 .get(SUPPLIER_PAYMENTS, id)?
@@ -791,6 +788,27 @@ pub fn save_payment(tx: &mut WriteTx, input: &TtInput) -> Result<String> {
             if row["po_id"].as_str() != Some(input.po_id.as_str()) {
                 return Err(Error::Invalid("that payment is on another PO".into()));
             }
+            Some(row)
+        }
+        None => None,
+    };
+    let bank_account = bank_accounts::usable(
+        tx.conn(),
+        input.bank_account_id.as_deref(),
+        stored.as_ref().and_then(|r| r["bank_account_id"].as_str()),
+    )?;
+    let data = json!({
+        "po_id": input.po_id,
+        "date": date,
+        "currency": currency,
+        "amount_minor": input.amount_minor,
+        "fx_rate": fx,
+        "reference": text_opt(&input.reference),
+        "bank_account_id": bank_account,
+        "notes": text_opt(&input.notes),
+    });
+    match &input.id {
+        Some(id) => {
             tx.update(SUPPLIER_PAYMENTS, id, data)?;
             Ok(id.clone())
         }
@@ -990,7 +1008,7 @@ pub fn void_receipt(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
 // Reading -------------------------------------------------------------------
 
 /// `minor × fx` in PHP centavos; PHP amounts as they are.
-fn php_of(currency: &str, minor: i64, fx: Option<&str>) -> Option<i64> {
+pub(crate) fn php_of(currency: &str, minor: i64, fx: Option<&str>) -> Option<i64> {
     if currency == "PHP" {
         return Some(minor);
     }
@@ -1092,8 +1110,9 @@ fn lines_of(conn: &Connection, po: Option<&str>) -> Result<Vec<(String, PoLine)>
 const TT_SELECT: &str = "
     SELECT t.id, t.po_id, n.no, p.supplier_id, s.name, t.date, COALESCE(t.currency, 'PHP'),
            COALESCE(t.amount_minor, 0), t.fx_rate, t.reference, t.notes, t.created_at,
-           uc.display_name
+           uc.display_name, t.bank_account_id, ba.name
     FROM supplier_payments t
+    LEFT JOIN bank_accounts ba ON ba.id = t.bank_account_id
     JOIN purchase_orders p ON p.id = t.po_id AND p._deleted = 0
     LEFT JOIN doc_numbers n ON n.ref_id = t.po_id AND n.series = 'PO' AND n._deleted = 0
     LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -1119,6 +1138,8 @@ fn payments_of(conn: &Connection, po: Option<&str>) -> Result<Vec<TtInfo>> {
             amount_minor: amount,
             fx_rate: fx,
             reference: r.get(9)?,
+            bank_account_id: r.get(13)?,
+            bank_account_name: r.get(14)?,
             notes: r.get(10)?,
             created_at: r.get(11)?,
             created_by_name: r.get(12)?,

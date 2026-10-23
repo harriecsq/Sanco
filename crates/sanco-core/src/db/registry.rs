@@ -367,6 +367,8 @@ pub static TABLES: &[TableDef] = &[
             int("voided_at"),
             text("voided_by"),
             text("void_reason"),
+            // Added in 0009: deposited to (checks), received into (transfers).
+            text("bank_account_id"),
         ],
     },
     TableDef {
@@ -414,6 +416,8 @@ pub static TABLES: &[TableDef] = &[
             text("fx_rate"),
             text("reference"),
             text("notes"),
+            // Added in 0009: paid from.
+            text("bank_account_id"),
         ],
     },
     TableDef {
@@ -438,6 +442,17 @@ pub static TABLES: &[TableDef] = &[
             text("item_id"),
             text("expiry"),
             int("qty"),
+        ],
+    },
+    TableDef {
+        name: "bank_accounts",
+        cols: &[
+            text("name"),
+            text("bank"),
+            text("account_no"),
+            text("currency"),
+            text("notes"),
+            int("active"),
         ],
     },
 ];

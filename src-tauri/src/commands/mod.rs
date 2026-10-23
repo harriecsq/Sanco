@@ -4,6 +4,7 @@
 
 pub mod accounting;
 pub mod auth;
+pub mod bank_accounts;
 pub mod bd;
 pub mod bookings;
 pub mod clients;

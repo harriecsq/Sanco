@@ -274,6 +274,12 @@ export const commands = {
 	clientBalance: (clientId: string) => typedError<ClientBalance, string>(__TAURI_INVOKE("client_balance", { clientId })),
 	/**  A client's unpaid delivered DRs, oldest first. */
 	clientReceivables: (clientId: string) => typedError<ReceivableDr[], string>(__TAURI_INVOKE("client_receivables", { clientId })),
+	listBankAccounts: () => typedError<BankAccountInfo[], string>(__TAURI_INVOKE("list_bank_accounts")),
+	/**  What went into and out of an account, newest first. */
+	bankAccountMoves: (id: string) => typedError<BankMove[], string>(__TAURI_INVOKE("bank_account_moves", { id })),
+	/**  Adds or saves an account. Returns its id. */
+	saveBankAccount: (account: BankAccountInput) => typedError<string, string>(__TAURI_INVOKE("save_bank_account", { account })),
+	deleteBankAccount: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_bank_account", { id })),
 	listPos: () => typedError<PoInfo[], string>(__TAURI_INVOKE("list_pos")),
 	/**  A PO with its lines, TT payments and receiving reports. */
 	getPo: (id: string) => typedError<{
@@ -411,6 +417,76 @@ export type Backups = {
 	files: BackupFile[],
 	keep_daily: number,
 };
+
+export type BankAccountInfo = {
+	id: string,
+	name: string,
+	bank: string | null,
+	account_no: string | null,
+	currency: string,
+	notes: string | null,
+	active: boolean,
+	/**  Checks deposited here that haven't cleared or bounced yet. */
+	checks_pending_c: number,
+	checks_pending: number,
+	checks_cleared_c: number,
+	checks_bounced: number,
+	/**  Posted bank transfers from clients received here. */
+	transfers_in_c: number,
+	/**
+	 *  TT payments made from here, in PHP where the FX is known. Stripped
+	 *  without the costs permission.
+	 */
+	tt_out_php_c: number | null,
+	tt_count: number | null,
+	/**  Latest date of anything above. */
+	last_date: string | null,
+};
+
+export type BankAccountInput = {
+	/**  `None` adds an account. */
+	id: string | null,
+	/**  What staff pick from, e.g. "BDO Savings – Main". */
+	name: string,
+	bank: string,
+	account_no: string,
+	currency: string,
+	notes: string,
+	active: boolean,
+};
+
+/**  Something that went into or out of an account. */
+export type BankMove = {
+	kind: BankMoveKind,
+	/**  Payment id, or TT payment id. */
+	id: string,
+	/**  Deposit date for checks, payment date otherwise. */
+	date: string,
+	/**  PAY number, or the PO's number for a TT. */
+	no: string | null,
+	/**  The PO of a TT. */
+	po_id: string | null,
+	/**  The paying client, or the supplier paid by a TT. */
+	party_id: string | null,
+	party_name: string | null,
+	/**  Check bank and number, or the transfer's reference. */
+	detail: string | null,
+	/**  PHP; for a TT, the PHP amount if the FX is known. */
+	amount_c: number | null,
+	currency: string,
+	amount_minor: number,
+	check_status: CheckStatus | null,
+	cleared_date: string | null,
+	bounced_date: string | null,
+};
+
+export type BankMoveKind = 
+/**  A client's check deposited here. */
+"check_deposit" | 
+/**  A client's bank transfer received here. */
+"transfer_in" | 
+/**  A TT payment to a supplier made from here. */
+"tt_out";
 
 export type BdDetail = {
 	request: BdInfo,
@@ -641,6 +717,10 @@ export type CheckInfo = {
 	pdc: boolean,
 	status: CheckStatus,
 	deposited_date: string | null,
+	/**
+	 *  The bank account's name (typed text for checks deposited before
+	 *  bank accounts existed).
+	 */
 	deposit_account: string | null,
 	cleared_date: string | null,
 	bounced_date: string | null,
@@ -661,7 +741,7 @@ export type CheckStatus = "on_hand" | "deposited" | "cleared" | "bounced" |
 "replaced";
 
 export type CheckStep = 
-/**  on hand (or bounced) → deposited: `date`, `account`. */
+/**  on hand (or bounced) → deposited: `date`, `bank_account_id`. */
 "deposit" | 
 /**  deposited → cleared: `date`. */
 "clear" | 
@@ -676,7 +756,8 @@ export type CheckStep =
 export type CheckStepInput = {
 	step: CheckStep,
 	date: string,
-	account: string,
+	/**  The account it was deposited to. */
+	bank_account_id: string | null,
 	reason: string,
 };
 
@@ -1179,6 +1260,9 @@ export type PaymentInfo = {
 	or_no: string | null,
 	notes: string | null,
 	check: CheckInfo | null,
+	/**  Received into (bank transfers) or deposited to (checks). */
+	bank_account_id: string | null,
+	bank_account_name: string | null,
 	replaces_id: string | null,
 	replaces_no: string | null,
 	status: PaymentStatus,
@@ -1205,6 +1289,11 @@ export type PaymentInput = {
 	notes: string,
 	/**  Required for checks. */
 	check: CheckInput | null,
+	/**
+	 *  Bank transfers: the account it was received into. Ignored for other
+	 *  methods (a check's account is set when it is deposited).
+	 */
+	bank_account_id: string | null,
 	/**
 	 *  A check of the client's (bounced or on hand) this payment replaces.
 	 *  Only when recording a payment.
@@ -1821,6 +1910,9 @@ export type TtInfo = {
 	/**  The amount in PHP, if the FX is known. */
 	php_c: number | null,
 	reference: string | null,
+	/**  Paid from. */
+	bank_account_id: string | null,
+	bank_account_name: string | null,
 	notes: string | null,
 	created_at: number,
 	created_by_name: string | null,
@@ -1837,6 +1929,8 @@ export type TtInput = {
 	fx_rate: string,
 	/**  Bank reference of the transfer. */
 	reference: string,
+	/**  The bank account it was paid from. */
+	bank_account_id: string | null,
 	notes: string,
 };
 

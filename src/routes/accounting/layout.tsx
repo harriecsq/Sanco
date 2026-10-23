@@ -20,6 +20,7 @@ export default component$(() => {
                 { href: "/accounting/receivables/", label: "Receivables" },
                 { href: "/accounting/payments/", label: "Payments" },
                 { href: "/accounting/checks/", label: "Checks" },
+                { href: "/accounting/bank-accounts/", label: "Bank accounts" },
               ]
             : []),
         ]}

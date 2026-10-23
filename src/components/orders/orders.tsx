@@ -21,6 +21,7 @@ import {
 } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Badge, Field, Modal } from "~/components/ui/ui";
+import { BankAccountSelect } from "~/components/accounting/bank-account-select";
 import { btnGhost, btnPrimary, btnSecondary, hint, input, inputBase } from "~/components/ui/styles";
 
 type Tone = "brand" | "muted" | "danger" | "warning";
@@ -389,6 +390,8 @@ export interface TtForm {
   amount: string;
   fx_rate: string;
   reference: string;
+  /** Paid from. */
+  bank_account_id: string;
   notes: string;
 }
 
@@ -400,6 +403,7 @@ export const blankTt = (poId: string, currency: string, fx: string | null): TtFo
   amount: "",
   fx_rate: fx ?? "",
   reference: "",
+  bank_account_id: "",
   notes: "",
 });
 
@@ -411,6 +415,7 @@ export const ttToForm = (t: TtInfo): TtForm => ({
   amount: moneyText(t.amount_minor),
   fx_rate: t.fx_rate ?? "",
   reference: t.reference ?? "",
+  bank_account_id: t.bank_account_id ?? "",
   notes: t.notes ?? "",
 });
 
@@ -444,6 +449,7 @@ export const TtModal = component$<{ open: Signal<boolean>; form: TtForm }>(({ op
                 amount_minor: amount,
                 fx_rate: form.currency === "PHP" ? "" : form.fx_rate,
                 reference: form.reference,
+                bank_account_id: form.bank_account_id || null,
                 notes: form.notes,
               }),
             );
@@ -500,9 +506,19 @@ export const TtModal = component$<{ open: Signal<boolean>; form: TtForm }>(({ op
         {form.currency !== "PHP" && (
           <p class={hint}>In pesos: {php == null ? "—" : formatPeso(php)}</p>
         )}
-        <Field label="Bank reference">
-          <input class={input} value={form.reference} onInput$={(_, el) => (form.reference = el.value)} />
-        </Field>
+        <div class="grid grid-cols-2 gap-3">
+          <Field label="Paid from">
+            <BankAccountSelect
+              value={form.bank_account_id}
+              onPick$={(id) => {
+                form.bank_account_id = id;
+              }}
+            />
+          </Field>
+          <Field label="Bank reference">
+            <input class={input} value={form.reference} onInput$={(_, el) => (form.reference = el.value)} />
+          </Field>
+        </div>
         <Field label="Notes">
           <input class={input} value={form.notes} onInput$={(_, el) => (form.notes = el.value)} />
         </Field>

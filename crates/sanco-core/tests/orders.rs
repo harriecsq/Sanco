@@ -269,6 +269,7 @@ fn po_payments_and_receiving_into_stock() {
         amount_minor: 50_000,
         fx_rate: "56.00".into(),
         reference: "TT-1".into(),
+        bank_account_id: None,
         notes: String::new(),
     };
     let mut no_fx = tt.clone();
