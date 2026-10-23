@@ -68,7 +68,8 @@
     color: var(--color-brand-600);
     transition: rotate 0.15s;
   }
-  select:not([multiple]):open::picker-icon {
+  select:not([multiple]):open::picker-icon,
+  select[data-open]::picker-icon {
     rotate: 180deg;
   }
   select:not([multiple]):disabled {

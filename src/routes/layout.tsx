@@ -19,6 +19,7 @@ import {
 import { Sidebar } from "~/components/shell/sidebar";
 import { UpdateBanner } from "~/components/shell/update-banner";
 import { installDatePicker } from "~/lib/date-picker";
+import { installSelectSearch } from "~/lib/select-search";
 
 // The whole app sits behind this gate: setup → first admin → sign-in →
 // app shell. Status and session come from Rust and refresh on its events.
@@ -42,6 +43,7 @@ export default component$(() => {
   useVisibleTask$(
     ({ cleanup }) => {
       installDatePicker();
+      installSelectSearch();
       refresh();
       // Startup opens the database in the background; poll until it's done.
       const poll = setInterval(() => {
