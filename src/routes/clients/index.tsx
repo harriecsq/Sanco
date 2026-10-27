@@ -22,6 +22,7 @@ import {
   type PaymentInfo,
   type PayMethod,
   type RateInfo,
+  type ReceiptKind,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import {
@@ -52,6 +53,8 @@ import {
   DrNo,
   DrStatusBadge,
   PROGRESS_LABEL,
+  RECEIPT,
+  receiptHref,
   StatusBadge,
 } from "~/components/sales/sales";
 import {
@@ -430,20 +433,32 @@ const ClientList = component$(() => {
   );
 });
 
-/** A client's balance: owed, overdue, credit and limit. */
+/**
+ * A client's balance: owed, overdue, credit and limit. With `unpaidHref`
+ * (the client's page), the unpaid counts link to its DR and invoice tabs.
+ */
 const BalanceList = component$<{ b: ClientBalance; unpaidHref?: string }>(({ b, unpaidHref }) => {
   const over = b.credit_limit_c != null && b.balance_c > b.credit_limit_c;
+  const owed = [
+    { tab: "drs", n: b.open_drs, label: b.open_drs === 1 ? "DR" : "DRs" },
+    { tab: "invoices", n: b.open_invoices, label: b.open_invoices === 1 ? "invoice" : "invoices" },
+  ].filter((o, i) => o.n > 0 || (i === 0 && b.open_invoices === 0));
   return (
     <dl class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-sm">
       <dt class="text-ink-muted">
         Owed on{" "}
-        {unpaidHref && b.open_drs > 0 ? (
-          <Link class="text-brand-700 hover:underline" href={unpaidHref}>
-            {b.open_drs} DR(s)
-          </Link>
-        ) : (
-          `${b.open_drs} DR(s)`
-        )}
+        {owed.map((o, i) => (
+          <span key={o.tab}>
+            {i > 0 && " and "}
+            {unpaidHref && o.n > 0 ? (
+              <Link class="text-brand-700 hover:underline" href={`${unpaidHref}&tab=${o.tab}&status=unpaid`}>
+                {o.n} {o.label}
+              </Link>
+            ) : (
+              `${o.n} ${o.label}`
+            )}
+          </span>
+        ))}
       </dt>
       <dd class="text-right tabular-nums">{formatPeso(b.outstanding_c)}</dd>
       <dt class="text-ink-muted">Of that, overdue</dt>
@@ -471,7 +486,7 @@ const BalanceList = component$<{ b: ClientBalance; unpaidHref?: string }>(({ b, 
   );
 });
 
-type DetailTab = "bookings" | "drs" | "payments" | "rates";
+type DetailTab = "bookings" | "drs" | "invoices" | "payments" | "rates";
 
 /** Rows a tab shows before "Show more". */
 const PAGE = 50;
@@ -578,7 +593,9 @@ const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
   );
 });
 
-const DrsTab = component$<{ rows: DrInfo[] }>((props) => {
+/** The client's DRs or invoices. */
+const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
+  const k = RECEIPT[props.kind];
   const loc = useLocation();
   const limit = useSignal(PAGE);
   const shown = useComputed$(() => {
@@ -606,7 +623,7 @@ const DrsTab = component$<{ rows: DrInfo[] }>((props) => {
   return (
     <>
       <FilterBar
-        search="Search DR no., booking, items"
+        search={`Search ${k.name} no., booking, items`}
         dates
         selects={[
           {
@@ -619,23 +636,23 @@ const DrsTab = component$<{ rows: DrInfo[] }>((props) => {
                 label: DR_STATUS[s].label,
               })),
               { value: "void", label: "Void" },
-              { value: "no_number", label: "No DR no. yet" },
+              { value: "no_number", label: `No ${k.name} no. yet` },
             ],
           },
         ]}
       >
         <span class={hint}>
-          {shown.value.length} DR(s) · {formatPeso(unpaid)} unpaid
+          {shown.value.length} {shown.value.length === 1 ? k.name : k.plural} · {formatPeso(unpaid)} unpaid
         </span>
       </FilterBar>
       <section class={[card, "overflow-x-auto"]}>
         {shown.value.length === 0 ? (
-          <Empty>{props.rows.length ? "No DRs match." : "No DRs yet."}</Empty>
+          <Empty>{props.rows.length ? `No ${k.plural} match.` : `No ${k.plural} yet.`}</Empty>
         ) : (
           <table class={table}>
             <thead>
               <tr>
-                <th class={th}>DR no.</th>
+                <th class={th}>{k.title} no.</th>
                 <th class={th}>Date</th>
                 <th class={th}>Booking</th>
                 <th class={th}>Items</th>
@@ -648,7 +665,7 @@ const DrsTab = component$<{ rows: DrInfo[] }>((props) => {
               {shown.value.slice(0, limit.value).map((d) => (
                 <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
-                    <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
+                    <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
                       <DrNo d={d} />
                     </Link>
                   </td>
@@ -682,7 +699,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
     return props.rows.filter(
       (p) =>
         (!q ||
-          [p.no, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.dr_nos].some(
+          [p.no, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.receipts].some(
             (v) => v?.toLowerCase().includes(q),
           )) &&
         (!f.from || p.date >= f.from) &&
@@ -702,7 +719,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
   return (
     <>
       <FilterBar
-        search="Search no., OR, check, DR"
+        search="Search no., OR, check, DR, invoice"
         dates
         selects={[
           {
@@ -756,7 +773,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
                     {p.check && <span class={[hint, "block"]}>{checkText(p)}</span>}
                   </td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
-                  <td class={td}>{p.dr_nos.length ? p.dr_nos.map((n) => `DR ${n}`).join(", ") : "—"}</td>
+                  <td class={td}>{p.receipts.length ? p.receipts.join(", ") : "—"}</td>
                   <td class={td}>
                     <PaymentBadge p={p} />
                   </td>
@@ -780,6 +797,8 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const rates = useSignal<RateInfo[]>([]);
   const bookings = useSignal<BookingInfo[]>([]);
   const drs = useSignal<DrInfo[]>([]);
+  const drOnly = useComputed$(() => drs.value.filter((d) => d.kind === "dr"));
+  const invoices = useComputed$(() => drs.value.filter((d) => d.kind === "invoice"));
   const balance = useSignal<ClientBalance | null>(null);
   const payments = useSignal<PaymentInfo[]>([]);
   const payOpen = useSignal(false);
@@ -838,7 +857,13 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
       {
         key: "drs",
         label: "Delivery receipts",
-        count: drs.value.length,
+        count: drOnly.value.length,
+        show: can(user, "bookings") || can(user, "accounting"),
+      },
+      {
+        key: "invoices",
+        label: "Invoices",
+        count: invoices.value.length,
         show: can(user, "bookings") || can(user, "accounting"),
       },
       { key: "payments", label: "Payments and checks", count: payments.value.length, show: can(user, "accounting") },
@@ -951,7 +976,7 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
                 b={balance.value}
                 unpaidHref={
                   can(session.user, "bookings") || can(session.user, "accounting")
-                    ? `/clients/?id=${id}&tab=drs&status=unpaid`
+                    ? `/clients/?id=${id}`
                     : undefined
                 }
               />
@@ -961,7 +986,10 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         <div class="min-w-0">
           <TabNav label="Client records" tabs={tabs.value.nav} />
           {tabs.value.current === "bookings" && <BookingsTab rows={bookings.value} />}
-          {tabs.value.current === "drs" && <DrsTab rows={drs.value} />}
+          {tabs.value.current === "drs" && <DrsTab kind="dr" rows={drOnly.value} />}
+          {tabs.value.current === "invoices" && (
+            <DrsTab kind="invoice" rows={invoices.value} />
+          )}
           {tabs.value.current === "payments" && <PaymentsTab rows={payments.value} />}
           {tabs.value.current === "rates" && (
             <section class={card}>

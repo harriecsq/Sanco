@@ -32,7 +32,11 @@ const PEERS: usize = 4;
 const STEPS: usize = 1500;
 const MAX_SKEW_MS: u64 = 40_000;
 const SETTING_KEYS: u64 = 3;
-const SERIES: [&str; 2] = [numbering::series::DR, numbering::series::CLIENT];
+const SERIES: [&str; 3] = [
+    numbering::series::DR,
+    numbering::series::INVOICE,
+    numbering::series::CLIENT,
+];
 
 struct Peer {
     name: String,
@@ -92,6 +96,8 @@ struct Sim {
     peers: Vec<Peer>,
     linked: Vec<Vec<bool>>,
     todo_ids: Vec<String>,
+    /// Number rows freed at least once (a receipt switched type).
+    released: std::collections::BTreeSet<String>,
     written: Vec<Written>,
     counter: u64,
     with_restores: bool,
@@ -127,6 +133,7 @@ impl Sim {
             peers,
             linked: vec![vec![true; PEERS]; PEERS],
             todo_ids: Vec::new(),
+            released: Default::default(),
             written: Vec::new(),
             counter: 0,
             with_restores,
@@ -183,9 +190,13 @@ impl Sim {
                         self.restart(p, true);
                     }
                 }
-                93..98 => {
+                93..97 => {
                     let p = self.pick_peer();
                     self.numbered_write(p);
+                }
+                97..98 => {
+                    let p = self.pick_peer();
+                    self.release_number(p);
                 }
                 98..100 => {
                     let p = self.pick_peer();
@@ -311,6 +322,43 @@ impl Sim {
         self.stats.numbered += 1;
     }
 
+    /// Frees a document's number and, usually, gives it one in a random
+    /// series, as switching a receipt between DR and invoice does.
+    fn release_number(&mut self, p: usize) {
+        if self.todo_ids.is_empty() {
+            return;
+        }
+        let id = self.todo_ids[self.rng.below(self.todo_ids.len() as u64) as usize].clone();
+        let db = self.peers[p].db();
+        let Some(old) = SERIES
+            .into_iter()
+            .find(|s| db.read(|c| numbering::number_of(c, s, &id)).unwrap().is_some())
+        else {
+            return;
+        };
+        let new = (self.rng.below(4) > 0).then(|| SERIES[self.rng.below(SERIES.len() as u64) as usize]);
+        let res = new.map(|series| {
+            let links = self.links(p);
+            let peers: Vec<&dyn NumberPeer> = links.iter().map(|l| l as &dyn NumberPeer).collect();
+            numbering::reserve(db, &peers, series, &id).unwrap()
+        });
+        let actor = Actor::user(self.peers[p].name.clone());
+        let rid = id.clone();
+        db.write(actor, move |tx| {
+            numbering::release(tx, &rid, old)?;
+            if let Some(res) = &res {
+                numbering::assign_or_change(tx, res, "todos")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        self.released.insert(numbering::number_row_id(&id, old));
+        if let Some(series) = new {
+            self.released.insert(numbering::number_row_id(&id, series));
+        }
+        self.stats.writes += 1;
+    }
+
     fn resolve_clashes(&mut self, p: usize) -> usize {
         let links = self.links(p);
         let peers: Vec<&dyn NumberPeer> = links.iter().map(|l| l as &dyn NumberPeer).collect();
@@ -430,10 +478,10 @@ impl Sim {
             owned.extend(p.db().previous_sites().unwrap());
         }
         let str_of = |r: &Row, c: &str| r[c].as_str().unwrap().to_string();
+        // A freed number can meet a concurrent renumbering; nothing else may.
         assert!(
-            dump["conflicts"]
-                .iter()
-                .all(|c| c["tbl"] != json!("doc_numbers")),
+            dump["conflicts"].iter().all(|c| c["tbl"] != json!("doc_numbers")
+                || self.released.contains(c["row_id"].as_str().unwrap_or_default())),
             "seed {}: renumbering produced a concurrent edit",
             self.seed
         );
@@ -441,7 +489,7 @@ impl Sim {
         let mut nos: BTreeMap<(String, String), usize> = BTreeMap::new();
         for r in dump["doc_numbers"]
             .iter()
-            .filter(|r| r["_deleted"] == json!(0))
+            .filter(|r| r["_deleted"] == json!(0) && !r["seq"].is_null())
         {
             let key = (
                 str_of(r, "series"),

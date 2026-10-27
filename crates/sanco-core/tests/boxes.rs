@@ -596,6 +596,7 @@ fn booking(db: &Db, actor: &Actor, client: &str, item: &str, qty: i64) -> (Strin
 fn dr_input(booking: &str, line: &str, qty: i64, draws: Vec<(&str, i64)>) -> DrRequestInput {
     DrRequestInput {
         booking_id: booking.into(),
+        kind: None,
         date: TODAY.into(),
         from_location_id: warehouse(),
         deliver_to: String::new(),
@@ -618,7 +619,13 @@ fn dr_input(booking: &str, line: &str, qty: i64, draws: Vec<(&str, i64)>) -> DrR
 
 fn deliver(db: &Db, actor: &Actor, input: DrRequestInput, no: &str) -> Result<String> {
     let id = db.write(actor.clone(), move |tx| delivery::request(tx, &input))?;
-    let res = numbering::reserve_exact(db, &[], series::DR, no, &id)?;
+    let res = numbering::reserve_exact(
+        db,
+        &[],
+        db.read(|c| delivery::number_series(c, &id)).unwrap(),
+        no,
+        &id,
+    )?;
     let dr = id.clone();
     db.write(actor.clone(), move |tx| {
         delivery::approve(tx, &dr, Some(&res))

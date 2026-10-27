@@ -103,7 +103,7 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     }
     if inventory::location_in_use(tx.conn(), id)? {
         return Err(Error::Invalid(
-            "this location has stock movements or DRs; mark it inactive instead".into(),
+            "this location has stock movements, DRs or invoices; mark it inactive instead".into(),
         ));
     }
     tx.delete(LOCATIONS, id)

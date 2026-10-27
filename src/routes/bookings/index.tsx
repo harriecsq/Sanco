@@ -44,6 +44,8 @@ import {
   OfflineBadge,
   PRICE_SOURCE_LABEL,
   PROGRESS_LABEL,
+  RECEIPT,
+  receiptHref,
   StatusBadge,
   Totals,
 } from "~/components/sales/sales";
@@ -415,8 +417,8 @@ const BookingFormModal = component$<{
         </Field>
         <p class={hint}>
           {form.id
-            ? "Lines on a DR can be changed but not removed; DRs keep their own prices."
-            : "Saved as a draft with a new booking number. Confirm it to request DRs."}
+            ? "Lines on a DR or invoice can be changed but not removed; those keep their own prices."
+            : "Saved as a draft with a new booking number. Confirm it to request DRs or invoices."}
         </p>
         <div class="flex justify-end gap-2">
           <button type="button" class={btnSecondary} onClick$={() => (open.value = false)}>
@@ -474,7 +476,7 @@ const BookingList = component$(() => {
 
   return (
     <>
-      <PageHeader title="Bookings" subtitle="Confirmed client orders, delivered through DRs.">
+      <PageHeader title="Bookings" subtitle="Confirmed client orders, delivered through DRs or invoices.">
         {can(session.user, "bookings", "create") && (
           <button
             q:slot="actions"
@@ -545,7 +547,7 @@ const BookingList = component$(() => {
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
                   <td class={[td, "whitespace-nowrap"]}>
                     {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
-                    {b.open_drs > 0 && <span class={[hint, "block"]}>{b.open_drs} open DR(s)</span>}
+                    {b.open_drs > 0 && <span class={[hint, "block"]}>{b.open_drs} open DR(s) or invoice(s)</span>}
                   </td>
                   <td class={td}>
                     <StatusBadge s={BOOKING_STATUS[b.status]} />
@@ -564,12 +566,12 @@ const BookingList = component$(() => {
 const ACTION_TEXT: Record<BookingAction, { title: string; body: string; label: string }> = {
   confirm: {
     title: "Confirm this booking?",
-    body: "Its lines are locked and DRs can be requested.",
+    body: "Its lines are locked and DRs or invoices can be requested.",
     label: "Confirm",
   },
   back_to_draft: {
     title: "Move back to draft?",
-    body: "It is no longer confirmed: confirm it again before requesting more DRs.",
+    body: "It is no longer confirmed: confirm it again before requesting more DRs or invoices.",
     label: "Back to draft",
   },
   close: {
@@ -579,12 +581,12 @@ const ACTION_TEXT: Record<BookingAction, { title: string; body: string; label: s
   },
   reopen: {
     title: "Reopen this booking?",
-    body: "It becomes confirmed again, so more DRs can be requested.",
+    body: "It becomes confirmed again, so more DRs or invoices can be requested.",
     label: "Reopen",
   },
   cancel: {
     title: "Cancel this booking?",
-    body: "It stays in the list, marked cancelled. Only bookings without DRs can be cancelled.",
+    body: "It stays in the list, marked cancelled. Only bookings without DRs or invoices can be cancelled.",
     label: "Cancel booking",
   },
 };
@@ -718,7 +720,7 @@ const BookingView = component$<{ id: string }>(({ id }) => {
         )}
         {canRequest && (
           <button q:slot="actions" class={btnPrimary} onClick$={() => (drOpen.value = true)}>
-            Request DR
+            Request DR or invoice
           </button>
         )}
       </PageHeader>
@@ -760,7 +762,7 @@ const BookingView = component$<{ id: string }>(({ id }) => {
                   <th class={[th, "text-right"]}>Amount</th>
                   {costs && <th class={[th, "text-right"]}>Cost</th>}
                   {margins && <th class={[th, "text-right"]}>Margin</th>}
-                  {delivering && <th class={[th, "text-right"]}>On DRs</th>}
+                  {delivering && <th class={[th, "text-right"]}>On receipts</th>}
                   {delivering && <th class={[th, "text-right"]}>Delivered</th>}
                   {delivering && <th class={[th, "text-right"]}>Left</th>}
                 </tr>
@@ -804,45 +806,52 @@ const BookingView = component$<{ id: string }>(({ id }) => {
               <Totals totals={b.totals} vat={b.vat} vatBp={b.vat_bp} />
             </div>
           </section>
-          {delivering && (
-            <section class={[card, "overflow-x-auto"]}>
-              <h2 class="border-b border-line px-4 py-3 font-semibold">Delivery receipts</h2>
-              {det.drs.length === 0 ? (
-                <Empty>No DRs yet.</Empty>
-              ) : (
-                <table class={table}>
-                  <thead>
-                    <tr>
-                      <th class={th}>DR no.</th>
-                      <th class={th}>Date</th>
-                      <th class={th}>From</th>
-                      <th class={th}>Items</th>
-                      <th class={[th, "text-right"]}>Gross</th>
-                      <th class={th}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {det.drs.map((d) => (
-                      <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
-                            <DrNo d={d} />
-                          </Link>
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
-                        <td class={td}>{d.from_location_name ?? "—"}</td>
-                        <td class={td}>{d.summary}</td>
-                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
-                        <td class={td}>
-                          <DrStatusBadge d={d} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+          {delivering && det.drs.length === 0 && (
+            <section class={card}>
+              <h2 class="border-b border-line px-4 py-3 font-semibold">Delivery receipts and invoices</h2>
+              <Empty>No DRs or invoices yet.</Empty>
             </section>
           )}
+          {delivering &&
+            (["dr", "invoice"] as const).map((kind) => {
+              const rows = det.drs.filter((d) => d.kind === kind);
+              if (rows.length === 0) return null;
+              return (
+                <section key={kind} class={[card, "overflow-x-auto"]}>
+                  <h2 class="border-b border-line px-4 py-3 font-semibold">{RECEIPT[kind].list}</h2>
+                  <table class={table}>
+                    <thead>
+                      <tr>
+                        <th class={th}>{RECEIPT[kind].title} no.</th>
+                        <th class={th}>Date</th>
+                        <th class={th}>From</th>
+                        <th class={th}>Items</th>
+                        <th class={[th, "text-right"]}>Gross</th>
+                        <th class={th}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((d) => (
+                        <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                          <td class={[td, "whitespace-nowrap"]}>
+                            <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
+                              <DrNo d={d} />
+                            </Link>
+                          </td>
+                          <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
+                          <td class={td}>{d.from_location_name ?? "—"}</td>
+                          <td class={td}>{d.summary}</td>
+                          <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                          <td class={td}>
+                            <DrStatusBadge d={d} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              );
+            })}
         </div>
       </div>
 

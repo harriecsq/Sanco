@@ -462,7 +462,7 @@ pub fn update(tx: &mut WriteTx, input: &BookingInput) -> Result<()> {
     };
     if let Some((_, code)) = on_drs.iter().find(|(l, _)| !kept.contains(&l.as_str())) {
         return Err(Error::Invalid(format!(
-            "{code} is on a DR; remove it from the DR first"
+            "{code} is on a DR or invoice; remove it from there first"
         )));
     }
     replace_lines(tx, BOOKING_LINES, "booking_id", &id, line_rows(lines))
@@ -482,7 +482,7 @@ pub fn set_status(tx: &mut WriteTx, id: &str, action: BookingAction, reason: &st
         (BookingAction::BackToDraft, BookingStatus::Confirmed) => {
             if active > 0 {
                 return Err(Error::Invalid(
-                    "this booking has DRs; cancel them before editing it".into(),
+                    "this booking has DRs or invoices; cancel them before editing it".into(),
                 ));
             }
             json!({ "status": BookingStatus::Draft.as_str() })
@@ -490,7 +490,7 @@ pub fn set_status(tx: &mut WriteTx, id: &str, action: BookingAction, reason: &st
         (BookingAction::Close, BookingStatus::Confirmed) => {
             if open > 0 {
                 return Err(Error::Invalid(
-                    "deliver or cancel this booking's open DRs first".into(),
+                    "deliver or cancel this booking's open DRs and invoices first".into(),
                 ));
             }
             json!({
@@ -507,7 +507,8 @@ pub fn set_status(tx: &mut WriteTx, id: &str, action: BookingAction, reason: &st
         (BookingAction::Cancel, BookingStatus::Draft | BookingStatus::Confirmed) => {
             if active > 0 {
                 return Err(Error::Invalid(
-                    "this booking has DRs; cancel them first, or close the booking".into(),
+                    "this booking has DRs or invoices; cancel them first, or close the booking"
+                        .into(),
                 ));
             }
             json!({

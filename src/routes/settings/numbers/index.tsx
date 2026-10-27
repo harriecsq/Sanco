@@ -155,7 +155,7 @@ export default component$(() => {
               <p class={hint}>Numbers already given keep their text when this changes.</p>
             </fieldset>
           )}
-          <Field label="Prefix" hint="Letters and digits only, e.g. DR.">
+          <Field label="Prefix" hint="Letters and digits only, e.g. DR or SI.">
             <input
               class={input}
               value={form.prefix}

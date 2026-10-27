@@ -49,32 +49,32 @@ export default component$(() => {
     const group = groupOf(loc.url);
     const q = loc.url.searchParams.get("q") ?? "";
     if (group === "month") {
-      const data: Cell[][] = rows.value.map((r) => [r.key, r.drs, r.net_c, r.vat_c, r.gross_c]);
+      const data: Cell[][] = rows.value.map((r) => [r.key, r.drs, r.invoices, r.net_c, r.vat_c, r.gross_c]);
       return makeReport(
         "sales-by-month",
-        [{ label: "Month" }, { label: "DRs", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
+        [{ label: "Month" }, { label: "DRs", kind: "qty" }, { label: "Invoices", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
         searchRows(data, q),
       );
     }
     if (group === "item") {
-      const data: Cell[][] = rows.value.map((r) => [r.code, r.label, r.qty, r.drs, r.net_c, r.vat_c, r.gross_c]);
+      const data: Cell[][] = rows.value.map((r) => [r.code, r.label, r.qty, r.drs, r.invoices, r.net_c, r.vat_c, r.gross_c]);
       return makeReport(
         "sales-by-item",
-        [{ label: "Code" }, { label: "Item" }, { label: "Qty", kind: "qty" }, { label: "DRs", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
+        [{ label: "Code" }, { label: "Item" }, { label: "Qty", kind: "qty" }, { label: "DRs", kind: "qty" }, { label: "Invoices", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
         searchRows(data, q),
       );
     }
-    const data: Cell[][] = rows.value.map((r) => [r.code, r.label, r.drs, r.net_c, r.vat_c, r.gross_c]);
+    const data: Cell[][] = rows.value.map((r) => [r.code, r.label, r.drs, r.invoices, r.net_c, r.vat_c, r.gross_c]);
     return makeReport(
       "sales-by-client",
-      [{ label: "Code" }, { label: "Client" }, { label: "DRs", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
+      [{ label: "Code" }, { label: "Client" }, { label: "DRs", kind: "qty" }, { label: "Invoices", kind: "qty" }, { label: "Net", kind: "money" }, { label: "VAT", kind: "money" }, { label: "Gross", kind: "money" }],
       searchRows(data, q),
     );
   });
 
   return (
     <>
-      <PageHeader title="Sales" subtitle="Delivered DRs by delivery date (voided ones left out). Item VAT is worked out per line." />
+      <PageHeader title="Sales" subtitle="Delivered DRs and invoices by delivery date (voided ones left out). Item VAT is worked out per line." />
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
         search="Search"

@@ -1,6 +1,7 @@
-//! Delivery receipts (DRs). Requesting one is part of Booking or
-//! Accounting; approving needs Accounting → approve, delivering and DR
-//! numbers Accounting → edit, voiding a delivered DR Accounting → delete.
+//! Delivery receipts: DRs (no VAT) and invoices (VAT). Requesting one is
+//! part of Booking or Accounting; approving needs Accounting → approve,
+//! delivering and numbers Accounting → edit, voiding a delivered one
+//! Accounting → delete.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use sanco_core::domain::auth::{Action, Module};
 use sanco_core::domain::delivery::{self, DeliverInput, DrDetail, DrInfo, DrRequestInput};
 use sanco_core::domain::boxes::BoxStock;
 use sanco_core::domain::inventory::StockLot;
-use sanco_core::sync::numbering::{self, Reservation, series};
+use sanco_core::sync::numbering::{self, Reservation};
 use sanco_core::time::manila_date_string;
 use tauri::State;
 
@@ -96,8 +97,9 @@ pub async fn update_dr(
     .await
 }
 
-/// The number to give a DR now: the typed one when staff type DR numbers,
-/// else the next automatic one if it has none yet.
+/// The number to give a DR or invoice now, in its series: the typed one
+/// when staff type that series, else the next automatic one if it has none
+/// yet.
 async fn dr_number(
     state: &AppState,
     db: &Arc<Db>,
@@ -105,10 +107,12 @@ async fn dr_number(
     typed: Option<String>,
 ) -> Result<Option<Reservation>, String> {
     let (read, rid) = (db.clone(), id.to_string());
-    let (manual, has) = blocking(move || {
+    let (series, manual, has) = blocking(move || {
         read.read(|c| {
+            let series = delivery::number_series(c, &rid)?;
             Ok((
-                numbering::is_manual(c, series::DR)?,
+                series,
+                numbering::is_manual(c, series)?,
                 delivery::number_of(c, &rid)?.is_some(),
             ))
         })
@@ -116,12 +120,10 @@ async fn dr_number(
     .await?;
     let typed = typed.filter(|t| !t.trim().is_empty());
     match (manual, typed) {
-        (true, Some(no)) => Ok(Some(
-            reserve_exact_number(state, series::DR, &no, id).await?,
-        )),
+        (true, Some(no)) => Ok(Some(reserve_exact_number(state, series, &no, id).await?)),
         (true, None) => Ok(None),
         (false, _) if has => Ok(None),
-        (false, _) => Ok(Some(reserve_number(state, series::DR, id).await?)),
+        (false, _) => Ok(Some(reserve_number(state, series, id).await?)),
     }
 }
 
@@ -178,17 +180,18 @@ pub async fn set_dr_number(
 ) -> Result<(), String> {
     let (db, user) = require(&state, Module::Accounting, Action::Edit).await?;
     let (read, rid) = (db.clone(), id.clone());
-    let manual = blocking(move || {
+    let (series, manual) = blocking(move || {
         read.read(|c| {
             delivery::check_set_number(c, &rid)?;
-            numbering::is_manual(c, series::DR)
+            let series = delivery::number_series(c, &rid)?;
+            Ok((series, numbering::is_manual(c, series)?))
         })
     })
     .await?;
     if !manual {
-        return Err("DR numbers are given automatically (Settings → Number formats)".into());
+        return Err("these numbers are given automatically (Settings → Number formats)".into());
     }
-    let res = reserve_exact_number(&state, series::DR, &no, &id).await?;
+    let res = reserve_exact_number(&state, series, &no, &id).await?;
     blocking(move || db.write(user.actor(), move |tx| delivery::set_number(tx, &id, &res))).await
 }
 

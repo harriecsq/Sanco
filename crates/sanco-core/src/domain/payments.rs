@@ -19,6 +19,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::domain::delivery::ReceiptKind;
 use crate::domain::{MAX_LINES, bank_accounts, peso, require_date, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids::derived_id;
@@ -215,7 +216,8 @@ pub struct PaymentInfo {
     pub replaces_id: Option<String>,
     pub replaces_no: Option<String>,
     pub status: PaymentStatus,
-    pub dr_nos: Vec<String>,
+    /// What it is applied to: "DR 123", "Invoice 456".
+    pub receipts: Vec<String>,
     pub created_at: i64,
     pub created_by_name: Option<String>,
     pub voided_at: Option<i64>,
@@ -227,6 +229,7 @@ pub struct PaymentInfo {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AllocationInfo {
     pub dr_id: String,
+    pub kind: ReceiptKind,
     pub dr_no: Option<String>,
     pub delivered_date: Option<String>,
     /// False if the DR was voided since: the amount is back as credit.
@@ -249,6 +252,7 @@ pub struct PaymentDetail {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct OpenDr {
     pub dr_id: String,
+    pub kind: ReceiptKind,
     pub no: Option<String>,
     pub delivered_date: Option<String>,
     pub due_date: Option<String>,
@@ -296,7 +300,12 @@ struct Current {
 }
 
 fn current(conn: &Connection, id: &str) -> Result<Current> {
-    type Row = (Option<String>, Option<String>, Option<String>, Option<String>);
+    type Row = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let row: Option<Row> = conn
         .query_row(
             "SELECT method, status, replaces_id, bank_account_id FROM payments
@@ -459,28 +468,30 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     // What other counting payments paid; this payment and the check it
     // replaces don't count against it.
     for (dr, amount) in &allocations {
-        type DrRow = (Option<String>, Option<String>, Option<String>, i64);
+        type DrRow = (Option<String>, Option<String>, Option<String>, i64, i64);
         let row: Option<DrRow> = conn
             .query_row(
-                "SELECT t.client_id, t.status, n.no, t.gross_c FROM v_dr_totals t
-                 LEFT JOIN doc_numbers n ON n.ref_id = t.dr_id AND n.series = 'DR' AND n._deleted = 0
+                "SELECT t.client_id, t.status, n.no, t.gross_c, COALESCE(r.vat, 0)
+                 FROM v_dr_totals t
+                 JOIN delivery_receipts r ON r.id = t.dr_id
+                 LEFT JOIN v_receipt_no n ON n.dr_id = t.dr_id
                  WHERE t.dr_id = ?1",
                 [dr],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let Some((owner, status, no, gross)) = row else {
+        let Some((owner, status, no, gross, vat)) = row else {
             return Err(Error::Invalid(
-                "a DR to allocate to no longer exists".into(),
+                "a DR or invoice to allocate to no longer exists".into(),
             ));
         };
-        let name = no.map_or_else(|| "a DR".to_string(), |n| format!("DR {n}"));
+        let name = ReceiptKind::from_vat(vat != 0).label(no.as_deref());
         if owner.as_deref() != Some(input.client_id.as_str()) {
             return Err(Error::Invalid(format!("{name} is another client's")));
         }
         if status.as_deref() != Some("delivered") {
             return Err(Error::Invalid(format!(
-                "{name} isn't delivered; only delivered DRs can be paid"
+                "{name} isn't delivered; only delivered DRs and invoices can be paid"
             )));
         }
         let paid_other: i64 = conn.query_row(
@@ -832,7 +843,7 @@ fn from_row(r: &rusqlite::Row, today: &str) -> rusqlite::Result<PaymentInfo> {
         } else {
             PaymentStatus::Posted
         },
-        dr_nos: Vec::new(),
+        receipts: Vec::new(),
         created_at: r.get(26)?,
         created_by_name: r.get(27)?,
         voided_at: r.get(28)?,
@@ -848,11 +859,12 @@ fn allocations_of(
 ) -> Result<Vec<(String, AllocationInfo)>> {
     let mut stmt = conn.prepare_cached(
         "SELECT a.payment_id, a.dr_id, n.no, t.delivered_date, t.status, t.gross_c, a.amount_c,
-                COALESCE(v.balance_c, t.gross_c)
+                COALESCE(v.balance_c, t.gross_c), COALESCE(r.vat, 0)
          FROM payment_allocations a
          JOIN v_dr_totals t ON t.dr_id = a.dr_id
+         JOIN delivery_receipts r ON r.id = a.dr_id
          LEFT JOIN v_receivables v ON v.dr_id = a.dr_id
-         LEFT JOIN doc_numbers n ON n.ref_id = a.dr_id AND n.series = 'DR' AND n._deleted = 0
+         LEFT JOIN v_receipt_no n ON n.dr_id = a.dr_id
          WHERE a._deleted = 0 AND a.amount_c IS NOT NULL AND a.amount_c <> 0
            AND (?1 IS NULL OR a.payment_id = ?1)
          ORDER BY t.delivered_date, n.no, a.dr_id",
@@ -862,6 +874,7 @@ fn allocations_of(
             r.get(0)?,
             AllocationInfo {
                 dr_id: r.get(1)?,
+                kind: ReceiptKind::from_vat(r.get::<_, i64>(8)? != 0),
                 dr_no: r.get(2)?,
                 delivered_date: r.get(3)?,
                 delivered: r.get::<_, Option<String>>(4)?.as_deref() == Some("delivered"),
@@ -881,10 +894,10 @@ fn fill(p: &mut PaymentInfo, allocs: &[AllocationInfo], numbers: &HashMap<String
         .map(|a| a.amount_c)
         .sum();
     p.unapplied_c = p.amount_c - p.applied_c;
-    p.dr_nos = allocs
+    p.receipts = allocs
         .iter()
         .filter(|a| a.delivered)
-        .map(|a| a.dr_no.clone().unwrap_or_else(|| "(no DR no.)".into()))
+        .map(|a| a.kind.label(a.dr_no.as_deref()))
         .collect();
     if let Some(c) = &mut p.check {
         c.replaced_by_no = c
@@ -957,10 +970,12 @@ pub fn open_drs(
                 COALESCE((SELECT SUM(a.amount_c) FROM v_allocations a WHERE a.dr_id = t.dr_id
                           AND a.payment_id <> ?2 AND (?3 IS NULL OR a.payment_id <> ?3)), 0),
                 COALESCE((SELECT a.amount_c FROM payment_allocations a WHERE a.payment_id = ?2
-                          AND a.dr_id = t.dr_id AND a._deleted = 0), 0)
+                          AND a.dr_id = t.dr_id AND a._deleted = 0), 0),
+                COALESCE(r.vat, 0)
          FROM v_dr_totals t
+         JOIN delivery_receipts r ON r.id = t.dr_id
          LEFT JOIN clients c ON c.id = t.client_id
-         LEFT JOIN doc_numbers n ON n.ref_id = t.dr_id AND n.series = 'DR' AND n._deleted = 0
+         LEFT JOIN v_receipt_no n ON n.dr_id = t.dr_id
          WHERE t.status = 'delivered' AND t.client_id = ?1
          ORDER BY t.delivered_date, n.no, t.dr_id",
     )?;
@@ -970,6 +985,7 @@ pub fn open_drs(
         let paid_other: i64 = r.get(5)?;
         Ok(OpenDr {
             dr_id: r.get(0)?,
+            kind: ReceiptKind::from_vat(r.get::<_, i64>(7)? != 0),
             no: r.get(1)?,
             due_date: crate::domain::receivables::due_date(delivered.as_deref(), r.get(3)?),
             delivered_date: delivered,

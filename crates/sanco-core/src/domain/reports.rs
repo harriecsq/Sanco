@@ -32,7 +32,8 @@ impl DateRange {
     }
 
     pub fn contains(&self, date: &str) -> bool {
-        self.from.as_deref().is_none_or(|f| date >= f) && self.to.as_deref().is_none_or(|t| date <= t)
+        self.from.as_deref().is_none_or(|f| date >= f)
+            && self.to.as_deref().is_none_or(|t| date <= t)
     }
 }
 
@@ -56,6 +57,8 @@ pub struct SalesRow {
     pub label: String,
     /// Delivered DRs counted.
     pub drs: i64,
+    /// Delivered invoices counted.
+    pub invoices: i64,
     /// Units (item grouping only).
     pub qty: Option<i64>,
     pub net_c: i64,
@@ -63,18 +66,26 @@ pub struct SalesRow {
     pub gross_c: i64,
 }
 
-/// Delivered DRs (voided ones left out) by delivery date. Per item, VAT is
-/// worked out per line, so item totals can differ from DR totals by a
-/// centavo.
+/// Delivered DRs and invoices (voided ones left out) by delivery date. Per
+/// item, VAT is worked out per line, so item totals can differ from receipt
+/// totals by a centavo.
 pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<Vec<SalesRow>> {
     let mut rows: BTreeMap<String, SalesRow> = BTreeMap::new();
-    let mut drs_of: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-    let mut add = |key: String, code: Option<String>, label: String, dr: &str, qty: Option<i64>, net, vat| {
+    // Receipts per row, as (id, is an invoice).
+    let mut drs_of: HashMap<String, std::collections::HashSet<(String, bool)>> = HashMap::new();
+    let mut add = |key: String,
+                   code: Option<String>,
+                   label: String,
+                   dr: (&str, bool),
+                   qty: Option<i64>,
+                   net,
+                   vat| {
         let row = rows.entry(key.clone()).or_insert_with(|| SalesRow {
             key: key.clone(),
             code,
             label,
             drs: 0,
+            invoices: 0,
             qty: qty.map(|_| 0),
             net_c: 0,
             vat_c: 0,
@@ -86,7 +97,10 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
         row.net_c += net;
         row.vat_c += vat;
         row.gross_c += net + vat;
-        drs_of.entry(key).or_default().insert(dr.to_string());
+        drs_of
+            .entry(key)
+            .or_default()
+            .insert((dr.0.to_string(), dr.1));
     };
 
     if group == SalesGroup::Item {
@@ -119,14 +133,25 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
             }
             let net = qty.saturating_mul(price);
             let vat_c = if vat { pricing::pct_of(net, vat_bp) } else { 0 };
-            add(item, code, name.unwrap_or_default(), &dr, Some(qty), net, vat_c);
+            add(
+                item,
+                code,
+                name.unwrap_or_default(),
+                (&dr, vat),
+                Some(qty),
+                net,
+                vat_c,
+            );
         }
     } else {
         let mut stmt = conn.prepare(
-            "SELECT t.dr_id, t.delivered_date, t.client_id, n.no, c.name, t.net_c, t.vat_c
+            "SELECT t.dr_id, t.delivered_date, t.client_id, n.no, c.name, t.net_c, t.vat_c,
+                    COALESCE(r.vat, 0)
              FROM v_dr_totals t
+             JOIN delivery_receipts r ON r.id = t.dr_id
              LEFT JOIN clients c ON c.id = t.client_id
-             LEFT JOIN doc_numbers n ON n.ref_id = t.client_id AND n._deleted = 0
+             LEFT JOIN doc_numbers n ON n.ref_id = t.client_id AND n.series = 'CL'
+                                    AND n._deleted = 0
              WHERE t.status = 'delivered'",
         )?;
         let drs = stmt.query_map([], |r| {
@@ -138,18 +163,27 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, i64>(5)?,
                 r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)? != 0,
             ))
         })?;
         for dr in drs {
-            let (dr, date, client, code, name, net, vat) = dr?;
+            let (dr, date, client, code, name, net, vat, invoice) = dr?;
             if !range.contains(&date) {
                 continue;
             }
             if group == SalesGroup::Client {
-                add(client, code, name.unwrap_or_default(), &dr, None, net, vat);
+                add(
+                    client,
+                    code,
+                    name.unwrap_or_default(),
+                    (&dr, invoice),
+                    None,
+                    net,
+                    vat,
+                );
             } else {
                 let month = date.get(..7).unwrap_or_default().to_string();
-                add(month.clone(), None, month, &dr, None, net, vat);
+                add(month.clone(), None, month, (&dr, invoice), None, net, vat);
             }
         }
     }
@@ -157,12 +191,19 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
     let mut out: Vec<SalesRow> = rows
         .into_values()
         .map(|mut r| {
-            r.drs = drs_of.get(&r.key).map_or(0, |s| s.len() as i64);
+            if let Some(set) = drs_of.get(&r.key) {
+                r.invoices = set.iter().filter(|d| d.1).count() as i64;
+                r.drs = set.len() as i64 - r.invoices;
+            }
             r
         })
         .collect();
     if group != SalesGroup::Month {
-        out.sort_by(|a, b| b.gross_c.cmp(&a.gross_c).then_with(|| a.label.cmp(&b.label)));
+        out.sort_by(|a, b| {
+            b.gross_c
+                .cmp(&a.gross_c)
+                .then_with(|| a.label.cmp(&b.label))
+        });
     }
     Ok(out)
 }
@@ -191,9 +232,7 @@ pub struct MarginRow {
 /// delivery). Needs the costs and margins permissions.
 pub fn item_margin(conn: &Connection, range: &DateRange) -> Result<Vec<MarginRow>> {
     let costs = items::landed_costs(conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT i.id, i.unit FROM items i WHERE i._deleted = 0",
-    )?;
+    let mut stmt = conn.prepare("SELECT i.id, i.unit FROM items i WHERE i._deleted = 0")?;
     let units: HashMap<String, Option<String>> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;

@@ -240,7 +240,7 @@ export const commands = {
 	getDr: (id: string) => typedError<{
 	dr: DrInfo,
 	lines: DrLine[],
-	/**  DR numbers are typed by staff (else given at approval). */
+	/**  Its numbers are typed by staff (else given at approval). */
 	manual_numbers: boolean,
 	/**  Payments allocated to it. */
 	payments: DrPayment[],
@@ -390,6 +390,7 @@ export type AgingBucket = "not_due" | "days1_to30" | "days31_to60" | "days61_to9
 
 export type AllocationInfo = {
 	dr_id: string,
+	kind: ReceiptKind,
 	dr_no: string | null,
 	delivered_date: string | null,
 	/**  False if the DR was voided since: the amount is back as credit. */
@@ -856,7 +857,10 @@ export type ClientBalance = {
 	balance_c: number,
 	/**  Checks on hand or deposited, not cleared yet, that count as paid. */
 	uncleared_c: number,
+	/**  Unpaid DRs and invoices. */
 	open_drs: number,
+	open_invoices: number,
+	/**  DRs and invoices paid more than their total. */
 	overpaid_drs: number,
 	/**  Days past due of the oldest unpaid DR, if any is overdue. */
 	oldest_overdue_days: number | null,
@@ -1022,7 +1026,7 @@ export type DeviceInfo = {
 export type DrDetail = {
 	dr: DrInfo,
 	lines: DrLine[],
-	/**  DR numbers are typed by staff (else given at approval). */
+	/**  Its numbers are typed by staff (else given at approval). */
 	manual_numbers: boolean,
 	/**  Payments allocated to it. */
 	payments: DrPayment[],
@@ -1030,8 +1034,12 @@ export type DrDetail = {
 
 export type DrInfo = {
 	id: string,
-	/**  The DR (booklet) number; `None` until entered. */
+	/**  DR (no VAT) or Invoice (VAT, same as `vat`). */
+	kind: ReceiptKind,
+	/**  The booklet number; `None` until entered. */
 	no: string | null,
+	/**  Series of the number (or of the number it will get): DR or SI. */
+	no_series: string,
 	/**  False if other PCs were offline when the number was entered. */
 	no_confirmed: boolean,
 	/**  Typed by staff. */
@@ -1125,6 +1133,11 @@ export type DrPayment = {
 
 export type DrRequestInput = {
 	booking_id: string,
+	/**
+	 *  DR or Invoice. `None`: as the booking's VAT says (new), unchanged
+	 *  (edit). Changes only until delivery.
+	 */
+	kind?: ReceiptKind | null,
 	/**  Planned delivery date. */
 	date: string,
 	from_location_id: string,
@@ -1348,6 +1361,7 @@ export type OlderPeer = {
 /**  A delivered DR a payment can be allocated to. */
 export type OpenDr = {
 	dr_id: string,
+	kind: ReceiptKind,
 	no: string | null,
 	delivered_date: string | null,
 	due_date: string | null,
@@ -1397,7 +1411,8 @@ export type PaymentInfo = {
 	replaces_id: string | null,
 	replaces_no: string | null,
 	status: PaymentStatus,
-	dr_nos: string[],
+	/**  What it is applied to: "DR 123", "Invoice 456". */
+	receipts: string[],
 	created_at: number,
 	created_by_name: string | null,
 	voided_at: number | null,
@@ -1755,6 +1770,9 @@ export type ReceiptInput = {
 	lines: ReceiptLineInput[],
 };
 
+/**  What the client gets: a DR (no VAT) or an Invoice (VAT). */
+export type ReceiptKind = "dr" | "invoice";
+
 export type ReceiptLine = {
 	id: string,
 	po_line_id: string | null,
@@ -1777,9 +1795,13 @@ export type ReceiptLineInput = {
 	qty: number,
 };
 
-/**  A delivered DR with a balance (positive: owed; negative: overpaid). */
+/**
+ *  A delivered DR or invoice with a balance (positive: owed; negative:
+ *  overpaid).
+ */
 export type ReceivableDr = {
 	dr_id: string,
+	kind: ReceiptKind,
 	no: string | null,
 	client_id: string | null,
 	client_code: string | null,
@@ -1833,6 +1855,8 @@ export type SalesRow = {
 	label: string,
 	/**  Delivered DRs counted. */
 	drs: number,
+	/**  Delivered invoices counted. */
+	invoices: number,
 	/**  Units (item grouping only). */
 	qty: number | null,
 	net_c: number,
@@ -2003,6 +2027,8 @@ export type StockMove = {
 	po_id: string | null,
 	box_id: string | null,
 	serial: string | null,
+	/**  A delivery on an invoice (else on a DR). */
+	invoice: boolean,
 };
 
 export type SupplierChoice = {

@@ -7,11 +7,13 @@ import {
   type BoxStock,
   type DrDetail,
   type LocationInfo,
+  type ReceiptKind,
   type StockLot,
 } from "~/lib/bindings";
-import { boxEquiv, boxSummary, formatDay, formatQty, parseCount, todayManila } from "~/lib/format";
+import { boxEquiv, boxSummary, formatDay, formatPct, formatQty, parseCount, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Field, Modal } from "~/components/ui/ui";
+import { RECEIPT, Totals } from "~/components/sales/sales";
 import { btnGhost, btnPrimary, btnSecondary, hint, input, inputBase } from "~/components/ui/styles";
 
 interface Row {
@@ -31,6 +33,8 @@ interface Row {
 }
 
 interface Form {
+  /** DR (no VAT) or invoice (VAT). */
+  kind: ReceiptKind;
   date: string;
   location_id: string;
   deliver_to: string;
@@ -203,6 +207,7 @@ export const DrRequestModal = component$<{
   const error = useSignal("");
   const busy = useSignal(false);
   const form = useStore<Form>({
+    kind: "dr",
     date: "",
     location_id: "",
     deliver_to: "",
@@ -298,6 +303,7 @@ export const DrRequestModal = component$<{
       const lines = booking.value?.lines ?? [];
       const left = (l: BookingLine) => l.remaining + ownQty(dr, l.id);
       if (dr) {
+        form.kind = dr.dr.kind;
         form.date = dr.dr.date;
         form.location_id = dr.dr.from_location_id ?? "";
         form.deliver_to = dr.dr.deliver_to ?? "";
@@ -327,6 +333,7 @@ export const DrRequestModal = component$<{
           .filter((s) => s.location_id === loc && s.qty > 0 && open_lines.some((l) => l.item_id === s.item_id))
           .reduce((n, s) => n + s.qty, 0);
       const best = [...locations.value].sort((a, b) => stockAt(b.id) - stockAt(a.id))[0];
+      form.kind = booking.value?.booking.vat ? "invoice" : "dr";
       form.date = todayManila();
       form.location_id = best?.id ?? "";
       form.deliver_to = booking.value?.booking.deliver_to ?? "";
@@ -382,6 +389,7 @@ export const DrRequestModal = component$<{
         .filter((l) => l.qty > 0);
       const request = {
         booking_id: bookingId,
+        kind: form.kind,
         date: form.date,
         from_location_id: form.location_id,
         deliver_to: form.deliver_to,
@@ -410,9 +418,18 @@ export const DrRequestModal = component$<{
 
   const b = booking.value;
   const delivered = dr?.dr.status === "delivered";
+  const k = RECEIPT[form.kind];
   const title = dr
-    ? `Edit DR ${dr.dr.no ?? ""}`
-    : `Request a DR for ${b?.booking.no ?? "this booking"}`;
+    ? `Edit ${RECEIPT[dr.dr.kind].title} ${dr.dr.no ?? ""}`
+    : `Request a DR or invoice for ${b?.booking.no ?? "this booking"}`;
+  const vatBp = dr?.dr.vat_bp || b?.booking.vat_bp || 0;
+  // Kept lines keep their price; new ones take the booking's.
+  const net = form.rows.reduce((n, r) => {
+    const kept = dr?.lines.find((l) => l.id === r.id);
+    const price = kept?.price_c ?? b?.lines.find((l) => l.id === r.line_id)?.price_c ?? 0;
+    return n + countOf(r.qty) * price;
+  }, 0);
+  const vat = form.kind === "invoice" ? Math.round((net * vatBp) / 10000) : 0;
   const plans = planRows(
     form.rows,
     b?.lines ?? [],
@@ -428,10 +445,53 @@ export const DrRequestModal = component$<{
         {error.value && <Alert>{error.value}</Alert>}
         {delivered && (
           <Alert tone="warning">
-            This DR was delivered: changing its items or quantities moves the difference in or out
-            of stock.
+            This {k.name} was delivered: changing its items or quantities moves the difference in or
+            out of stock.
           </Alert>
         )}
+        <fieldset>
+          <legend class="mb-1 text-sm font-medium">The client gets</legend>
+          <div class="flex flex-wrap gap-2">
+            {(["dr", "invoice"] as const).map((kind) => (
+              <label
+                key={kind}
+                class={[
+                  "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm",
+                  form.kind === kind ? "border-brand-500 bg-brand-50" : "border-line",
+                  delivered && "cursor-not-allowed opacity-60",
+                ]}
+              >
+                <input
+                  type="radio"
+                  name="receipt-kind"
+                  class="accent-brand-500"
+                  checked={form.kind === kind}
+                  disabled={delivered}
+                  onChange$={() => (form.kind = kind)}
+                />
+                {kind === "dr" ? (
+                  <span>
+                    <span class="font-medium">DR</span> <span class="text-ink-muted">no VAT</span>
+                  </span>
+                ) : (
+                  <span>
+                    <span class="font-medium">Invoice</span>{" "}
+                    <span class="text-ink-muted">VAT {formatPct(vatBp)}</span>
+                  </span>
+                )}
+              </label>
+            ))}
+          </div>
+          <p class={[hint, "mt-1"]}>
+            {delivered
+              ? "A delivered receipt keeps its type. To change it, void it and enter it again."
+              : dr && dr.dr.no && form.kind !== dr.dr.kind && dr.dr.no_series !== (form.kind === "dr" ? "DR" : "SI")
+                ? `Its number ${dr.dr.no} is freed: enter the number from the ${k.booklet} instead.`
+                : b && (form.kind === "invoice") !== b.booking.vat
+                  ? `The booking is ${b.booking.vat ? "with" : "without"} VAT.`
+                  : ""}
+          </p>
+        </fieldset>
         <div class="grid gap-3 sm:grid-cols-2">
           <Field label={delivered ? "Planned for" : "Deliver on"}>
             <input
@@ -498,12 +558,12 @@ export const DrRequestModal = component$<{
           <div class="mb-1 flex items-center justify-between">
             <span class="text-sm font-medium">Items</span>
             <span class={hint}>
-              {dr ? "Clear a quantity to take the item off this DR." : "Leave a quantity blank to deliver it later."}
+              {dr ? `Clear a quantity to take the item off this ${k.name}.` : "Leave a quantity blank to deliver it later."}
             </span>
           </div>
           {form.rows.length === 0 ? (
             <p class="text-sm text-ink-muted">
-              {b ? "Everything on this booking is already on a DR." : "Loading…"}
+              {b ? "Everything on this booking is already on a DR or invoice." : "Loading…"}
             </p>
           ) : (
             <div class="space-y-2">
@@ -559,7 +619,7 @@ export const DrRequestModal = component$<{
                       <span class="font-medium">{line.item_code}</span> {line.item_name}
                       <span class={[hint, "block"]}>
                         {formatQty(line.remaining + ownQty(dr, line.id), line.unit)} left on the booking
-                        {dr ? " (with this DR's)" : ""}
+                        {dr ? ` (with this ${k.name}'s)` : ""}
                       </span>
                     </div>
                     {plan ? (
@@ -731,9 +791,10 @@ export const DrRequestModal = component$<{
             onInput$={(_, el) => (form.notes = el.value)}
           />
         </Field>
+        <Totals totals={{ net_c: net, vat_c: vat, gross_c: net + vat }} vat={form.kind === "invoice"} vatBp={vatBp} />
         {!dr && (
           <p class={hint}>
-            The DR number from the booklet is entered when the DR is approved or delivered.
+            The {k.name} number from the {k.booklet} is entered when it is approved or delivered.
           </p>
         )}
         <div class="flex justify-end gap-2">
@@ -741,7 +802,7 @@ export const DrRequestModal = component$<{
             Cancel
           </button>
           <button class={btnPrimary} disabled={busy.value || form.rows.length === 0}>
-            {dr ? "Save" : "Request DR"}
+            {dr ? "Save" : `Request ${k.name}`}
           </button>
         </div>
       </form>

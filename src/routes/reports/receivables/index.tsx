@@ -35,11 +35,12 @@ export default component$(() => {
     if (view === "drs") {
       const rows: Cell[][] = (r?.drs ?? [])
         .filter((d) => d.balance_c !== 0)
-        .map((d) => [d.no, d.client_code, d.client_name, d.delivered_date, d.due_date, Math.max(d.days_overdue, 0), d.gross_c, d.paid_c, d.balance_c]);
+        .map((d) => [d.kind === "invoice" ? "Invoice" : "DR", d.no, d.client_code, d.client_name, d.delivered_date, d.due_date, Math.max(d.days_overdue, 0), d.gross_c, d.paid_c, d.balance_c]);
       return makeReport(
         "receivables-by-dr",
         [
-          { label: "DR no." },
+          { label: "Type" },
+          { label: "No." },
           { label: "Code" },
           { label: "Client" },
           { label: "Delivered", kind: "date" },
@@ -97,8 +98,8 @@ export default component$(() => {
       />
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
-        search="Search client or DR no."
-        selects={[{ key: "view", label: "View", allLabel: "By client", options: [{ value: "drs", label: "By DR" }] }]}
+        search="Search client, DR or invoice no."
+        selects={[{ key: "view", label: "View", allLabel: "By client", options: [{ value: "drs", label: "By DR / invoice" }] }]}
       />
       <ReportTable report={report} empty="No receivables." />
     </>

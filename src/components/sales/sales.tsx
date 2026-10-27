@@ -6,6 +6,7 @@ import type {
   DrInfo,
   DrStatus,
   PriceSource,
+  ReceiptKind,
   VatAmounts,
 } from "~/lib/bindings";
 import { formatPct, formatPeso } from "~/lib/format";
@@ -33,6 +34,36 @@ export const DR_STATUS: Record<DrStatus, { label: string; tone: Tone }> = {
   delivered: { label: "Delivered", tone: "brand" },
   cancelled: { label: "Cancelled", tone: "muted" },
 };
+
+/** Words for each receipt type: a DR (no VAT) or an Invoice (VAT). */
+export const RECEIPT: Record<
+  ReceiptKind,
+  { title: string; name: string; plural: string; list: string; route: string; booklet: string }
+> = {
+  dr: {
+    title: "DR",
+    name: "DR",
+    plural: "DRs",
+    list: "Delivery receipts",
+    route: "/accounting/",
+    booklet: "DR booklet",
+  },
+  invoice: {
+    title: "Invoice",
+    name: "invoice",
+    plural: "invoices",
+    list: "Invoices",
+    route: "/accounting/invoices/",
+    booklet: "invoice booklet",
+  },
+};
+
+/** The page of a DR or invoice. */
+export const receiptHref = (kind: ReceiptKind, id: string) => `${RECEIPT[kind].route}?id=${id}`;
+
+/** "DR 123", "Invoice 456", or "DR (no number)". */
+export const receiptName = (kind: ReceiptKind, no: string | null) =>
+  `${RECEIPT[kind].title} ${no ?? "(no number)"}`;
 
 export const PROGRESS_LABEL: Record<DeliveryProgress, string> = {
   none: "Not delivered",
@@ -65,12 +96,12 @@ export const OfflineBadge = component$<{ show: boolean }>(({ show }) =>
   ) : null,
 );
 
-/** A DR's number with its warnings, or a placeholder. */
+/** A DR's or invoice's number with its warnings, or a placeholder. */
 export const DrNo = component$<{ d: DrInfo }>(({ d }) => (
   <>
-    {d.no ?? <span class="text-ink-muted">No DR no. yet</span>}
+    {d.no ?? <span class="text-ink-muted">No {RECEIPT[d.kind].name} no. yet</span>}
     {d.no_clash && (
-      <span class="ml-2" title="Another DR has the same number. Correct the wrong one.">
+      <span class="ml-2" title={`Another ${RECEIPT[d.kind].name} has the same number. Correct the wrong one.`}>
         <Badge tone="danger">used twice</Badge>
       </span>
     )}

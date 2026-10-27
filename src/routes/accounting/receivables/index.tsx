@@ -14,6 +14,7 @@ import {
   PaymentFormModal,
   blankPayment,
 } from "~/components/accounting/accounting";
+import { RECEIPT, receiptHref } from "~/components/sales/sales";
 import { Alert, Badge, Empty, NoAccess, PageHeader } from "~/components/ui/ui";
 import { btnGhost, card, hint, table, td, th } from "~/components/ui/styles";
 
@@ -95,17 +96,21 @@ export default component$(() => {
     <>
       <PageHeader
         title="Receivables"
-        subtitle={`What clients owe on delivered DRs, as of ${formatDay(r.as_of)}. Days count from each DR's due date (delivery + payment terms).`}
+        subtitle={`What clients owe on delivered DRs and invoices, as of ${formatDay(r.as_of)}. Days count from each one's due date (delivery + payment terms).`}
       />
       {error.value && <Alert>{error.value}</Alert>}
       <div class="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Tile label="Outstanding" value={r.outstanding_c} note={`${r.drs.filter((d) => d.balance_c > 0).length} unpaid DR(s)`} />
+        <Tile
+          label="Outstanding"
+          value={r.outstanding_c}
+          note={`${r.drs.filter((d) => d.balance_c > 0 && d.kind === "dr").length} unpaid DR(s) · ${r.drs.filter((d) => d.balance_c > 0 && d.kind === "invoice").length} unpaid invoice(s)`}
+        />
         <Tile label="Overdue" value={overdue} tone="danger" />
-        <Tile label="Client credit" value={r.credit_c} note="Paid but not applied to a DR" />
+        <Tile label="Client credit" value={r.credit_c} note="Paid but not applied to a DR or invoice" />
         <Tile label="Paid by uncleared checks" value={r.uncleared_c} note="On hand or deposited" />
       </div>
       <FilterBar
-        search="Search client or DR no."
+        search="Search client, DR or invoice no."
         dates
         selects={[
           {
@@ -126,13 +131,13 @@ export default component$(() => {
           },
         ]}
       >
-        <span class={hint}>Dates filter the delivery date of DRs.</span>
+        <span class={hint}>Dates filter the delivery date of DRs and invoices.</span>
       </FilterBar>
 
       <section class={[card, "mb-4 overflow-x-auto"]}>
         <h2 class="border-b border-line px-4 py-3 font-semibold">Aging by client</h2>
         {filtered.value.clients.length === 0 ? (
-          <Empty>{r.clients.length ? "No clients match." : "Nothing owed. Delivered DRs show here until they're paid."}</Empty>
+          <Empty>{r.clients.length ? "No clients match." : "Nothing owed. Delivered DRs and invoices show here until they're paid."}</Empty>
         ) : (
           <table class={table}>
             <thead>
@@ -219,55 +224,61 @@ export default component$(() => {
         )}
       </section>
 
-      <section class={[card, "overflow-x-auto"]}>
-        <h2 class="border-b border-line px-4 py-3 font-semibold">Unpaid DRs</h2>
-        {filtered.value.drs.length === 0 ? (
-          <Empty>No unpaid DRs match.</Empty>
-        ) : (
-          <table class={table}>
-            <thead>
-              <tr>
-                <th class={th}>DR no.</th>
-                <th class={th}>Client</th>
-                <th class={th}>Delivered</th>
-                <th class={th}>Due</th>
-                <th class={th}>Age</th>
-                <th class={[th, "text-right"]}>Gross</th>
-                <th class={[th, "text-right"]}>Paid</th>
-                <th class={[th, "text-right"]}>Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.value.drs.map((d) => (
-                <tr key={d.dr_id}>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.dr_id}`}>
-                      {d.no ?? "No DR no."}
-                    </Link>
-                  </td>
-                  <td class={td}>{d.client_name ?? "—"}</td>
-                  <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date)}</td>
-                  <td class={[td, "whitespace-nowrap"]}>{formatDay(d.due_date)}</td>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    {d.balance_c < 0 ? (
-                      <Badge tone="warning">overpaid</Badge>
-                    ) : d.days_overdue > 0 ? (
-                      <Badge tone="danger">{d.days_overdue} days overdue</Badge>
-                    ) : (
-                      <span class="text-ink-muted">{BUCKET_LABEL[d.bucket]}</span>
-                    )}
-                  </td>
-                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.gross_c)}</td>
-                  <td class={[td, "text-right tabular-nums"]}>{amt(d.paid_c)}</td>
-                  <td class={[td, "text-right font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
-                    {formatPeso(d.balance_c)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      {(["dr", "invoice"] as const).map((kind) => {
+        const k = RECEIPT[kind];
+        const rows = filtered.value.drs.filter((d) => d.kind === kind);
+        return (
+          <section key={kind} class={[card, "mb-4 overflow-x-auto"]}>
+            <h2 class="border-b border-line px-4 py-3 font-semibold">Unpaid {k.plural}</h2>
+            {rows.length === 0 ? (
+              <Empty>No unpaid {k.plural} match.</Empty>
+            ) : (
+              <table class={table}>
+                <thead>
+                  <tr>
+                    <th class={th}>{k.title} no.</th>
+                    <th class={th}>Client</th>
+                    <th class={th}>Delivered</th>
+                    <th class={th}>Due</th>
+                    <th class={th}>Age</th>
+                    <th class={[th, "text-right"]}>Gross</th>
+                    <th class={[th, "text-right"]}>Paid</th>
+                    <th class={[th, "text-right"]}>Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((d) => (
+                    <tr key={d.dr_id}>
+                      <td class={[td, "whitespace-nowrap"]}>
+                        <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.dr_id)}>
+                          {d.no ?? `No ${k.name} no.`}
+                        </Link>
+                      </td>
+                      <td class={td}>{d.client_name ?? "—"}</td>
+                      <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date)}</td>
+                      <td class={[td, "whitespace-nowrap"]}>{formatDay(d.due_date)}</td>
+                      <td class={[td, "whitespace-nowrap"]}>
+                        {d.balance_c < 0 ? (
+                          <Badge tone="warning">overpaid</Badge>
+                        ) : d.days_overdue > 0 ? (
+                          <Badge tone="danger">{d.days_overdue} days overdue</Badge>
+                        ) : (
+                          <span class="text-ink-muted">{BUCKET_LABEL[d.bucket]}</span>
+                        )}
+                      </td>
+                      <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.gross_c)}</td>
+                      <td class={[td, "text-right tabular-nums"]}>{amt(d.paid_c)}</td>
+                      <td class={[td, "text-right font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
+                        {formatPeso(d.balance_c)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        );
+      })}
       <PaymentFormModal
         open={formOpen}
         form={form}

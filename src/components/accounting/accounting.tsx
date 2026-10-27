@@ -21,6 +21,7 @@ import {
 import { useLiveLoad } from "~/lib/events";
 import { formatDay, formatPeso, moneyText, parseMoney, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
+import { receiptName } from "~/components/sales/sales";
 import { Alert, Badge, Field, Modal } from "~/components/ui/ui";
 import { BankAccountSelect } from "~/components/accounting/bank-account-select";
 import {
@@ -170,7 +171,7 @@ function amountOf(text: string | undefined): number {
   }
 }
 
-/** Spreads `amount` over the DRs, oldest first. */
+/** Spreads `amount` over the DRs and invoices, oldest first. */
 function fillOldest(amount: number, drs: OpenDr[]): Record<string, string> {
   const out: Record<string, string> = {};
   let left = amount;
@@ -182,7 +183,7 @@ function fillOldest(amount: number, drs: OpenDr[]): Record<string, string> {
   return out;
 }
 
-const drName = (d: { no: string | null }) => (d.no ? `DR ${d.no}` : "DR (no number)");
+const drName = (d: OpenDr) => receiptName(d.kind, d.no);
 
 /** A replacement takes over the replaced check's amount and allocations, where still blank. */
 async function prefillFrom(form: PaymentForm, replaces: string) {
@@ -259,7 +260,7 @@ export const PaymentFormModal = component$<{
         const d = drs.value.find((x) => x.dr_id === dr_id);
         return {
           dr_id,
-          amount_c: parseMoney(text, `amount for ${d ? drName(d) : "a DR"}`) ?? 0,
+          amount_c: parseMoney(text, `amount for ${d ? drName(d) : "a DR or invoice"}`) ?? 0,
         };
       });
       const id = unwrap(
@@ -424,7 +425,7 @@ export const PaymentFormModal = component$<{
 
         <div>
           <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
-            <span class="text-sm font-medium">Apply to DRs</span>
+            <span class="text-sm font-medium">Apply to DRs and invoices</span>
             <span class="flex gap-1">
               <button
                 type="button"
@@ -440,15 +441,15 @@ export const PaymentFormModal = component$<{
             </span>
           </div>
           {!form.client_id ? (
-            <p class={hint}>Choose the client to see their unpaid DRs.</p>
+            <p class={hint}>Choose the client to see their unpaid DRs and invoices.</p>
           ) : drs.value.length === 0 ? (
-            <p class={hint}>This client has no unpaid delivered DRs; the payment stays as credit.</p>
+            <p class={hint}>This client has no unpaid delivered DRs or invoices; the payment stays as credit.</p>
           ) : (
             <div class="overflow-x-auto rounded-md border border-line">
               <table class={table}>
                 <thead>
                   <tr>
-                    <th class={th}>DR</th>
+                    <th class={th}>DR / invoice</th>
                     <th class={th}>Delivered</th>
                     <th class={th}>Due</th>
                     <th class={[th, "text-right"]}>Gross</th>
@@ -617,7 +618,7 @@ export const CheckStepModal = component$<{
         )}
         {s === "bounce" && (
           <p class="text-sm">
-            The check stops counting as paid: the DRs it paid owe again until the client replaces
+            The check stops counting as paid: the DRs and invoices it paid owe again until the client replaces
             it.
           </p>
         )}

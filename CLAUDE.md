@@ -86,7 +86,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - **Updates** (`sanco-net/src/update.rs`): the installer copies itself next to the app; every PC serves it (`GET /update`, `/update/installer`). A peer's `app_version` is recorded from `/hello` even when the handshake then refuses it. A newer version shows a banner; "Update now" downloads it (size + SHA-256 checked), runs it with `/P /R` and quits. Bump the version in `Cargo.toml` (workspace) **and** `tauri.conf.json`.
 - **Handshake** (`GET /hello`, `Db::check_peer`) rejects: schema mismatch, clock skew over 2 minutes either way, a known site with a different epoch, or a known site whose head version is below our watermark (restored or copied database). A database opened on a different machine or path takes a new site id automatically; the restore flow must open with `new_identity`.
 - **Document numbers** are shared, like `DR-2026-0001`, with the format editable per type (`sync/numbering.rs`). A number is claimed with reachable peers before use (`Node::reserve_number` over HTTP, i.e. `numbering::reserve`, then `numbering::assign` inside the document's write). **Validate read-only before reserving** (e.g. `inventory::validate`): a write that fails after the reservation leaves the claim held, so the next document skips a number. Posted stock documents are never edited; they are voided and entered again. Numbers live only in `doc_numbers`; documents join it on `ref_id` and never store their own `no` column. On a clash after an offline period, the earliest `(assigned_at, id)` keeps the number, and only the PC that assigned the later one renumbers it (`resolve_clashes`, run after each pull).
-  - **Typed numbers:** DR numbers are typed from the BIR booklet unless Settings sets `number_mode.DR = auto`. They are claimed exactly (`numbering::reserve_exact`, `doc_numbers.manual = 1`) and are **never renumbered**: an offline clash gets to-dos for both users and a "used twice" badge until someone corrects one (`assign_or_change`).
+  - **Typed numbers:** DR and invoice numbers (series `DR`, `SI`) are typed from their BIR booklets unless Settings sets `number_mode.DR` / `number_mode.SI = auto`. They are claimed exactly (`numbering::reserve_exact`, `doc_numbers.manual = 1`) and are **never renumbered**: an offline clash gets to-dos for both users and a "used twice" badge until someone corrects one (`assign_or_change`).
 
 ## Business rules
 - **Margin is margin on price:** `price = cost ÷ (1 − margin%)`. ₱100 at 20% → ₱125.
@@ -96,10 +96,11 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   3. Otherwise landed cost at the item's default margin.
 
   The UI shows which rule applied.
-- **VAT:** a checkbox on bookings, DRs and rates. The rate is in Settings (default 12%). `gross = net × (1 + VAT)`. Show net, VAT and gross.
+- **VAT:** a checkbox on bookings and rates. The rate is in Settings (default 12%). `gross = net × (1 + VAT)`. Show net, VAT and gross.
+- **DR or Invoice** (M12): what the client gets is a DR (no VAT) or an Invoice (VAT). Both are rows of `delivery_receipts`; the type **is** its `vat` flag (`ReceiptKind`), defaulting from the booking's VAT. It changes only until delivery (then void and re-enter). Every screen that lists DRs lists DRs and invoices separately.
 - **Landed cost** = supplier price × FX + the cost-sheet charge lines. Charge types are an editable list (Freight, Customs duty, Brokerage, Bank fees, Import VAT, …), each per-unit, percentage of base, or per-shipment (a PHP total ÷ the cost sheet's `shipment_qty`; a sheet with a per-shipment charge but no qty has no landed cost). The PO "copy to cost sheets" button sets `shipment_qty` to the item's ordered qty.
-- **DR number = BIR booklet number.** There is no separate manual reference. It may be typed at approval and is required to mark the DR delivered.
-- **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR (requested → approved → delivered, or cancelled; a delivered DR is voided, which returns its stock). DR lines name their lot.
+- **DR number = BIR booklet number** (invoices: the invoice booklet, series `SI`). There is no separate manual reference. It may be typed at approval and is required to mark it delivered. A receipt's number is its live `DR` or `SI` row (`v_receipt_no`; `delivery::number_series`): invoices from before M12 keep their DR-series number. Switching the type frees the number (`numbering::release` clears `seq`/`no`; the derived-id row is never deleted).
+- **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR or invoice (requested → approved → delivered, or cancelled; a delivered one is voided, which returns its stock). Its lines name their lot.
 - **Don't add edit locks** (user decision, 2026-10-22): BD requests (also won), bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
 - **Bank accounts** are the company's own accounts (Accounting → Bank accounts). Check deposits, bank transfers received and TT payments pick one (`bank_account_id`); the check's own "bank" is the client's bank and stays free text. No running balance is kept, only what the app moved. Used accounts are made inactive, not deleted.
@@ -115,7 +116,8 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 ## Glossary
 - **BD:** Business Development. Client and prospect requests and inquiries (open → quoted → won/lost).
 - **Booking:** a confirmed client order.
-- **DR:** Delivery Receipt. Delivering one takes stock out and creates a receivable.
+- **DR:** Delivery Receipt, without VAT. Delivering one takes stock out and creates a receivable.
+- **Invoice:** a sales invoice: the same document as a DR but with VAT, numbered from its own booklet (`SI`).
 - **PDC:** post-dated check.
 - **TT:** telegraphic transfer (supplier payment).
 - **Landed cost:** the item's cost in PHP after FX and import charges.

@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::domain::auth::{Action, Module, Perms};
 use crate::domain::bd::{self, BdStatus};
 use crate::domain::bookings::{self, BookingStatus, DeliveryProgress};
-use crate::domain::delivery::{self, DrStatus};
+use crate::domain::delivery::{self, DrStatus, ReceiptKind};
 use crate::domain::payments::{self, CheckStatus, PaymentStatus};
 use crate::domain::purchasing::{self, PoStatus};
 use crate::domain::{inventory, peso, receivables};
@@ -151,10 +151,7 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             .iter()
             .filter(|r| r.follow_up.as_deref().is_some_and(|f| f <= today))
             .count() as i64;
-        let quoted = open
-            .iter()
-            .filter(|r| r.status == BdStatus::Quoted)
-            .count() as i64;
+        let quoted = open.iter().filter(|r| r.status == BdStatus::Quoted).count() as i64;
         out.kpi(
             Module::Bd,
             "bd_open",
@@ -174,7 +171,9 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
     if sees(Module::Bookings) {
         let waiting = bookings::list(conn)?
             .into_iter()
-            .filter(|b| b.status == BookingStatus::Confirmed && b.progress != DeliveryProgress::Full)
+            .filter(|b| {
+                b.status == BookingStatus::Confirmed && b.progress != DeliveryProgress::Full
+            })
             .collect::<Vec<_>>();
         let no_dr = waiting
             .iter()
@@ -186,7 +185,7 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             "Bookings to deliver",
             waiting.len() as i64,
             false,
-            format!("{no_dr} without a DR yet"),
+            format!("{no_dr} without a DR or invoice yet"),
             Tone::Normal,
             "/bookings/?status=to_deliver",
         );
@@ -194,42 +193,64 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
 
     let sees_drs = sees(Module::Accounting) || sees(Module::Bookings);
     if sees_drs {
-        let drs = delivery::list(conn)?;
-        let requested = drs
-            .iter()
-            .filter(|d| d.status == DrStatus::Requested)
-            .count() as i64;
-        let approved = drs
-            .iter()
-            .filter(|d| d.status == DrStatus::Approved)
-            .count() as i64;
-        out.kpi(
-            Module::Accounting,
-            "drs_open",
-            "DRs to deliver",
-            requested + approved,
-            false,
-            format!("{requested} to approve · {approved} approved"),
-            Tone::Normal,
-            if requested > 0 {
-                "/accounting/?status=requested"
-            } else {
-                "/accounting/?status=approved"
-            },
-        );
-        let clashes: Vec<String> = drs
-            .iter()
-            .filter(|d| d.no_clash)
-            .map(|d| d.no.clone().unwrap_or_default())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        out.issue(
-            "dr_clash",
-            "DR numbers used twice",
-            clashes,
-            "/accounting/?status=clash",
-        );
+        let all = delivery::list(conn)?;
+        for kind in [ReceiptKind::Dr, ReceiptKind::Invoice] {
+            let drs: Vec<_> = all.iter().filter(|d| d.kind == kind).collect();
+            let requested = drs
+                .iter()
+                .filter(|d| d.status == DrStatus::Requested)
+                .count() as i64;
+            let approved = drs
+                .iter()
+                .filter(|d| d.status == DrStatus::Approved)
+                .count() as i64;
+            let (key, title, clash_key, clash_title, route) = match kind {
+                ReceiptKind::Dr => (
+                    "drs_open",
+                    "DRs to deliver",
+                    "dr_clash",
+                    "DR numbers used twice",
+                    "/accounting/",
+                ),
+                ReceiptKind::Invoice => (
+                    "invoices_open",
+                    "Invoices to deliver",
+                    "invoice_clash",
+                    "Invoice numbers used twice",
+                    "/accounting/invoices/",
+                ),
+            };
+            out.kpi(
+                Module::Accounting,
+                key,
+                title,
+                requested + approved,
+                false,
+                format!("{requested} to approve · {approved} approved"),
+                Tone::Normal,
+                &format!(
+                    "{route}?status={}",
+                    if requested > 0 {
+                        "requested"
+                    } else {
+                        "approved"
+                    }
+                ),
+            );
+            let clashes: Vec<String> = drs
+                .iter()
+                .filter(|d| d.no_clash)
+                .map(|d| d.no.clone().unwrap_or_default())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            out.issue(
+                clash_key,
+                clash_title,
+                clashes,
+                &format!("{route}?status=clash"),
+            );
+        }
     }
 
     if sees(Module::Accounting) {
@@ -282,11 +303,11 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             .drs
             .iter()
             .filter(|d| d.balance_c < 0)
-            .map(|d| d.no.clone().unwrap_or_else(|| "DR without no.".into()))
+            .map(|d| d.kind.label(d.no.as_deref()))
             .collect();
         out.issue(
             "dr_overpaid",
-            "DRs paid more than their total",
+            "DRs and invoices paid more than their total",
             overpaid,
             "/accounting/receivables/?bucket=credit",
         );
@@ -300,7 +321,9 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
         let (mut to_deposit, mut to_deposit_c, mut bounced, mut bounced_c) = (0, 0, 0, 0);
         for (p, c) in live_checks {
             if c.status == CheckStatus::OnHand
-                && c.check_date.as_deref().is_some_and(|d| d <= week_end.as_str())
+                && c.check_date
+                    .as_deref()
+                    .is_some_and(|d| d <= week_end.as_str())
             {
                 to_deposit += 1;
                 to_deposit_c += p.amount_c;
@@ -481,8 +504,9 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             out.issues.push(Issue {
                 key: "conflicts".into(),
                 title: "Sync conflicts to review".into(),
-                detail: "Edits made on two PCs at once. Keep the current version or restore the other."
-                    .into(),
+                detail:
+                    "Edits made on two PCs at once. Keep the current version or restore the other."
+                        .into(),
                 count: n,
                 href: "/settings/conflicts/".into(),
             });

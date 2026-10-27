@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::Connection;
 use serde::Serialize;
 
+use crate::domain::delivery::ReceiptKind;
 use crate::error::Result;
 use crate::time::{add_days, days_between};
 
@@ -77,11 +78,13 @@ impl Aging {
     }
 }
 
-/// A delivered DR with a balance (positive: owed; negative: overpaid).
+/// A delivered DR or invoice with a balance (positive: owed; negative:
+/// overpaid).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ReceivableDr {
     pub dr_id: String,
+    pub kind: ReceiptKind,
     pub no: Option<String>,
     pub client_id: Option<String>,
     pub client_code: Option<String>,
@@ -116,7 +119,10 @@ pub struct ClientBalance {
     pub balance_c: i64,
     /// Checks on hand or deposited, not cleared yet, that count as paid.
     pub uncleared_c: i64,
+    /// Unpaid DRs and invoices.
     pub open_drs: i64,
+    pub open_invoices: i64,
+    /// DRs and invoices paid more than their total.
     pub overpaid_drs: i64,
     /// Days past due of the oldest unpaid DR, if any is overdue.
     pub oldest_overdue_days: Option<i64>,
@@ -137,6 +143,7 @@ impl ClientBalance {
             balance_c: 0,
             uncleared_c: 0,
             open_drs: 0,
+            open_invoices: 0,
             overpaid_drs: 0,
             oldest_overdue_days: None,
         }
@@ -146,7 +153,10 @@ impl ClientBalance {
         if d.balance_c > 0 {
             self.aging.add(d.bucket, d.balance_c);
             self.outstanding_c += d.balance_c;
-            self.open_drs += 1;
+            match d.kind {
+                ReceiptKind::Dr => self.open_drs += 1,
+                ReceiptKind::Invoice => self.open_invoices += 1,
+            }
             if d.days_overdue > 0 {
                 self.oldest_overdue_days =
                     Some(self.oldest_overdue_days.unwrap_or(0).max(d.days_overdue));
@@ -203,9 +213,10 @@ pub fn paid_by_dr(conn: &Connection) -> Result<HashMap<String, i64>> {
 fn open_drs(conn: &Connection, client: Option<&str>, today: &str) -> Result<Vec<ReceivableDr>> {
     let mut stmt = conn.prepare_cached(
         "SELECT v.dr_id, n.no, v.client_id, cn.no, c.name, v.delivered_date, c.terms_days,
-                v.gross_c, v.paid_c, v.balance_c
+                v.gross_c, v.paid_c, v.balance_c, COALESCE(r.vat, 0)
          FROM v_receivables v
-         LEFT JOIN doc_numbers n ON n.ref_id = v.dr_id AND n.series = 'DR' AND n._deleted = 0
+         JOIN delivery_receipts r ON r.id = v.dr_id
+         LEFT JOIN v_receipt_no n ON n.dr_id = v.dr_id
          LEFT JOIN clients c ON c.id = v.client_id
          LEFT JOIN doc_numbers cn ON cn.ref_id = v.client_id AND cn.series = 'CL' AND cn._deleted = 0
          WHERE v.balance_c <> 0 AND (?1 IS NULL OR v.client_id = ?1)
@@ -220,6 +231,7 @@ fn open_drs(conn: &Connection, client: Option<&str>, today: &str) -> Result<Vec<
             .unwrap_or(0);
         Ok(ReceivableDr {
             dr_id: r.get(0)?,
+            kind: ReceiptKind::from_vat(r.get::<_, i64>(10)? != 0),
             no: r.get(1)?,
             client_id: r.get(2)?,
             client_code: r.get(3)?,

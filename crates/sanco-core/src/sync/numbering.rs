@@ -46,6 +46,8 @@ pub mod series {
     pub const BD: &str = "BD";
     pub const BOOKING: &str = "BK";
     pub const DR: &str = "DR";
+    /// Sales invoices: delivery receipts with VAT (their own BIR booklet).
+    pub const INVOICE: &str = "SI";
     pub const PAYMENT: &str = "PAY";
     pub const PO: &str = "PO";
     pub const RECEIVING: &str = "RR";
@@ -124,7 +126,7 @@ pub fn format_key(series: &str) -> String {
 }
 
 /// Series whose numbers may be typed by staff instead of given out.
-pub const MANUAL_SERIES: [&str; 1] = [series::DR];
+pub const MANUAL_SERIES: [&str; 2] = [series::DR, series::INVOICE];
 /// Longest typed number, in digits.
 pub const MANUAL_MAX_DIGITS: usize = 12;
 
@@ -134,8 +136,9 @@ pub fn mode_key(series: &str) -> String {
     format!("number_mode.{series}")
 }
 
-/// Whether staff type this series' numbers. DR numbers are typed from the
-/// BIR booklet unless the setting says `auto`; other series never are.
+/// Whether staff type this series' numbers. DR and invoice numbers are typed
+/// from the BIR booklets unless the setting says `auto`; other series never
+/// are.
 pub fn is_manual(conn: &Connection, series: &str) -> Result<bool> {
     if !MANUAL_SERIES.contains(&series) {
         return Ok(false);
@@ -161,7 +164,9 @@ pub fn parse_manual(text: &str) -> Result<(i64, String)> {
             "“{t}” is not a valid number: use digits only, as printed (up to {MANUAL_MAX_DIGITS})"
         )));
     }
-    let seq: i64 = t.parse().map_err(|_| Error::Invalid("enter the number".into()))?;
+    let seq: i64 = t
+        .parse()
+        .map_err(|_| Error::Invalid("enter the number".into()))?;
     if seq == 0 {
         return Err(Error::Invalid("the number can't be zero".into()));
     }
@@ -568,6 +573,12 @@ pub fn assign_or_change(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> R
     if text(&row, "no") == res.no && int(&row, "seq") == res.seq {
         return Ok(res.no.clone());
     }
+    // A freed number ([`release`]) keeps the text it had in `prev_no`.
+    let prev = match text(&row, "no") {
+        "" => text(&row, "prev_no"),
+        no => no,
+    }
+    .to_string();
     let (site, now) = (tx.site().to_string(), tx.now_ms());
     tx.update(
         DOC_NUMBERS,
@@ -576,7 +587,7 @@ pub fn assign_or_change(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> R
             "period": res.period,
             "seq": res.seq,
             "no": res.no,
-            "prev_no": text(&row, "no"),
+            "prev_no": text_opt(&prev),
             "site": site,
             "assigned_at": now,
             "confirmed": res.confirmed(),
@@ -584,6 +595,32 @@ pub fn assign_or_change(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> R
         }),
     )?;
     Ok(res.no.clone())
+}
+
+/// Frees a document's number in a series (a delivery receipt switched
+/// between DR and invoice). The row stays, because its id is derived and a
+/// delete would close the series to the document for good; its `seq` and
+/// `no` are cleared (the text goes to `prev_no`), so other documents can
+/// take the number and [`assign_or_change`] can number it again. Peers may
+/// refuse the number until their claim for this document expires
+/// ([`CLAIM_TTL_MS`]).
+pub fn release(tx: &mut WriteTx, ref_id: &str, series: &str) -> Result<()> {
+    let id = number_row_id(ref_id, series);
+    let Some(row) = tx.get(DOC_NUMBERS, &id)? else {
+        return Ok(());
+    };
+    if row["seq"].is_null() {
+        return Ok(());
+    }
+    tx.conn()
+        .prepare_cached("DELETE FROM number_claims WHERE ref_id = ?1 AND series = ?2")?
+        .execute(params![ref_id, series])?;
+    tx.update(
+        DOC_NUMBERS,
+        &id,
+        json!({ "seq": null, "no": null, "prev_no": text(&row, "no") }),
+    )
+    .map(drop)
 }
 
 /// A document's current number in a series.
@@ -716,7 +753,14 @@ fn renumber(tx: &mut WriteTx, seen: &Row, res: &Reservation) -> Result<Option<Re
          The earlier record keeps it; this one is now {}.",
         out.old_no, out.new_no
     );
-    notify_both(tx, &row, &winner, &format!("renumbered/{old_seq}"), &title, &notes)?;
+    notify_both(
+        tx,
+        &row,
+        &winner,
+        &format!("renumbered/{old_seq}"),
+        &title,
+        &notes,
+    )?;
     Ok(Some(out))
 }
 
@@ -785,6 +829,10 @@ fn notify_both(
 
 fn text<'r>(row: &'r Row, col: &str) -> &'r str {
     row.get(col).and_then(Value::as_str).unwrap_or_default()
+}
+
+fn text_opt(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
 }
 
 fn int(row: &Row, col: &str) -> i64 {

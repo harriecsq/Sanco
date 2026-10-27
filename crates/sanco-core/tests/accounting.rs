@@ -1,8 +1,8 @@
 mod common;
 
 use common::{T0, TestPeer, pull};
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::conflicts;
 use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
@@ -121,8 +121,10 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res, &mut Serials::none()))
-        .unwrap();
+    db.write(actor.clone(), move |tx| {
+        inventory::create(tx, &doc, &res, &mut Serials::none())
+    })
+    .unwrap();
     id
 }
 
@@ -170,6 +172,7 @@ fn booking(
 fn dr_input(booking: &str, line: &str, qty: i64, line_id: Option<String>) -> DrRequestInput {
     DrRequestInput {
         booking_id: booking.into(),
+        kind: None,
         date: "2026-07-01".into(),
         from_location_id: warehouse(),
         deliver_to: String::new(),
@@ -198,7 +201,14 @@ fn delivered_dr(
     let id = db
         .write(actor.clone(), move |tx| delivery::request(tx, &input))
         .unwrap();
-    let res = numbering::reserve_exact(db, &[], series::DR, no, &id).unwrap();
+    let res = numbering::reserve_exact(
+        db,
+        &[],
+        db.read(|c| delivery::number_series(c, &id)).unwrap(),
+        no,
+        &id,
+    )
+    .unwrap();
     let rid = id.clone();
     db.write(actor.clone(), move |tx| {
         delivery::approve(tx, &rid, Some(&res))
@@ -327,8 +337,8 @@ fn checks_payments_and_receivables() {
     assert_eq!(report.drs[0].bucket, AgingBucket::Days31To60);
     let cb = &report.clients[0];
     assert_eq!(
-        (cb.balance_c, cb.overdue_c, cb.open_drs),
-        (140_000, 56_000, 2)
+        (cb.balance_c, cb.overdue_c, cb.open_drs, cb.open_invoices),
+        (140_000, 56_000, 0, 2)
     );
     assert_eq!(cb.oldest_overdue_days, Some(51));
     assert_eq!(cb.credit_limit_c, Some(100_000));
@@ -477,7 +487,7 @@ fn checks_payments_and_receivables() {
     let c1 = pay(&a.db, &actor, &[], cash.clone()).unwrap();
     let p = payment(&a.db, &c1);
     assert_eq!((p.applied_c, p.unapplied_c), (84_000, 16_000));
-    assert_eq!(p.dr_nos, ["102"]);
+    assert_eq!(p.receipts, ["Invoice 102"]);
     let cb =
         a.db.read(|c| receivables::client_balance(c, &client, &later))
             .unwrap();

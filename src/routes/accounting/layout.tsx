@@ -6,7 +6,7 @@ import { TabNav } from "~/components/ui/tabs";
 
 export default component$(() => {
   const session = useSession();
-  // Booking users open DRs from their bookings.
+  // Booking users open DRs and invoices from their bookings.
   if (!can(session.user, "accounting") && !can(session.user, "bookings")) return <NoAccess />;
   const money = can(session.user, "accounting");
   return (
@@ -15,6 +15,7 @@ export default component$(() => {
         label="Accounting"
         tabs={[
           { href: "/accounting/", label: "Delivery receipts" },
+          { href: "/accounting/invoices/", label: "Invoices" },
           ...(money
             ? [
                 { href: "/accounting/receivables/", label: "Receivables" },

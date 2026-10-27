@@ -7,9 +7,14 @@
 //! A delivered DR is voided (cancelled with `delivered_at` kept), which
 //! puts the stock back.
 //!
-//! The DR number is the BIR booklet number. Staff type it (any time until
-//! delivery, required by then) unless the DR series is set to automatic
-//! (`numbering::is_manual`), in which case it is given at approval.
+//! A receipt is a DR (no VAT) or an Invoice (VAT): [`ReceiptKind`], stored
+//! as `vat`. The type can change until delivery.
+//!
+//! The number is the BIR booklet number: series DR for DRs, SI for
+//! invoices. Staff type it (any time until delivery, required by then)
+//! unless the series is set to automatic (`numbering::is_manual`), in which
+//! case it is given at approval. Invoices made before M12 keep their DR
+//! number ([`number_series`]); switching the type frees the number.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -70,6 +75,57 @@ impl DrStatus {
     }
 }
 
+/// What the client gets: a DR (no VAT) or an Invoice (VAT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptKind {
+    Dr,
+    Invoice,
+}
+
+impl ReceiptKind {
+    pub fn from_vat(vat: bool) -> Self {
+        if vat {
+            ReceiptKind::Invoice
+        } else {
+            ReceiptKind::Dr
+        }
+    }
+
+    pub fn vat(self) -> bool {
+        self == ReceiptKind::Invoice
+    }
+
+    /// The number series of new numbers.
+    pub fn series(self) -> &'static str {
+        match self {
+            ReceiptKind::Dr => series::DR,
+            ReceiptKind::Invoice => series::INVOICE,
+        }
+    }
+
+    /// "DR" or "invoice", for messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            ReceiptKind::Dr => "DR",
+            ReceiptKind::Invoice => "invoice",
+        }
+    }
+
+    /// "DR 123", "Invoice 456", or "DR (no number)".
+    pub fn label(self, no: Option<&str>) -> String {
+        let title = match self {
+            ReceiptKind::Dr => "DR",
+            ReceiptKind::Invoice => "Invoice",
+        };
+        match no {
+            Some(n) => format!("{title} {n}"),
+            None => format!("{title} (no number)"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct DrLineInput {
@@ -90,6 +146,10 @@ pub struct DrLineInput {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct DrRequestInput {
     pub booking_id: String,
+    /// DR or Invoice. `None`: as the booking's VAT says (new), unchanged
+    /// (edit). Changes only until delivery.
+    #[serde(default)]
+    pub kind: Option<ReceiptKind>,
     /// Planned delivery date.
     pub date: String,
     pub from_location_id: String,
@@ -111,8 +171,12 @@ pub struct DeliverInput {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct DrInfo {
     pub id: String,
-    /// The DR (booklet) number; `None` until entered.
+    /// DR (no VAT) or Invoice (VAT, same as `vat`).
+    pub kind: ReceiptKind,
+    /// The booklet number; `None` until entered.
     pub no: Option<String>,
+    /// Series of the number (or of the number it will get): DR or SI.
+    pub no_series: String,
     /// False if other PCs were offline when the number was entered.
     pub no_confirmed: bool,
     /// Typed by staff.
@@ -182,7 +246,7 @@ pub struct DrLine {
 pub struct DrDetail {
     pub dr: DrInfo,
     pub lines: Vec<DrLine>,
-    /// DR numbers are typed by staff (else given at approval).
+    /// Its numbers are typed by staff (else given at approval).
     pub manual_numbers: bool,
     /// Payments allocated to it.
     pub payments: Vec<DrPayment>,
@@ -211,6 +275,7 @@ struct PreparedLine {
 /// The DR being edited, as it is now.
 struct Current {
     status: DrStatus,
+    kind: ReceiptKind,
     location: String,
     lines: Vec<DrLine>,
 }
@@ -227,7 +292,9 @@ fn lines_of(conn: &Connection, dr: Option<&str>) -> Result<Vec<(String, DrLine)>
     )?;
     let rows = stmt.query_map([dr], |r| {
         let (qty, price_c): (i64, i64) = (r.get(8)?, r.get(9)?);
-        let boxed = r.get::<_, Option<String>>(10)?.is_some_and(|c| !c.is_empty());
+        let boxed = r
+            .get::<_, Option<String>>(10)?
+            .is_some_and(|c| !c.is_empty());
         Ok((
             r.get(0)?,
             DrLine {
@@ -301,7 +368,9 @@ fn line_draws(
             let (item, _) = boxes::box_row(conn, &d.box_id)?
                 .ok_or_else(|| Error::Invalid("one of the boxes no longer exists".into()))?;
             if item != item_id {
-                return Err(Error::Invalid(format!("one of the boxes doesn't hold {code}")));
+                return Err(Error::Invalid(format!(
+                    "one of the boxes doesn't hold {code}"
+                )));
             }
             if d.qty <= 0 {
                 continue;
@@ -332,7 +401,10 @@ fn line_draws(
     for (box_id, (expiry, qty)) in back {
         if !available.contains_key(box_id) {
             order.push((box_id.clone(), expiry.clone()));
-            sizes.insert(box_id.clone(), boxes::box_row(conn, box_id)?.map_or(0, |b| b.1));
+            sizes.insert(
+                box_id.clone(),
+                boxes::box_row(conn, box_id)?.map_or(0, |b| b.1),
+            );
         }
         *available.entry(box_id.clone()).or_default() += qty;
     }
@@ -384,8 +456,21 @@ fn prepare_request(
         booking.ok_or_else(|| Error::Invalid("that booking no longer exists".into()))?;
     if current.is_none() && BookingStatus::parse(status.as_deref()) != BookingStatus::Confirmed {
         return Err(Error::Invalid(
-            "DRs can only be requested for a confirmed booking".into(),
+            "DRs and invoices can only be requested for a confirmed booking".into(),
         ));
+    }
+    let kind = input
+        .kind
+        .or(current.map(|c| c.kind))
+        .unwrap_or(ReceiptKind::from_vat(vat != 0));
+    if let Some(cur) = current
+        && kind != cur.kind
+        && !cur.status.is_open()
+    {
+        return Err(Error::Invalid(format!(
+            "a delivered {} can't change type; void it and enter it again",
+            cur.kind.name()
+        )));
     }
     let date = require_date(&input.date, "delivery date")?;
     check_location(conn, &input.from_location_id)?;
@@ -418,7 +503,12 @@ fn prepare_request(
             }
             if l.boxes.is_empty() {
                 *lots
-                    .entry((l.item_id.clone(), cur.location.clone(), l.expiry.clone(), None))
+                    .entry((
+                        l.item_id.clone(),
+                        cur.location.clone(),
+                        l.expiry.clone(),
+                        None,
+                    ))
                     .or_default() += l.qty;
             }
             for d in &l.boxes {
@@ -431,7 +521,9 @@ fn prepare_request(
                     ))
                     .or_default() += d.qty;
                 if cur.location == input.from_location_id {
-                    let e = back.entry(d.box_id.clone()).or_insert((d.expiry.clone(), 0));
+                    let e = back
+                        .entry(d.box_id.clone())
+                        .or_insert((d.expiry.clone(), 0));
                     e.1 += d.qty;
                 }
             }
@@ -569,7 +661,7 @@ fn prepare_request(
     inventory::check_not_negative(conn, &effects, "")?;
     Ok(PreparedRequest {
         client_id,
-        vat: vat != 0,
+        vat: kind.vat(),
         date,
         lines,
     })
@@ -643,11 +735,13 @@ pub fn request(tx: &mut WriteTx, input: &DrRequestInput) -> Result<String> {
 
 fn current(conn: &Connection, id: &str) -> Result<Current> {
     let (status, location) = status_of(conn, id)?;
+    let kind = kind_of(conn, id)?;
     if status == DrStatus::Cancelled {
-        return Err(Error::Invalid("this DR is cancelled".into()));
+        return Err(Error::Invalid(format!("this {} is cancelled", kind.name())));
     }
     Ok(Current {
         status,
+        kind,
         location,
         lines: lines_of(conn, Some(id))?
             .into_iter()
@@ -671,7 +765,10 @@ pub fn check_update(
         |r| r.get(0),
     )?;
     if booking.as_deref() != Some(input.booking_id.as_str()) {
-        return Err(Error::Invalid("a DR stays with its booking".into()));
+        return Err(Error::Invalid(format!(
+            "a {} stays with its booking",
+            cur.kind.name()
+        )));
     }
     if let (DrStatus::Delivered, Some(d)) = (cur.status, delivery) {
         let date = require_date(&d.date, "delivery date")?;
@@ -685,17 +782,18 @@ pub fn check_update(
     if cur.status == DrStatus::Delivered {
         let paid = receivables::dr_paid(conn, id)?;
         if paid > 0 {
-            let (vat, vat_bp): (i64, i64) = conn.query_row(
-                "SELECT COALESCE(vat, 0), COALESCE(vat_bp, 0) FROM delivery_receipts WHERE id = ?1",
+            let vat_bp: i64 = conn.query_row(
+                "SELECT COALESCE(vat_bp, 0) FROM delivery_receipts WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )?;
             let net = p.lines.iter().map(|l| line_amount(l.qty, l.price_c)).sum();
-            let gross = pricing::with_vat(net, if vat != 0 { vat_bp } else { 0 }).gross_c;
+            let gross = pricing::with_vat(net, if p.vat { vat_bp } else { 0 }).gross_c;
             if gross < paid {
                 return Err(Error::Invalid(format!(
-                    "payments of {} are applied to this DR; its total can't go below that ({} now). Change the payments first",
+                    "payments of {} are applied to this {}; its total can't go below that ({} now). Change the payments first",
                     peso(paid),
+                    cur.kind.name(),
                     peso(gross)
                 )));
             }
@@ -727,8 +825,31 @@ pub fn update(
         patch["delivered_date"] = json!(require_date(&d.date, "delivery date")?);
         patch["received_by"] = json!(text_opt(&d.received_by));
     }
+    let kind = ReceiptKind::from_vat(p.vat);
+    if kind != cur.kind {
+        // The number was from the other booklet: free it (an Invoice made
+        // before M12 that becomes a DR keeps its DR number).
+        let series = number_series(tx.conn(), id)?;
+        if series != kind.series() {
+            numbering::release(tx, id, series)?;
+        }
+        patch["vat"] = json!(p.vat);
+        patch["vat_bp"] = json!(settings::vat_rate_bp(tx.conn())?);
+    }
     tx.update(DELIVERY_RECEIPTS, id, patch)?;
     write_lines(tx, id, p.lines)
+}
+
+/// A live receipt's type.
+fn kind_of(conn: &Connection, id: &str) -> Result<ReceiptKind> {
+    let vat: Option<i64> = conn
+        .query_row(
+            "SELECT COALESCE(vat, 0) FROM delivery_receipts WHERE id = ?1 AND _deleted = 0",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(ReceiptKind::from_vat(vat.unwrap_or(0) != 0))
 }
 
 /// A live DR's status and source location.
@@ -742,21 +863,40 @@ fn status_of(conn: &Connection, id: &str) -> Result<(DrStatus, String)> {
         )
         .optional()?;
     let (status, location) =
-        row.ok_or_else(|| Error::Invalid("that DR no longer exists".into()))?;
+        row.ok_or_else(|| Error::Invalid("that DR or invoice no longer exists".into()))?;
     Ok((
         DrStatus::parse(status.as_deref()),
         location.unwrap_or_default(),
     ))
 }
 
-/// The DR's number, if it has one.
+/// The receipt's number, if it has one.
 pub fn number_of(conn: &Connection, id: &str) -> Result<Option<String>> {
-    numbering::number_of(conn, series::DR, id)
+    Ok(conn
+        .prepare_cached("SELECT no FROM v_receipt_no WHERE dr_id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()?)
 }
 
-fn check_reservation(id: &str, res: &Reservation) -> Result<()> {
-    if res.series != series::DR || res.ref_id != id {
-        return Err(Error::Invalid("wrong number for this DR".into()));
+/// The series a receipt's number is (or will be) in: that of the number it
+/// has, else that of its type. Invoices made before M12 have DR numbers.
+pub fn number_series(conn: &Connection, id: &str) -> Result<&'static str> {
+    let held: Option<String> = conn
+        .prepare_cached("SELECT series FROM v_receipt_no WHERE dr_id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()?;
+    Ok(match held.as_deref() {
+        Some(series::DR) => series::DR,
+        Some(series::INVOICE) => series::INVOICE,
+        _ => kind_of(conn, id)?.series(),
+    })
+}
+
+fn check_reservation(conn: &Connection, id: &str, res: &Reservation) -> Result<()> {
+    if res.ref_id != id || res.series != number_series(conn, id)? {
+        return Err(Error::Invalid(
+            "wrong number for this receipt; reload it".into(),
+        ));
     }
     Ok(())
 }
@@ -765,7 +905,11 @@ fn check_reservation(id: &str, res: &Reservation) -> Result<()> {
 pub fn check_approve(conn: &Connection, id: &str) -> Result<()> {
     match status_of(conn, id)?.0 {
         DrStatus::Requested => Ok(()),
-        s => Err(Error::Invalid(format!("this DR is already {}", s.as_str()))),
+        s => Err(Error::Invalid(format!(
+            "this {} is already {}",
+            kind_of(conn, id)?.name(),
+            s.as_str()
+        ))),
     }
 }
 
@@ -773,7 +917,7 @@ pub fn check_approve(conn: &Connection, id: &str) -> Result<()> {
 pub fn approve(tx: &mut WriteTx, id: &str, res: Option<&Reservation>) -> Result<()> {
     check_approve(tx.conn(), id)?;
     if let Some(res) = res {
-        check_reservation(id, res)?;
+        check_reservation(tx.conn(), id, res)?;
         numbering::assign_or_change(tx, res, DELIVERY_RECEIPTS)?;
     }
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
@@ -793,13 +937,19 @@ pub fn approve(tx: &mut WriteTx, id: &str, res: Option<&Reservation>) -> Result<
 /// writing. `today` is Manila's.
 pub fn check_deliver(conn: &Connection, id: &str, input: &DeliverInput, today: &str) -> Result<()> {
     let (status, location) = status_of(conn, id)?;
+    let kind = kind_of(conn, id)?.name();
     match status {
         DrStatus::Approved => {}
         DrStatus::Requested => {
-            return Err(Error::Invalid("approve the DR before delivering it".into()));
+            return Err(Error::Invalid(format!(
+                "approve the {kind} before delivering it"
+            )));
         }
         s => {
-            return Err(Error::Invalid(format!("this DR is already {}", s.as_str())));
+            return Err(Error::Invalid(format!(
+                "this {kind} is already {}",
+                s.as_str()
+            )));
         }
     }
     let date = require_date(&input.date, "delivery date")?;
@@ -822,11 +972,14 @@ pub fn deliver(
     let today = manila_date_string(tx.now_ms());
     check_deliver(tx.conn(), id, input, &today)?;
     if let Some(res) = res {
-        check_reservation(id, res)?;
+        check_reservation(tx.conn(), id, res)?;
         numbering::assign_or_change(tx, res, DELIVERY_RECEIPTS)?;
     }
     if number_of(tx.conn(), id)?.is_none() {
-        return Err(Error::Invalid("enter the DR number first".into()));
+        return Err(Error::Invalid(format!(
+            "enter the {} number first",
+            kind_of(tx.conn(), id)?.name()
+        )));
     }
     let vat_bp = settings::vat_rate_bp(tx.conn())?;
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
@@ -848,7 +1001,10 @@ pub fn deliver(
 /// Checks that the DR's number can be set or corrected, without writing.
 pub fn check_set_number(conn: &Connection, id: &str) -> Result<()> {
     match status_of(conn, id)?.0 {
-        DrStatus::Cancelled => Err(Error::Invalid("this DR is cancelled".into())),
+        DrStatus::Cancelled => Err(Error::Invalid(format!(
+            "this {} is cancelled",
+            kind_of(conn, id)?.name()
+        ))),
         _ => Ok(()),
     }
 }
@@ -856,17 +1012,18 @@ pub fn check_set_number(conn: &Connection, id: &str) -> Result<()> {
 /// Sets or corrects a DR's typed number.
 pub fn set_number(tx: &mut WriteTx, id: &str, res: &Reservation) -> Result<()> {
     check_set_number(tx.conn(), id)?;
-    check_reservation(id, res)?;
+    check_reservation(tx.conn(), id, res)?;
     numbering::assign_or_change(tx, res, DELIVERY_RECEIPTS).map(drop)
 }
 
 /// Cancels a DR that wasn't delivered.
 pub fn cancel(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     let (status, _) = status_of(tx.conn(), id)?;
+    let kind = kind_of(tx.conn(), id)?.name();
     if !status.is_open() {
         return Err(Error::Invalid(match status {
-            DrStatus::Delivered => "this DR was delivered; void it instead".into(),
-            s => format!("this DR is already {}", s.as_str()),
+            DrStatus::Delivered => format!("this {kind} was delivered; void it instead"),
+            s => format!("this {kind} is already {}", s.as_str()),
         }));
     }
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
@@ -886,20 +1043,21 @@ pub fn cancel(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
 /// Voids a delivered DR: its stock comes back. Needs a reason.
 pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     let (status, _) = status_of(tx.conn(), id)?;
+    let kind = kind_of(tx.conn(), id)?.name();
     if status != DrStatus::Delivered {
-        return Err(Error::Invalid(
-            "only a delivered DR can be voided; cancel it instead".into(),
-        ));
+        return Err(Error::Invalid(format!(
+            "only a delivered {kind} can be voided; cancel it instead"
+        )));
     }
     let paid = receivables::dr_paid(tx.conn(), id)?;
     if paid > 0 {
         return Err(Error::Invalid(format!(
-            "payments of {} are applied to this DR; take them off the payments first",
+            "payments of {} are applied to this {kind}; take them off the payments first",
             peso(paid)
         )));
     }
-    let reason =
-        text_opt(reason).ok_or_else(|| Error::Invalid("enter why the DR is voided".into()))?;
+    let reason = text_opt(reason)
+        .ok_or_else(|| Error::Invalid(format!("enter why the {kind} is voided")))?;
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
     tx.update(
         DELIVERY_RECEIPTS,
@@ -961,14 +1119,14 @@ pub fn dr_counts(conn: &Connection, booking_id: &str) -> Result<(i64, i64)> {
 const SELECT: &str = "
     SELECT r.id, n.no, COALESCE(n.confirmed, 1), COALESCE(n.manual, 0),
            EXISTS (SELECT 1 FROM doc_numbers o WHERE o._deleted = 0 AND o.series = n.series
-                   AND o.period = n.period AND o.seq = n.seq AND o.id <> n.id),
+                   AND o.period = n.period AND o.seq = n.seq AND o.id <> n.number_id),
            r.booking_id, bn.no, r.client_id, cn.no, c.name, r.date, r.from_location_id, l.name,
            r.status, COALESCE(r.vat, 0), COALESCE(r.vat_bp, 0), r.deliver_to, r.notes,
            r.created_at, uc.display_name, r.approved_at, ua.display_name, r.delivered_date,
            r.delivered_at, ud.display_name, r.received_by, r.cancelled_at, ux.display_name,
-           r.cancel_reason, c.terms_days
+           r.cancel_reason, c.terms_days, n.series
     FROM delivery_receipts r
-    LEFT JOIN doc_numbers n ON n.ref_id = r.id AND n.series = 'DR' AND n._deleted = 0
+    LEFT JOIN v_receipt_no n ON n.dr_id = r.id
     LEFT JOIN doc_numbers bn ON bn.ref_id = r.booking_id AND bn.series = 'BK' AND bn._deleted = 0
     LEFT JOIN clients c ON c.id = r.client_id
     LEFT JOIN doc_numbers cn ON cn.ref_id = r.client_id AND cn.series = 'CL' AND cn._deleted = 0
@@ -982,9 +1140,14 @@ const SELECT: &str = "
 fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
     let status = DrStatus::parse(r.get::<_, Option<String>>(13)?.as_deref());
     let delivered_at: Option<i64> = r.get(23)?;
+    let kind = ReceiptKind::from_vat(r.get::<_, i64>(14)? != 0);
     Ok(DrInfo {
         id: r.get(0)?,
+        kind,
         no: r.get(1)?,
+        no_series: r
+            .get::<_, Option<String>>(30)?
+            .unwrap_or_else(|| kind.series().to_string()),
         no_confirmed: r.get::<_, i64>(2)? != 0,
         no_manual: r.get::<_, i64>(3)? != 0,
         no_clash: r.get(4)?,
@@ -1082,10 +1245,11 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<DrDetail>> {
         .map(|(_, l)| l)
         .collect();
     fill(&mut dr, &lines, receivables::dr_paid(conn, id)?);
+    let manual_numbers = numbering::is_manual(conn, &dr.no_series)?;
     Ok(Some(DrDetail {
         dr,
         lines,
-        manual_numbers: numbering::is_manual(conn, series::DR)?,
+        manual_numbers,
         payments: payments::for_dr(conn, id)?,
     }))
 }
@@ -1106,7 +1270,11 @@ pub fn lots_for_booking(conn: &Connection, booking_id: &str, today: &str) -> Res
 }
 
 /// Boxes in stock of a booking's items, for picking a DR's draws.
-pub fn boxes_for_booking(conn: &Connection, booking_id: &str, today: &str) -> Result<Vec<BoxStock>> {
+pub fn boxes_for_booking(
+    conn: &Connection,
+    booking_id: &str,
+    today: &str,
+) -> Result<Vec<BoxStock>> {
     let items: Vec<String> = {
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT item_id FROM booking_lines WHERE booking_id = ?1 AND _deleted = 0",

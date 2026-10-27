@@ -194,7 +194,7 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     )?;
     if used {
         return Err(Error::Invalid(
-            "this client has requests, bookings, DRs or payments; mark it inactive instead".into(),
+            "this client has requests, bookings, DRs, invoices or payments; mark it inactive instead".into(),
         ));
     }
     let rates: Vec<String> = {

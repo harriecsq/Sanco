@@ -22,6 +22,7 @@ import {
   type DocForm,
 } from "~/components/inventory/stock-doc-form";
 import { ExpiryBadge } from "~/components/inventory/expiry-badge";
+import { receiptHref } from "~/components/sales/sales";
 import { Alert, Badge, Empty, PageHeader } from "~/components/ui/ui";
 import { btnPrimary, btnSecondary, card, hint, table, td, th } from "~/components/ui/styles";
 
@@ -238,7 +239,7 @@ const MOVE_LABEL: Record<StockKind, string> = {
   receipt: "Receipt",
   adjustment: "Adjustment",
   transfer: "Transfer",
-  delivery: "Delivered DR",
+  delivery: "Delivered",
   po_receipt: "Received on PO",
 };
 
@@ -453,7 +454,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                         class="text-brand-700 hover:underline"
                         href={
                           m.kind === "delivery"
-                            ? `/accounting/?id=${m.doc_id}`
+                            ? receiptHref(m.invoice ? "invoice" : "dr", m.doc_id)
                             : m.kind === "po_receipt"
                               ? `/orders/receiving/?id=${m.doc_id}`
                               : `/inventory/movements/?id=${m.doc_id}`
@@ -461,7 +462,9 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                       >
                         {m.no ?? KIND_LABEL[m.kind]}
                       </Link>{" "}
-                      <span class={hint}>{MOVE_LABEL[m.kind]}</span>
+                      <span class={hint}>
+                        {m.kind === "delivery" ? (m.invoice ? "Delivered invoice" : "Delivered DR") : MOVE_LABEL[m.kind]}
+                      </span>
                     </td>
                     <td class={td}>{m.location_name ?? "Deleted location"}</td>
                     <td class={[td, "whitespace-nowrap"]}>{m.expiry ? formatDay(m.expiry) : "—"}</td>

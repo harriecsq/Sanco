@@ -236,6 +236,8 @@ pub struct StockMove {
     pub po_id: Option<String>,
     pub box_id: Option<String>,
     pub serial: Option<String>,
+    /// A delivery on an invoice (else on a DR).
+    pub invoice: bool,
 }
 
 // Writing -------------------------------------------------------------------
@@ -297,7 +299,7 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
     let kind = input.kind;
     if kind == StockKind::Delivery {
         return Err(Error::Invalid(
-            "deliveries are recorded on DRs, in Accounting".into(),
+            "deliveries are recorded on DRs and invoices, in Accounting".into(),
         ));
     }
     if kind == StockKind::PoReceipt {
@@ -403,7 +405,12 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
                     (false, _) => None,
                 };
                 *effects
-                    .entry((line.item_id.clone(), input.location_id.clone(), expiry.clone(), None))
+                    .entry((
+                        line.item_id.clone(),
+                        input.location_id.clone(),
+                        expiry.clone(),
+                        None,
+                    ))
                     .or_default() += line.qty;
                 for pcs in boxes::box_sizes(line.qty, size) {
                     lines.push(PreparedLine {
@@ -618,7 +625,11 @@ pub(crate) fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>>
 }
 
 /// Fails if applying `effects` would take a lot (or a box) below zero.
-pub(crate) fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: &str) -> Result<()> {
+pub(crate) fn check_not_negative(
+    conn: &Connection,
+    effects: &[Effect],
+    prefix: &str,
+) -> Result<()> {
     for e in effects.iter().filter(|e| e.qty < 0) {
         let before: i64 = conn
             .prepare_cached(
@@ -984,9 +995,10 @@ pub fn expiring(conn: &Connection, today: &str, within_days: i64) -> Result<Vec<
 /// document, a DR for deliveries or a receiving report for PO receipts.
 pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT m.doc_id, n.no, m.kind, m.date, m.location_id, l.name, m.expiry, m.qty,
+        "SELECT m.doc_id, COALESCE(n.no, rn.no), m.kind, m.date, m.location_id, l.name,
+                m.expiry, m.qty,
                 COALESCE(d.created_at, r.delivered_at, r.created_at, p.created_at, 0) AS at,
-                p.po_id, m.box_id, bn.no
+                p.po_id, m.box_id, bn.no, COALESCE(r.vat, 0)
          FROM v_stock_moves m
          LEFT JOIN doc_numbers bn ON bn.ref_id = m.box_id AND bn.ref_tbl = 'boxes'
                                  AND bn._deleted = 0
@@ -995,9 +1007,9 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
          LEFT JOIN delivery_receipts r ON r.id = m.doc_id AND m.kind = 'delivery'
          LEFT JOIN po_receipts p ON p.id = m.doc_id AND m.kind = 'po_receipt'
          LEFT JOIN doc_numbers n ON n.ref_id = m.doc_id
-                                AND n.ref_tbl IN ('stock_docs', 'delivery_receipts',
-                                                  'po_receipts')
+                                AND n.ref_tbl IN ('stock_docs', 'po_receipts')
                                 AND n._deleted = 0
+         LEFT JOIN v_receipt_no rn ON rn.dr_id = r.id
          LEFT JOIN locations l ON l.id = m.location_id
          WHERE m.item_id = ?1
          ORDER BY m.date DESC, at DESC, m.doc_id DESC, m.qty",
@@ -1018,6 +1030,7 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
                 po_id: r.get(9)?,
                 box_id: r.get(10)?,
                 serial: r.get(11)?,
+                invoice: r.get::<_, i64>(12)? != 0,
             },
         ))
     })?;

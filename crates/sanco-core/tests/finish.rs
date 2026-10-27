@@ -5,10 +5,10 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::TestPeer;
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::auth::{Action, Module, Perms};
 use sanco_core::domain::bd::{self, BdInput, BdLineInput, BdStatus};
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::dashboard::{self, Tone};
 use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
@@ -116,8 +116,10 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res, &mut Serials::none()))
-        .unwrap();
+    db.write(actor.clone(), move |tx| {
+        inventory::create(tx, &doc, &res, &mut Serials::none())
+    })
+    .unwrap();
     id
 }
 
@@ -158,6 +160,7 @@ fn booking(db: &Db, actor: &Actor, client: &str, item: &str) -> (String, String)
 fn request_dr(db: &Db, actor: &Actor, booking: &str, line: &str, qty: i64) -> String {
     let input = DrRequestInput {
         booking_id: booking.into(),
+        kind: None,
         date: "2026-07-01".into(),
         from_location_id: warehouse(),
         deliver_to: String::new(),
@@ -175,7 +178,14 @@ fn request_dr(db: &Db, actor: &Actor, booking: &str, line: &str, qty: i64) -> St
 }
 
 fn deliver(db: &Db, actor: &Actor, id: &str, no: &str, date: &str) {
-    let res = numbering::reserve_exact(db, &[], series::DR, no, id).unwrap();
+    let res = numbering::reserve_exact(
+        db,
+        &[],
+        db.read(|c| delivery::number_series(c, id)).unwrap(),
+        no,
+        id,
+    )
+    .unwrap();
     let rid = id.to_string();
     db.write(actor.clone(), move |tx| {
         delivery::approve(tx, &rid, Some(&res))
@@ -237,8 +247,13 @@ fn dashboard_kpis_and_issues() {
             .clone()
     };
     assert_eq!(kpi("bookings_to_deliver").value, 1);
-    assert_eq!(kpi("drs_open").value, 1);
-    assert_eq!(kpi("drs_open").href, "/accounting/?status=requested");
+    // The booking has VAT: its receipts are invoices.
+    assert_eq!(kpi("drs_open").value, 0);
+    assert_eq!(kpi("invoices_open").value, 1);
+    assert_eq!(
+        kpi("invoices_open").href,
+        "/accounting/invoices/?status=requested"
+    );
     // 4 × ₱125 + 12% VAT, due 30 days after 2026-07-01: overdue.
     assert_eq!(kpi("receivables").value, 56_000);
     assert_eq!(kpi("overdue").value, 56_000);
@@ -257,7 +272,10 @@ fn dashboard_kpis_and_issues() {
 
     // An item code typed on two PCs offline (written directly here).
     db.write(ana.clone(), |tx| {
-        tx.insert("items", json!({ "code": "glv-100", "name": "Gloves again" }))
+        tx.insert(
+            "items",
+            json!({ "code": "glv-100", "name": "Gloves again" }),
+        )
     })
     .unwrap();
     let d = db.read(|c| dashboard::summary(c, &all(), TODAY)).unwrap();
@@ -291,7 +309,7 @@ fn reports_sales_margin_and_bd() {
     assert_eq!(by_client.len(), 1);
     assert_eq!(by_client[0].label, "Mercury Drug");
     assert_eq!(by_client[0].code.as_deref(), Some("CL-0001"));
-    assert_eq!(by_client[0].drs, 2);
+    assert_eq!((by_client[0].drs, by_client[0].invoices), (0, 2));
     assert_eq!(
         (by_client[0].net_c, by_client[0].vat_c, by_client[0].gross_c),
         (87_500, 10_500, 98_000)
@@ -422,7 +440,10 @@ fn todos_visibility_and_delete() {
             .collect()
     };
     // Due dates first (soonest first), then undated.
-    assert_eq!(titles(&ana_id), ["Call Mercury", "Count the warehouse", "Ana only"]);
+    assert_eq!(
+        titles(&ana_id),
+        ["Call Mercury", "Count the warehouse", "Ana only"]
+    );
     assert_eq!(titles(&ben_id), ["Call Mercury", "Count the warehouse"]);
     assert_eq!(titles(&cy_id), ["Count the warehouse"]);
     assert_eq!(db.read(|c| todos::open_count(c, &ben_id)).unwrap(), 2);
@@ -438,14 +459,18 @@ fn todos_visibility_and_delete() {
     let id = shared.clone();
     let cy = cy_id.clone();
     assert!(
-        db.write(Actor::user(cy_id.clone()), move |tx| todos::delete(tx, &id, &cy, false))
-            .is_err()
+        db.write(Actor::user(cy_id.clone()), move |tx| todos::delete(
+            tx, &id, &cy, false
+        ))
+        .is_err()
     );
     let (id, b) = (for_ben.clone(), ben_id.clone());
     db.write(ben, move |tx| todos::delete(tx, &id, &b, false))
         .unwrap();
     let (id, c) = (shared.clone(), cy_id.clone());
-    db.write(Actor::user(cy_id), move |tx| todos::delete(tx, &id, &c, true))
-        .unwrap();
+    db.write(Actor::user(cy_id), move |tx| {
+        todos::delete(tx, &id, &c, true)
+    })
+    .unwrap();
     assert_eq!(titles(&ana_id), ["Ana only"]);
 }

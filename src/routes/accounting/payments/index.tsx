@@ -26,6 +26,7 @@ import {
   paymentForm,
   stepsFor,
 } from "~/components/accounting/accounting";
+import { receiptHref, receiptName } from "~/components/sales/sales";
 import { Alert, Badge, Empty, Field, InfoList, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
 import { btnDanger, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
@@ -69,7 +70,7 @@ const PaymentList = component$(() => {
     return payments.value.filter(
       (p) =>
         (!q ||
-          [p.no, p.client_name, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.dr_nos].some(
+          [p.no, p.client_name, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.receipts].some(
             (v) => v?.toLowerCase().includes(q),
           )) &&
         (!f.from || p.date >= f.from) &&
@@ -91,7 +92,7 @@ const PaymentList = component$(() => {
 
   return (
     <>
-      <PageHeader title="Payments" subtitle="Cash, checks and bank transfers received from clients, applied to their DRs.">
+      <PageHeader title="Payments" subtitle="Cash, checks and bank transfers received from clients, applied to their DRs and invoices.">
         {can(session.user, "accounting", "create") && (
           <button
             q:slot="actions"
@@ -107,7 +108,7 @@ const PaymentList = component$(() => {
       </PageHeader>
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
-        search="Search no., client, OR, check, DR"
+        search="Search no., client, OR, check, DR, invoice"
         dates
         selects={[
           {
@@ -170,7 +171,7 @@ const PaymentList = component$(() => {
                     {!p.check && p.reference && <span class={[hint, "block"]}>{p.reference}</span>}
                   </td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
-                  <td class={td}>{p.dr_nos.length ? p.dr_nos.map((n) => `DR ${n}`).join(", ") : "—"}</td>
+                  <td class={td}>{p.receipts.length ? p.receipts.join(", ") : "—"}</td>
                   <td class={[td, "text-right tabular-nums", p.unapplied_c < 0 && "text-danger"]}>
                     {p.counts && p.unapplied_c !== 0 ? formatPeso(p.unapplied_c) : "—"}
                   </td>
@@ -348,7 +349,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
         )}
         {c?.status === "bounced" && (
           <Alert>
-            This check bounced: the DRs below owe again until the client replaces it (Record replacement).
+            This check bounced: the DRs and invoices below owe again until the client replaces it (Record replacement).
           </Alert>
         )}
         {p.counts && p.unapplied_c < 0 && (
@@ -365,24 +366,24 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
         <section class={[card, "overflow-x-auto"]}>
           <h2 class="border-b border-line px-4 py-3 font-semibold">Applied to</h2>
           {det.allocations.length === 0 ? (
-            <Empty>Not applied to any DR: the whole amount is the client's credit.</Empty>
+            <Empty>Not applied to any DR or invoice: the whole amount is the client's credit.</Empty>
           ) : (
             <table class={table}>
               <thead>
                 <tr>
-                  <th class={th}>DR</th>
+                  <th class={th}>DR / invoice</th>
                   <th class={th}>Delivered</th>
-                  <th class={[th, "text-right"]}>DR gross</th>
+                  <th class={[th, "text-right"]}>Gross</th>
                   <th class={[th, "text-right"]}>Applied</th>
-                  <th class={[th, "text-right"]}>DR still owes</th>
+                  <th class={[th, "text-right"]}>Still owes</th>
                 </tr>
               </thead>
               <tbody>
                 {det.allocations.map((a) => (
                   <tr key={a.dr_id} class={a.delivered ? "" : "text-ink-muted"}>
                     <td class={[td, "whitespace-nowrap"]}>
-                      <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${a.dr_id}`}>
-                        {a.dr_no ? `DR ${a.dr_no}` : "DR (no number)"}
+                      <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(a.kind, a.dr_id)}>
+                        {receiptName(a.kind, a.dr_no)}
                       </Link>
                       {!a.delivered && <span class={[hint, "block"]}>voided: back as credit</span>}
                     </td>
@@ -433,7 +434,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
         >
           {voidError.value && <Alert>{voidError.value}</Alert>}
           <p class="text-sm">
-            The payment stops counting and the DRs it paid owe again, on every PC. It stays in the list, marked
+            The payment stops counting and the DRs and invoices it paid owe again, on every PC. It stays in the list, marked
             void. This can't be undone.
           </p>
           <Field label="Reason">
