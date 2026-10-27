@@ -690,12 +690,7 @@ pub fn serials_for_update(
 
 /// Saves a PO's header and lines (any status but cancelled). A placed PO's
 /// boxes follow its lines, taking new serials from `serials`.
-pub fn update(
-    tx: &mut WriteTx,
-    input: &PoInput,
-    costs: bool,
-    serials: &mut Serials,
-) -> Result<()> {
+pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool, serials: &mut Serials) -> Result<()> {
     let id = input.id.clone().unwrap_or_default();
     let old = existing(tx.conn(), &id)?;
     if old.status == PoStatus::Cancelled {
@@ -897,7 +892,14 @@ pub fn apply_to_cost_sheets(tx: &mut WriteTx, po_id: &str) -> Result<Vec<String>
         if done.contains_key(&item) {
             continue;
         }
-        copy_to_sheet(tx, po_id, &item, &old.currency, old.fx_rate.as_deref(), price)?;
+        copy_to_sheet(
+            tx,
+            po_id,
+            &item,
+            &old.currency,
+            old.fx_rate.as_deref(),
+            price,
+        )?;
         done.insert(item, code);
     }
     let mut codes: Vec<String> = done.into_values().collect();
@@ -1188,9 +1190,7 @@ fn prepare_receipt(
                 })?;
                 let serial = b.serial.as_deref().unwrap_or("?");
                 if b.received > 0 {
-                    return Err(Error::Invalid(format!(
-                        "box {serial} was already received"
-                    )));
+                    return Err(Error::Invalid(format!("box {serial} was already received")));
                 }
                 if seen_boxes.contains(&id) {
                     return Err(Error::Invalid(format!(

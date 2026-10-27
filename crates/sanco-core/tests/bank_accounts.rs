@@ -77,12 +77,7 @@ fn add_client(db: &Db, actor: &Actor) -> String {
     .unwrap()
 }
 
-fn payment(
-    client: &str,
-    method: PayMethod,
-    amount_c: i64,
-    account: Option<&str>,
-) -> PaymentInput {
+fn payment(client: &str, method: PayMethod, amount_c: i64, account: Option<&str>) -> PaymentInput {
     PaymentInput {
         id: None,
         client_id: client.into(),
@@ -110,7 +105,13 @@ fn pay(db: &Db, actor: &Actor, input: PaymentInput) -> Result<String, Error> {
     db.write(actor.clone(), move |tx| payments::create(tx, &input, &res))
 }
 
-fn step(db: &Db, actor: &Actor, id: &str, step: CheckStep, account: Option<&str>) -> Result<(), Error> {
+fn step(
+    db: &Db,
+    actor: &Actor,
+    id: &str,
+    step: CheckStep,
+    account: Option<&str>,
+) -> Result<(), Error> {
     let (id, input) = (
         id.to_string(),
         CheckStepInput {
@@ -220,26 +221,58 @@ fn accounts_collect_deposits_transfers_and_tts() {
     let client = add_client(&a.db, &actor);
 
     // Two checks deposited to BDO: one clears, one bounces. One on hand.
-    let c1 = pay(&a.db, &actor, payment(&client, PayMethod::Check, 10_000, None)).unwrap();
-    let c2 = pay(&a.db, &actor, payment(&client, PayMethod::Check, 5_000, None)).unwrap();
-    pay(&a.db, &actor, payment(&client, PayMethod::Check, 7_000, None)).unwrap();
+    let c1 = pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::Check, 10_000, None),
+    )
+    .unwrap();
+    let c2 = pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::Check, 5_000, None),
+    )
+    .unwrap();
+    pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::Check, 7_000, None),
+    )
+    .unwrap();
     step(&a.db, &actor, &c1, CheckStep::Deposit, Some(&bdo)).unwrap();
     step(&a.db, &actor, &c1, CheckStep::Clear, None).unwrap();
     step(&a.db, &actor, &c2, CheckStep::Deposit, Some(&bdo)).unwrap();
     // Transfers: one into BPI, one without an account.
-    let t1 = pay(&a.db, &actor, payment(&client, PayMethod::BankTransfer, 20_000, Some(&bpi))).unwrap();
-    pay(&a.db, &actor, payment(&client, PayMethod::BankTransfer, 3_000, None)).unwrap();
+    let t1 = pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::BankTransfer, 20_000, Some(&bpi)),
+    )
+    .unwrap();
+    pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::BankTransfer, 3_000, None),
+    )
+    .unwrap();
     // A TT of US$100.00 at 56.00 from BPI.
     let po = add_po(&a.db, &actor);
     let input = tt(&po, Some(&bpi));
-    a.db.write(actor.clone(), move |tx| purchasing::save_payment(tx, &input))
-        .unwrap();
+    a.db.write(actor.clone(), move |tx| {
+        purchasing::save_payment(tx, &input)
+    })
+    .unwrap();
 
     let list = a.db.read(bank_accounts::list).unwrap();
     let get = |id: &str| list.iter().find(|x| x.id == id).unwrap().clone();
     let b = get(&bdo);
     assert_eq!(
-        (b.checks_cleared_c, b.checks_pending_c, b.checks_pending, b.transfers_in_c),
+        (
+            b.checks_cleared_c,
+            b.checks_pending_c,
+            b.checks_pending,
+            b.transfers_in_c
+        ),
         (10_000, 5_000, 1, 0)
     );
     assert_eq!(b.tt_count, Some(0));
@@ -251,7 +284,10 @@ fn accounts_collect_deposits_transfers_and_tts() {
     let moves = a.db.read(|c| bank_accounts::moves(c, &bdo, true)).unwrap();
     assert_eq!(moves.len(), 2);
     assert!(moves.iter().all(|m| m.kind == BankMoveKind::CheckDeposit));
-    assert_eq!(moves.iter().find(|m| m.id == c1).unwrap().check_status, Some(CheckStatus::Cleared));
+    assert_eq!(
+        moves.iter().find(|m| m.id == c1).unwrap().check_status,
+        Some(CheckStatus::Cleared)
+    );
     assert_eq!(moves[0].detail.as_deref(), Some("BPI 0012345"));
     let kinds = |costs| {
         a.db.read(|c| bank_accounts::moves(c, &bpi, costs))
@@ -264,9 +300,20 @@ fn accounts_collect_deposits_transfers_and_tts() {
     assert_eq!(kinds(false), vec![BankMoveKind::TransferIn]);
 
     // The payment and check show the account name.
-    let shown = a.db.read(|c| payments::get(c, &c2, TODAY)).unwrap().unwrap().payment;
-    assert_eq!(shown.check.unwrap().deposit_account.as_deref(), Some("BDO Savings"));
-    let shown = a.db.read(|c| payments::get(c, &t1, TODAY)).unwrap().unwrap().payment;
+    let shown =
+        a.db.read(|c| payments::get(c, &c2, TODAY))
+            .unwrap()
+            .unwrap()
+            .payment;
+    assert_eq!(
+        shown.check.unwrap().deposit_account.as_deref(),
+        Some("BDO Savings")
+    );
+    let shown =
+        a.db.read(|c| payments::get(c, &t1, TODAY))
+            .unwrap()
+            .unwrap()
+            .payment;
     assert_eq!(shown.bank_account_name.as_deref(), Some("BPI Current"));
 
     // Bounced: no longer pending. Undoing a deposit clears the account.
@@ -278,7 +325,11 @@ fn accounts_collect_deposits_transfers_and_tts() {
         (b.checks_cleared_c, b.checks_pending_c, b.checks_bounced),
         (0, 0, 1)
     );
-    let row = a.db.read(|c| payments::get(c, &c1, TODAY)).unwrap().unwrap().payment;
+    let row =
+        a.db.read(|c| payments::get(c, &c1, TODAY))
+            .unwrap()
+            .unwrap()
+            .payment;
     assert_eq!(row.bank_account_id, None);
 }
 
@@ -290,7 +341,12 @@ fn inactive_and_used_accounts() {
     let old = add_account(&a.db, &actor, "Old account");
     let unused = add_account(&a.db, &actor, "Unused");
     let client = add_client(&a.db, &actor);
-    let t = pay(&a.db, &actor, payment(&client, PayMethod::BankTransfer, 1_000, Some(&old))).unwrap();
+    let t = pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::BankTransfer, 1_000, Some(&old)),
+    )
+    .unwrap();
 
     // Used: can't be deleted, only made inactive.
     let id = old.clone();
@@ -310,7 +366,11 @@ fn inactive_and_used_accounts() {
     // An inactive account can't be chosen anew, but a payment that already
     // names it keeps it when edited.
     assert_eq!(
-        invalid(pay(&a.db, &actor, payment(&client, PayMethod::BankTransfer, 500, Some(&old)))),
+        invalid(pay(
+            &a.db,
+            &actor,
+            payment(&client, PayMethod::BankTransfer, 500, Some(&old))
+        )),
         "that bank account is inactive; choose another"
     );
     let mut edit = payment(&client, PayMethod::BankTransfer, 1_200, Some(&old));
@@ -327,7 +387,16 @@ fn inactive_and_used_accounts() {
         "that bank account no longer exists"
     );
     // Cash ignores the account.
-    let cash = pay(&a.db, &actor, payment(&client, PayMethod::Cash, 100, Some("nope"))).unwrap();
-    let row = a.db.read(|c| payments::get(c, &cash, TODAY)).unwrap().unwrap().payment;
+    let cash = pay(
+        &a.db,
+        &actor,
+        payment(&client, PayMethod::Cash, 100, Some("nope")),
+    )
+    .unwrap();
+    let row =
+        a.db.read(|c| payments::get(c, &cash, TODAY))
+            .unwrap()
+            .unwrap()
+            .payment;
     assert_eq!(row.bank_account_id, None);
 }

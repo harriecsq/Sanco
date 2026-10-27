@@ -85,7 +85,9 @@ fn doc(kind: StockKind, from: &str, to: Option<&str>, lines: Vec<StockLineInput>
 fn post(db: &Db, actor: &Actor, input: StockDocInput) -> Result<String, Error> {
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], input.kind.series(), &id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res, &mut Serials::none()))
+    db.write(actor.clone(), move |tx| {
+        inventory::create(tx, &input, &res, &mut Serials::none())
+    })
 }
 
 /// (location, expiry, qty) of an item's non-zero lots.
@@ -373,8 +375,9 @@ fn documents_are_validated() {
     let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], StockKind::Transfer.series(), &id).unwrap();
     let input = ok();
-    let wrong =
-        a.db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res, &mut Serials::none()));
+    let wrong = a.db.write(actor.clone(), move |tx| {
+        inventory::create(tx, &input, &res, &mut Serials::none())
+    });
     assert!(matches!(wrong, Err(Error::Invalid(_))));
 
     post(&a.db, &actor, ok()).unwrap();

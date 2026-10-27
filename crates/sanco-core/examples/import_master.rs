@@ -92,7 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let id = db.new_id()?;
         let res = numbering::reserve(&db, &[], series::SUPPLIER, &id)?;
-        db.write(Actor::system(), move |tx| suppliers::create(tx, &input, &res))?;
+        db.write(Actor::system(), move |tx| {
+            suppliers::create(tx, &input, &res)
+        })?;
         have.push(name);
         added += 1;
     }

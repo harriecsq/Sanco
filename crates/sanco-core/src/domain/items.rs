@@ -126,7 +126,9 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<ItemInfo> {
         duplicate_code: r.get(12)?,
         created_at: r.get(13)?,
         serial_code: r.get(14)?,
-        serial_digits: r.get::<_, Option<i64>>(15)?.unwrap_or(boxes::DEFAULT_DIGITS),
+        serial_digits: r
+            .get::<_, Option<i64>>(15)?
+            .unwrap_or(boxes::DEFAULT_DIGITS),
         pcs_per_box: r.get(16)?,
         landed_cost_c: None,
         base_price_c: None,
