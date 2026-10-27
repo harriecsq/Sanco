@@ -10,7 +10,7 @@ use serde::Serialize;
 use specta::Type;
 use tauri::State;
 
-use crate::commands::{Choice, blocking, require, require_save, require_view_any, signed_in};
+use crate::commands::{blocking, require, require_save, require_view_any, signed_in};
 use crate::state::AppState;
 
 pub(crate) fn require_costs(user: &SessionUser) -> Result<(), String> {
@@ -141,18 +141,34 @@ pub async fn price_quote(
     Ok(q)
 }
 
+/// An item to pick, with what forms need to enter boxes.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct ItemChoice {
+    pub id: String,
+    pub label: String,
+    pub active: bool,
+    pub unit: Option<String>,
+    /// Box serial code; `None` = the item doesn't come in boxes.
+    pub serial_code: Option<String>,
+    /// Default box size.
+    pub pcs_per_box: Option<i64>,
+}
+
 /// Every item, for pickers in other modules.
 #[tauri::command]
 #[specta::specta]
-pub async fn item_options(state: State<'_, AppState>) -> Result<Vec<Choice>, String> {
+pub async fn item_options(state: State<'_, AppState>) -> Result<Vec<ItemChoice>, String> {
     let (db, _) = signed_in(&state).await?;
     let list = blocking(move || db.read(items::list)).await?;
     Ok(list
         .into_iter()
-        .map(|i| Choice {
+        .map(|i| ItemChoice {
             label: format!("{} · {}", i.code, i.name),
             id: i.id,
             active: i.active,
+            unit: i.unit,
+            serial_code: i.serial_code,
+            pcs_per_box: i.pcs_per_box,
         })
         .collect())
 }

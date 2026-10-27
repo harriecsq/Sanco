@@ -304,6 +304,7 @@ const BdFormModal = component$<{
               >
                 <div class="space-y-1">
                   <select
+                    data-search="on"
                     class={input}
                     aria-label="Item"
                     onChange$={(_, el) => {

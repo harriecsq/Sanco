@@ -17,7 +17,7 @@ use crate::domain::pricing::{
 };
 use crate::domain::purchasing::{self, SupplierPrice};
 use crate::domain::suppliers::SUPPLIERS;
-use crate::domain::{inventory, require_text, text_opt};
+use crate::domain::{boxes, inventory, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids;
 use crate::repo::WriteTx;
@@ -50,6 +50,12 @@ pub struct ItemInfo {
     pub default_margin_bp: Option<i64>,
     pub notes: Option<String>,
     pub active: bool,
+    /// Box serial code, e.g. `MT`; `None` = the item doesn't come in boxes.
+    pub serial_code: Option<String>,
+    /// Digits of the serial sequence (3, 4 or 5).
+    pub serial_digits: i64,
+    /// Default box size.
+    pub pcs_per_box: Option<i64>,
     /// Another live item has the same code.
     pub duplicate_code: bool,
     /// Stripped without the costs permission.
@@ -85,6 +91,11 @@ pub struct ItemInput {
     pub default_margin_bp: Option<i64>,
     pub notes: String,
     pub active: bool,
+    /// Box serial code (letters, e.g. `MT`); blank = no boxes.
+    pub serial_code: String,
+    /// 3, 4 or 5; `None` = 4.
+    pub serial_digits: Option<i64>,
+    pub pcs_per_box: Option<i64>,
 }
 
 const SELECT: &str = "
@@ -93,7 +104,7 @@ const SELECT: &str = "
            COALESCE(i.active, 1),
            EXISTS (SELECT 1 FROM items d WHERE d._deleted = 0 AND d.id <> i.id
                    AND d.code = i.code COLLATE NOCASE),
-           i.created_at
+           i.created_at, i.serial_code, i.serial_digits, i.pcs_per_box
     FROM items i
     LEFT JOIN suppliers s ON s.id = i.supplier_id AND s._deleted = 0
     WHERE i._deleted = 0";
@@ -114,6 +125,9 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<ItemInfo> {
         active: r.get::<_, i64>(11)? != 0,
         duplicate_code: r.get(12)?,
         created_at: r.get(13)?,
+        serial_code: r.get(14)?,
+        serial_digits: r.get::<_, Option<i64>>(15)?.unwrap_or(boxes::DEFAULT_DIGITS),
+        pcs_per_box: r.get(16)?,
         landed_cost_c: None,
         base_price_c: None,
     })
@@ -193,6 +207,15 @@ fn data(tx: &WriteTx, input: &ItemInput, margins: bool) -> Result<Value> {
     if input.reorder_level.is_some_and(|q| q < 0) {
         return Err(Error::Invalid("a reorder level can't be negative".into()));
     }
+    let serial_code = boxes::check_code(&input.serial_code)?;
+    let digits = input.serial_digits.unwrap_or(boxes::DEFAULT_DIGITS);
+    if !boxes::SERIAL_DIGITS.contains(&digits) {
+        return Err(Error::Invalid(
+            "a serial number has 3, 4 or 5 digits after the year".into(),
+        ));
+    }
+    let per_box = boxes::check_size(input.pcs_per_box, &code)?;
+    let stored_digits = serial_code.as_ref().map(|_| digits);
     let mut v = json!({
         "code": code,
         "name": require_text(&input.name, "an item name")?,
@@ -203,6 +226,9 @@ fn data(tx: &WriteTx, input: &ItemInput, margins: bool) -> Result<Value> {
         "reorder_level": input.reorder_level,
         "notes": text_opt(&input.notes),
         "active": input.active,
+        "serial_code": serial_code,
+        "serial_digits": stored_digits,
+        "pcs_per_box": per_box,
     });
     if margins {
         v["default_margin_bp"] = json!(pricing::check_margin(input.default_margin_bp)?);

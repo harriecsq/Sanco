@@ -4,6 +4,7 @@
 //! the stored prices; TT payments need it to open at all.
 
 use sanco_core::domain::auth::{Action, Field, Module};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::purchasing::{
     self, PoAction, PoDetail, PoInfo, PoInput, PoStatusInput, ReceiptDetail, ReceiptInfo,
     ReceiptInput, TtInfo, TtInput,
@@ -13,7 +14,7 @@ use sanco_core::time::manila_date_string;
 use tauri::State;
 
 use crate::commands::items::require_costs;
-use crate::commands::sync::reserve_number;
+use crate::commands::sync::{reserve_number, reserve_serials};
 use crate::commands::{blocking, require, require_save, require_view_any};
 use crate::state::AppState;
 
@@ -45,8 +46,19 @@ pub async fn save_po(state: State<'_, AppState>, po: PoInput) -> Result<String, 
     let (db, user) = require_save(&state, Module::Orders, po.id.is_none()).await?;
     let costs = user.perms.sees(Field::Costs);
     if let Some(id) = po.id.clone() {
-        blocking(move || db.write(user.actor(), move |tx| purchasing::update(tx, &po, costs)))
-            .await?;
+        // Check first, so a refused edit doesn't use up box serials.
+        let (read, input, now) = (db.clone(), po.clone(), db.now_ms());
+        let needs = blocking(move || {
+            read.read(|c| purchasing::serials_for_update(c, &input, costs, now))
+        })
+        .await?;
+        let mut serials = reserve_serials(&state, needs, &id).await?;
+        blocking(move || {
+            db.write(user.actor(), move |tx| {
+                purchasing::update(tx, &po, costs, &mut serials)
+            })
+        })
+        .await?;
         return Ok(id);
     }
     // Check first, so a refused PO doesn't use up a number.
@@ -74,9 +86,20 @@ pub async fn set_po_status(
         _ => Action::Edit,
     };
     let (db, user) = require(&state, Module::Orders, needed).await?;
+    // Marking it ordered gives its boxes their serials.
+    let (read, rid, input, now) = (db.clone(), id.clone(), change.clone(), db.now_ms());
+    let needs = blocking(move || {
+        read.read(|c| purchasing::serials_for_status(c, &rid, &input, now))
+    })
+    .await?;
+    let mut serials = if needs.is_empty() {
+        Serials::none()
+    } else {
+        reserve_serials(&state, needs, &id).await?
+    };
     blocking(move || {
         db.write(user.actor(), move |tx| {
-            purchasing::set_status(tx, &id, &change)
+            purchasing::set_status(tx, &id, &change, &mut serials)
         })
     })
     .await

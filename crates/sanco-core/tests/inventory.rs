@@ -1,6 +1,7 @@
 mod common;
 
 use common::{TestPeer, pull};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, ItemInput};
 use sanco_core::domain::locations;
@@ -46,6 +47,9 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
         default_margin_bp: None,
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     };
     db.write(actor.clone(), move |tx| items::save(tx, &input, true))
         .unwrap()
@@ -56,6 +60,8 @@ fn line(item: &str, expiry: Option<&str>, qty: i64) -> StockLineInput {
         item_id: item.into(),
         expiry: expiry.map(String::from),
         qty,
+        box_id: None,
+        pcs_per_box: None,
     }
 }
 
@@ -72,13 +78,14 @@ fn doc(kind: StockKind, from: &str, to: Option<&str>, lines: Vec<StockLineInput>
         },
         notes: String::new(),
         lines,
+        serial_year: String::new(),
     }
 }
 
 fn post(db: &Db, actor: &Actor, input: StockDocInput) -> Result<String, Error> {
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], input.kind.series(), &id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res))
+    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res, &mut Serials::none()))
 }
 
 /// (location, expiry, qty) of an item's non-zero lots.
@@ -367,7 +374,7 @@ fn documents_are_validated() {
     let res = numbering::reserve(&a.db, &[], StockKind::Transfer.series(), &id).unwrap();
     let input = ok();
     let wrong =
-        a.db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res));
+        a.db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res, &mut Serials::none()));
     assert!(matches!(wrong, Err(Error::Invalid(_))));
 
     post(&a.db, &actor, ok()).unwrap();

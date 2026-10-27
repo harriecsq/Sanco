@@ -9,7 +9,16 @@ import {
   type TtInfo,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDateTime, formatDay, formatMinor, formatPeso, formatQty, todayManila } from "~/lib/format";
+import {
+  boxEquiv,
+  formatDateTime,
+  formatDay,
+  formatMinor,
+  formatPeso,
+  formatQty,
+  serialRange,
+  todayManila,
+} from "~/lib/format";
 import { can, sees } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -157,7 +166,14 @@ const PoList = component$(() => {
                       {p.supplier_name ?? "Deleted supplier"}
                       {p.supplier_ref && <span class={[hint, "block"]}>PI {p.supplier_ref}</span>}
                     </td>
-                    <td class={td}>{p.summary}</td>
+                    <td class={td}>
+                      {p.summary}
+                      {p.box_count > 0 && (
+                        <span class={[hint, "block"]}>
+                          {p.box_count} {p.box_count === 1 ? "box" : "boxes"}
+                        </span>
+                      )}
+                    </td>
                     {costs && (
                       <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
                         {formatMinor(p.total_minor, p.currency)}
@@ -310,6 +326,13 @@ const PoView = component$<{ id: string }>(({ id }) => {
     ["Currency", p.currency],
   ];
   if (costs && p.currency !== "PHP") rows.push(["Exchange rate", p.fx_rate ? `₱${p.fx_rate} per ${p.currency}` : "not entered"]);
+  if (p.box_count > 0 || det.lines.some((l) => l.serial_code)) {
+    rows.push(["Serial year", p.serial_year ?? todayManila().slice(0, 4)]);
+    rows.push([
+      "Boxes",
+      p.box_count ? String(p.box_count) : p.status === "draft" ? "serials are given when marked ordered" : "none",
+    ]);
+  }
   rows.push(["Notes", p.notes ?? ""]);
   rows.push(["Entered", `${formatDateTime(p.created_at)} by ${p.created_by_name ?? "—"}`]);
   if (p.ordered_at) rows.push(["Ordered", `${formatDateTime(p.ordered_at)} by ${p.ordered_by_name ?? "—"}`]);
@@ -433,8 +456,37 @@ const PoView = component$<{ id: string }>(({ id }) => {
                       </Link>{" "}
                       {l.item_name}
                       {l.notes && <span class={[hint, "block"]}>{l.notes}</span>}
+                      {l.boxes.length > 0 && (
+                        <details class="mt-1">
+                          <summary class={[hint, "cursor-pointer"]}>
+                            {l.boxes.length} {l.boxes.length === 1 ? "box" : "boxes"} ·{" "}
+                            {serialRange(l.boxes.map((b) => b.serial))}
+                            {receiving && ` · ${l.boxes.filter((b) => b.received > 0).length} received`}
+                          </summary>
+                          <ul class="mt-1 grid max-w-md grid-cols-[auto_auto_1fr] gap-x-4 text-xs tabular-nums">
+                            {l.boxes.map((b) => (
+                              <li key={b.id} class="contents">
+                                <span class="font-mono">{b.serial ?? "no serial"}</span>
+                                <span class="text-right">{b.pcs} pcs</span>
+                                <span class={b.received > 0 ? "text-brand-700" : "text-ink-muted"}>
+                                  {b.received > 0
+                                    ? b.received === b.pcs
+                                      ? "received"
+                                      : `received ${b.received}`
+                                    : "not received"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                     </td>
-                    <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>{formatQty(l.qty, l.unit)}</td>
+                    <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                      {formatQty(l.qty, l.unit)}
+                      {l.serial_code && (
+                        <span class={[hint, "block"]}>{boxEquiv(l.qty, l.pcs_per_box ?? l.item_pcs_per_box)}</span>
+                      )}
+                    </td>
                     {costs && (
                       <td class={[td, "text-right tabular-nums"]}>
                         {l.price_minor == null ? <Badge tone="warning">no price</Badge> : formatMinor(l.price_minor, p.currency)}

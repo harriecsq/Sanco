@@ -203,6 +203,8 @@ pub struct BookingLine {
     /// Stripped without the margins permission.
     pub margin_bp: Option<i64>,
     pub below_cost: bool,
+    /// The item's box size, for items in boxes.
+    pub pcs_per_box: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -596,7 +598,8 @@ fn lines_of(conn: &Connection, booking: Option<&str>) -> Result<Vec<(String, Boo
     let mut stmt = conn.prepare_cached(
         "SELECT l.booking_id, l.id, l.item_id, i.code, i.name, i.unit,
                 COALESCE(i.tracks_expiry, 0), COALESCE(l.qty, 0), COALESCE(l.price_c, 0),
-                l.price_rule, l.notes
+                l.price_rule, l.notes,
+                CASE WHEN COALESCE(i.serial_code, '') <> '' THEN i.pcs_per_box END
          FROM booking_lines l LEFT JOIN items i ON i.id = l.item_id
          WHERE l._deleted = 0 AND (?1 IS NULL OR l.booking_id = ?1)
          ORDER BY l.booking_id, l.line_no, l.id",
@@ -626,6 +629,7 @@ fn lines_of(conn: &Connection, booking: Option<&str>) -> Result<Vec<(String, Boo
                 cost_c: cost,
                 margin_bp: cost.and_then(|c| pricing::margin_of(price_c, c)),
                 below_cost: cost.is_some_and(|c| price_c < c),
+                pcs_per_box: r.get(11)?,
                 id,
                 item_id,
             },

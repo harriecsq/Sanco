@@ -97,6 +97,31 @@ export const addDays = (date: string, days: number) => {
 export const formatQty = (qty: number, unit?: string | null) =>
   `${qty.toLocaleString("en-PH")}${unit ? ` ${unit}` : ""}`;
 
+/** Box equivalent of a quantity: "9 boxes + 7" for 97 at 10 a box. Empty
+ * without a box size. */
+export const boxEquiv = (qty: number, perBox: number | null | undefined) => {
+  if (!perBox || perBox <= 0 || qty <= 0) return "";
+  const full = Math.floor(qty / perBox);
+  const rest = qty % perBox;
+  const boxes = full ? `${full.toLocaleString("en-PH")} ${full === 1 ? "box" : "boxes"}` : "";
+  return [boxes, rest ? (full ? `+ ${rest}` : `${rest} loose`) : ""].filter(Boolean).join(" ");
+};
+
+/** Boxes in stock: "9 full + 1 open (7)". Empty when there are none. */
+export const boxSummary = (full: number, open: number, openPcs: number) => {
+  const parts = [];
+  if (full) parts.push(`${full.toLocaleString("en-PH")} full`);
+  if (open) parts.push(`${open.toLocaleString("en-PH")} open (${openPcs.toLocaleString("en-PH")})`);
+  return parts.join(" + ");
+};
+
+/** "MT26-0001 – MT26-0010" for a list of serials in order. */
+export const serialRange = (serials: (string | null)[]) => {
+  const s = serials.filter((x): x is string => !!x);
+  if (!s.length) return "";
+  return s.length === 1 ? s[0] : `${s[0]} – ${s[s.length - 1]}`;
+};
+
 /** Thrown by the parsers below; the message is shown to the user. */
 export class InputError extends Error {}
 

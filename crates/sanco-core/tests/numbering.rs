@@ -181,6 +181,7 @@ fn abandoned_claims_expire() {
         seq: 1,
         ref_id: "cancelled-form".into(),
         site: "x".into(),
+        count: 1,
     };
     assert!(a.db.claim_number(claim.clone()).unwrap().granted);
     // Re-claiming for the same document is fine; another document is refused.

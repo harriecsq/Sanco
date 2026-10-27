@@ -25,8 +25,10 @@ import {
   formatPct,
   formatPesoOr,
   parseCount,
+  formatQty,
   parsePct,
   pctText,
+  todayManila,
 } from "~/lib/format";
 import { can, sees } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
@@ -64,6 +66,10 @@ import {
 /** Qwik's input typings lack `list`; this links an input to a datalist. */
 const datalist = (id: string) => ({ list: id }) as Record<string, string>;
 
+/** The first serial of a code this year: "MT26-0001". */
+const serialExample = (code: string, digits: string | number) =>
+  `${code.trim().toUpperCase() || "MT"}${todayManila().slice(2, 4)}-${"1".padStart(Number(digits) || 4, "0")}`;
+
 interface Form {
   id: string;
   code: string;
@@ -76,6 +82,10 @@ interface Form {
   margin: string;
   notes: string;
   active: boolean;
+  /** Box serial code; blank = the item doesn't come in boxes. */
+  serial_code: string;
+  serial_digits: string;
+  per_box: string;
 }
 
 const blank = (): Form => ({
@@ -90,6 +100,9 @@ const blank = (): Form => ({
   margin: "",
   notes: "",
   active: true,
+  serial_code: "",
+  serial_digits: "4",
+  per_box: "",
 });
 
 const toForm = (i: ItemInfo): Form => ({
@@ -104,6 +117,9 @@ const toForm = (i: ItemInfo): Form => ({
   margin: pctText(i.default_margin_bp),
   notes: i.notes ?? "",
   active: i.active,
+  serial_code: i.serial_code ?? "",
+  serial_digits: String(i.serial_digits),
+  per_box: i.pcs_per_box == null ? "" : String(i.pcs_per_box),
 });
 
 const ItemFormModal = component$<{
@@ -117,6 +133,7 @@ const ItemFormModal = component$<{
   const error = useSignal("");
   const busy = useSignal(false);
   const margins = sees(session.user, "margins");
+  const example = useComputed$(() => serialExample(form.serial_code, form.serial_digits));
 
   useLiveLoad(
     ["suppliers", "items"],
@@ -147,6 +164,9 @@ const ItemFormModal = component$<{
           default_margin_bp: parsePct(form.margin, "margin"),
           notes: form.notes,
           active: form.active,
+          serial_code: form.serial_code.trim(),
+          serial_digits: form.serial_code.trim() ? Number(form.serial_digits) : null,
+          pcs_per_box: parseCount(form.per_box, "pcs per box"),
         }),
       );
       open.value = false;
@@ -240,6 +260,37 @@ const ItemFormModal = component$<{
               />
             </Field>
           )}
+          <div class="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+            <Field label="Serial code" hint="Letters, e.g. MT. Blank = not in boxes.">
+              <input
+                class={input}
+                maxLength={6}
+                value={form.serial_code}
+                onInput$={(_, el) => (form.serial_code = el.value.toUpperCase())}
+              />
+            </Field>
+            <Field label="Serial digits" hint={`e.g. ${example.value}`}>
+              <select
+                class={input}
+                disabled={!form.serial_code.trim()}
+                onChange$={(_, el) => (form.serial_digits = el.value)}
+              >
+                {["3", "4", "5"].map((n) => (
+                  <option key={n} value={n} selected={n === form.serial_digits}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Pcs per box" hint="Default box size when receiving.">
+              <input
+                class={input}
+                inputMode="numeric"
+                value={form.per_box}
+                onInput$={(_, el) => (form.per_box = el.value)}
+              />
+            </Field>
+          </div>
           <Field label="Notes" class="sm:col-span-2">
             <textarea
               class={input}
@@ -483,6 +534,12 @@ const ItemDetail = component$<{ id: string }>(({ id }) => {
     ["Supplier", i.supplier_name ?? ""],
     ["Expiry dates", i.tracks_expiry ? "Tracked" : "Not tracked"],
     ["Reorder level", i.reorder_level == null ? "" : `${i.reorder_level} ${i.unit ?? ""}`],
+    [
+      "Boxes",
+      i.serial_code
+        ? `Serials ${serialExample(i.serial_code, i.serial_digits)}…${i.pcs_per_box ? ` · ${formatQty(i.pcs_per_box, i.unit)} a box` : ""}`
+        : "Not in boxes",
+    ],
   ];
   if (costs) rows.push(["Landed cost", formatPesoOr(i.landed_cost_c)]);
   if (margins) rows.push(["Default margin", formatPct(i.default_margin_bp)]);

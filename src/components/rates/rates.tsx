@@ -328,6 +328,7 @@ export const RateModal = component$<{
         </Field>
         <Field label="Item">
           <select
+            data-search="on"
             class={input}
             required
             disabled={lock === "item" || form.existing}

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::domain::bookings::BookingStatus;
+use crate::domain::boxes::{self, BoxDraw, BoxDrawInput, BoxStock};
 use crate::domain::inventory::{self, Effect, StockLot};
 use crate::domain::payments::{self, DrPayment};
 use crate::domain::pricing::{self, VatAmounts};
@@ -75,9 +76,14 @@ pub struct DrLineInput {
     /// The DR line being edited; `None` for a new line.
     pub id: Option<String>,
     pub booking_line_id: String,
-    /// The lot. Required for items that track expiry, ignored otherwise.
+    /// The lot. Required for items that track expiry, ignored otherwise
+    /// and for items in boxes (each box has its lot).
     pub expiry: Option<String>,
     pub qty: i64,
+    /// For items in boxes: pieces from each box, adding up to `qty`. Empty =
+    /// picked automatically (started boxes, then earliest expiry, then
+    /// lowest serial).
+    pub boxes: Vec<BoxDrawInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +170,11 @@ pub struct DrLine {
     pub qty: i64,
     pub price_c: i64,
     pub amount_c: i64,
+    /// The item's box size, for items in boxes.
+    pub pcs_per_box: Option<i64>,
+    pub boxed: bool,
+    /// What it takes from each box.
+    pub boxes: Vec<BoxDraw>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -193,6 +204,8 @@ struct PreparedLine {
     expiry: Option<String>,
     qty: i64,
     price_c: i64,
+    /// (box, expiry, qty) for items in boxes.
+    draws: Vec<(String, Option<String>, i64)>,
 }
 
 /// The DR being edited, as it is now.
@@ -202,17 +215,19 @@ struct Current {
     lines: Vec<DrLine>,
 }
 
-/// Lines of a DR (or all), as (dr, line).
+/// Lines of a DR (or all), as (dr, line), with their box draws.
 fn lines_of(conn: &Connection, dr: Option<&str>) -> Result<Vec<(String, DrLine)>> {
+    let mut draws = boxes::draws_of(conn, dr)?;
     let mut stmt = conn.prepare_cached(
         "SELECT l.dr_id, l.id, l.booking_line_id, l.item_id, i.code, i.name, i.unit, l.expiry,
-                COALESCE(l.qty, 0), COALESCE(l.price_c, 0)
+                COALESCE(l.qty, 0), COALESCE(l.price_c, 0), i.serial_code, i.pcs_per_box
          FROM dr_lines l LEFT JOIN items i ON i.id = l.item_id
          WHERE l._deleted = 0 AND (?1 IS NULL OR l.dr_id = ?1)
          ORDER BY l.dr_id, l.line_no, l.id",
     )?;
     let rows = stmt.query_map([dr], |r| {
         let (qty, price_c): (i64, i64) = (r.get(8)?, r.get(9)?);
+        let boxed = r.get::<_, Option<String>>(10)?.is_some_and(|c| !c.is_empty());
         Ok((
             r.get(0)?,
             DrLine {
@@ -226,27 +241,115 @@ fn lines_of(conn: &Connection, dr: Option<&str>) -> Result<Vec<(String, DrLine)>
                 qty,
                 price_c,
                 amount_c: line_amount(qty, price_c),
+                pcs_per_box: if boxed { r.get(11)? } else { None },
+                boxed,
+                boxes: Vec::new(),
             },
         ))
     })?;
-    Ok(rows.collect::<Result<_, _>>()?)
+    let mut out: Vec<(String, DrLine)> = rows.collect::<Result<_, _>>()?;
+    for (_, l) in &mut out {
+        l.boxes = draws.remove(&l.id).unwrap_or_default();
+    }
+    Ok(out)
 }
 
-/// What delivering the DR takes out of stock, per lot.
+/// What delivering the DR takes out of stock, per lot and box.
 fn effects(conn: &Connection, dr_id: &str, location: &str) -> Result<Vec<Effect>> {
-    let mut lots: BTreeMap<(String, Option<String>), i64> = BTreeMap::new();
+    let mut lots: BTreeMap<(String, Option<String>, Option<String>), i64> = BTreeMap::new();
     for (_, l) in lines_of(conn, Some(dr_id))? {
-        *lots.entry((l.item_id, l.expiry)).or_default() -= l.qty;
+        if l.boxes.is_empty() {
+            *lots.entry((l.item_id, l.expiry, None)).or_default() -= l.qty;
+            continue;
+        }
+        for d in l.boxes {
+            *lots
+                .entry((l.item_id.clone(), d.expiry, Some(d.box_id)))
+                .or_default() -= d.qty;
+        }
     }
     Ok(lots
         .into_iter()
-        .map(|((item_id, expiry), qty)| Effect {
+        .map(|((item_id, expiry, box_id), qty)| Effect {
             item_id,
             location_id: location.to_string(),
             expiry,
             qty,
+            box_id,
         })
         .collect())
+}
+
+/// Checks the draws typed for a line, or picks them. `back`: pieces the
+/// DR itself took from each box at this location before (a delivered DR
+/// being edited); `used`: what earlier lines of this DR take.
+#[allow(clippy::too_many_arguments)]
+fn line_draws(
+    conn: &Connection,
+    item_id: &str,
+    code: &str,
+    unit: Option<&str>,
+    location: &str,
+    line: &DrLineInput,
+    back: &HashMap<String, (Option<String>, i64)>,
+    used: &HashMap<String, i64>,
+) -> Result<Vec<(String, Option<String>, i64)>> {
+    let unit = unit.map(|u| format!(" {u}")).unwrap_or_default();
+    if !line.boxes.is_empty() {
+        let mut merged: Vec<(String, Option<String>, i64)> = Vec::new();
+        for d in &line.boxes {
+            let (item, _) = boxes::box_row(conn, &d.box_id)?
+                .ok_or_else(|| Error::Invalid("one of the boxes no longer exists".into()))?;
+            if item != item_id {
+                return Err(Error::Invalid(format!("one of the boxes doesn't hold {code}")));
+            }
+            if d.qty <= 0 {
+                continue;
+            }
+            match merged.iter_mut().find(|m| m.0 == d.box_id) {
+                Some(m) => m.2 += d.qty,
+                None => merged.push((d.box_id.clone(), boxes::box_expiry(conn, &d.box_id)?, d.qty)),
+            }
+        }
+        let total: i64 = merged.iter().map(|m| m.2).sum();
+        if total != line.qty {
+            return Err(Error::Invalid(format!(
+                "the boxes of {code} add up to {total}{unit}, not {}{unit}",
+                line.qty
+            )));
+        }
+        return Ok(merged);
+    }
+    let stock = boxes::box_stock(conn, Some(item_id), Some(location), "")?;
+    let mut order: Vec<(String, Option<String>)> = Vec::new();
+    let mut available: HashMap<String, i64> = HashMap::new();
+    let mut sizes: HashMap<String, i64> = HashMap::new();
+    for b in stock {
+        order.push((b.box_id.clone(), b.expiry.clone()));
+        available.insert(b.box_id.clone(), b.qty);
+        sizes.insert(b.box_id, b.pcs);
+    }
+    for (box_id, (expiry, qty)) in back {
+        if !available.contains_key(box_id) {
+            order.push((box_id.clone(), expiry.clone()));
+            sizes.insert(box_id.clone(), boxes::box_row(conn, box_id)?.map_or(0, |b| b.1));
+        }
+        *available.entry(box_id.clone()).or_default() += qty;
+    }
+    for (box_id, qty) in used {
+        if let Some(a) = available.get_mut(box_id) {
+            *a -= qty;
+        }
+    }
+    let draws = boxes::auto_draws(&order, &available, &sizes, line.qty);
+    let filled: i64 = draws.iter().map(|d| d.2).sum();
+    if filled < line.qty {
+        return Err(Error::Invalid(format!(
+            "only {filled}{unit} of {code} {} in boxes at that location",
+            if filled == 1 { "is" } else { "are" }
+        )));
+    }
+    Ok(draws)
 }
 
 fn check_location(conn: &Connection, id: &str) -> Result<()> {
@@ -300,20 +403,41 @@ fn prepare_request(
     let progress = line_progress(conn, Some(&input.booking_id))?;
     // An edited DR's own lines don't count against what's left.
     let mut own: HashMap<String, i64> = HashMap::new();
-    let mut lots: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    type Lot = (String, String, Option<String>, Option<String>);
+    let mut lots: BTreeMap<Lot, i64> = BTreeMap::new();
+    // What a delivered DR took from each box, if it stays at that location.
+    let mut back: HashMap<String, (Option<String>, i64)> = HashMap::new();
     if let Some(cur) = current {
         for l in cur.lines.iter() {
             if let Some(b) = &l.booking_line_id {
                 *own.entry(b.clone()).or_default() += l.qty;
             }
             // Delivered stock comes back before the new lines take theirs.
-            if cur.status == DrStatus::Delivered {
+            if cur.status != DrStatus::Delivered {
+                continue;
+            }
+            if l.boxes.is_empty() {
                 *lots
-                    .entry((l.item_id.clone(), cur.location.clone(), l.expiry.clone()))
+                    .entry((l.item_id.clone(), cur.location.clone(), l.expiry.clone(), None))
                     .or_default() += l.qty;
+            }
+            for d in &l.boxes {
+                *lots
+                    .entry((
+                        l.item_id.clone(),
+                        cur.location.clone(),
+                        d.expiry.clone(),
+                        Some(d.box_id.clone()),
+                    ))
+                    .or_default() += d.qty;
+                if cur.location == input.from_location_id {
+                    let e = back.entry(d.box_id.clone()).or_insert((d.expiry.clone(), 0));
+                    e.1 += d.qty;
+                }
             }
         }
     }
+    let mut used: HashMap<String, i64> = HashMap::new();
     let mut on_this: HashMap<String, i64> = HashMap::new();
     let mut lines = Vec::with_capacity(input.lines.len());
     for line in &input.lines {
@@ -354,15 +478,17 @@ fn prepare_request(
                 "the quantity of {code} must be positive"
             )));
         }
+        let boxed = boxes::serial_of(conn, &item_id)?.is_some();
         let expiry = date_opt(line.expiry.as_deref(), &format!("expiry date of {code}"))?;
-        let expiry = match (tracks != 0, expiry) {
-            (true, None) => {
+        let expiry = match (boxed, tracks != 0, expiry) {
+            (true, ..) => None,
+            (false, true, None) => {
                 return Err(Error::Invalid(format!(
                     "choose the lot (expiry date) of {code}"
                 )));
             }
-            (false, _) => None,
-            (true, e) => e,
+            (false, false, _) => None,
+            (false, true, e) => e,
         };
         let qty = on_this.entry(line.booking_line_id.clone()).or_default();
         *qty += line.qty;
@@ -380,13 +506,41 @@ fn prepare_request(
                 if left == 1 { "is" } else { "are" },
             )));
         }
-        *lots
-            .entry((
-                item_id.clone(),
-                input.from_location_id.clone(),
-                expiry.clone(),
-            ))
-            .or_default() -= line.qty;
+        let draws = if boxed {
+            line_draws(
+                conn,
+                &item_id,
+                &code,
+                unit.as_deref(),
+                &input.from_location_id,
+                line,
+                &back,
+                &used,
+            )?
+        } else {
+            Vec::new()
+        };
+        for (box_id, box_expiry, n) in &draws {
+            *used.entry(box_id.clone()).or_default() += n;
+            *lots
+                .entry((
+                    item_id.clone(),
+                    input.from_location_id.clone(),
+                    box_expiry.clone(),
+                    Some(box_id.clone()),
+                ))
+                .or_default() -= n;
+        }
+        if !boxed {
+            *lots
+                .entry((
+                    item_id.clone(),
+                    input.from_location_id.clone(),
+                    expiry.clone(),
+                    None,
+                ))
+                .or_default() -= line.qty;
+        }
         // A kept line keeps its price; new lines take the booking's.
         let kept = current
             .and_then(|c| c.lines.iter().find(|l| Some(&l.id) == line.id.as_ref()))
@@ -398,15 +552,17 @@ fn prepare_request(
             expiry,
             qty: line.qty,
             price_c: kept.map_or(price_c, |l| l.price_c),
+            draws,
         });
     }
     let effects: Vec<Effect> = lots
         .into_iter()
-        .map(|((item_id, location_id, expiry), qty)| Effect {
+        .map(|((item_id, location_id, expiry, box_id), qty)| Effect {
             item_id,
             location_id,
             expiry,
             qty,
+            box_id,
         })
         .collect();
     // Only lots the DR takes more from than before are checked.
@@ -444,6 +600,24 @@ fn line_rows(lines: Vec<PreparedLine>) -> Vec<(Option<String>, serde_json::Value
         .collect()
 }
 
+/// Writes the DR's lines and each line's box draws.
+fn write_lines(tx: &mut WriteTx, dr_id: &str, lines: Vec<PreparedLine>) -> Result<()> {
+    let draws: Vec<Vec<(String, Option<String>, i64)>> =
+        lines.iter().map(|l| l.draws.clone()).collect();
+    replace_lines(tx, DR_LINES, "dr_id", dr_id, line_rows(lines))?;
+    let ids: Vec<String> = {
+        let mut stmt = tx.conn().prepare_cached(
+            "SELECT id FROM dr_lines WHERE dr_id = ?1 AND _deleted = 0 ORDER BY line_no, id",
+        )?;
+        let rows = stmt.query_map([dr_id], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (id, d) in ids.iter().zip(draws) {
+        boxes::set_draws(tx, dr_id, id, &d)?;
+    }
+    Ok(())
+}
+
 /// Requests a DR for a confirmed booking. It gets its number later.
 /// Returns its id.
 pub fn request(tx: &mut WriteTx, input: &DrRequestInput) -> Result<String> {
@@ -463,7 +637,7 @@ pub fn request(tx: &mut WriteTx, input: &DrRequestInput) -> Result<String> {
             "notes": text_opt(&input.notes),
         }),
     )?;
-    replace_lines(tx, DR_LINES, "dr_id", &id, line_rows(p.lines))?;
+    write_lines(tx, &id, p.lines)?;
     Ok(id)
 }
 
@@ -554,7 +728,7 @@ pub fn update(
         patch["received_by"] = json!(text_opt(&d.received_by));
     }
     tx.update(DELIVERY_RECEIPTS, id, patch)?;
-    replace_lines(tx, DR_LINES, "dr_id", id, line_rows(p.lines))
+    write_lines(tx, id, p.lines)
 }
 
 /// A live DR's status and source location.
@@ -928,5 +1102,20 @@ pub fn lots_for_booking(conn: &Connection, booking_id: &str, today: &str) -> Res
     Ok(inventory::lots(conn, None, today)?
         .into_iter()
         .filter(|l| items.contains(&l.item_id))
+        .collect())
+}
+
+/// Boxes in stock of a booking's items, for picking a DR's draws.
+pub fn boxes_for_booking(conn: &Connection, booking_id: &str, today: &str) -> Result<Vec<BoxStock>> {
+    let items: Vec<String> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT item_id FROM booking_lines WHERE booking_id = ?1 AND _deleted = 0",
+        )?;
+        let rows = stmt.query_map([booking_id], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    Ok(boxes::box_stock(conn, None, None, today)?
+        .into_iter()
+        .filter(|b| items.contains(&b.item_id))
         .collect())
 }

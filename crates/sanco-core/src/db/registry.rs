@@ -196,6 +196,10 @@ pub static TABLES: &[TableDef] = &[
             int("default_margin_bp"),
             text("notes"),
             int("active"),
+            // Added in 0011: boxes and serials.
+            text("serial_code"),
+            int("serial_digits"),
+            int("pcs_per_box"),
         ],
     },
     TableDef {
@@ -251,6 +255,8 @@ pub static TABLES: &[TableDef] = &[
             text("item_id"),
             text("expiry"),
             int("qty"),
+            // Added in 0011.
+            text("box_id"),
         ],
     },
     TableDef {
@@ -394,6 +400,8 @@ pub static TABLES: &[TableDef] = &[
             int("closed_at"),
             text("closed_by"),
             text("cancel_reason"),
+            // Added in 0011.
+            text("serial_year"),
         ],
     },
     TableDef {
@@ -405,6 +413,8 @@ pub static TABLES: &[TableDef] = &[
             int("qty"),
             int("price_minor"),
             text("notes"),
+            // Added in 0011.
+            int("pcs_per_box"),
         ],
     },
     TableDef {
@@ -441,6 +451,28 @@ pub static TABLES: &[TableDef] = &[
             int("line_no"),
             text("po_line_id"),
             text("item_id"),
+            text("expiry"),
+            int("qty"),
+            // Added in 0011.
+            text("box_id"),
+        ],
+    },
+    TableDef {
+        name: "boxes",
+        cols: &[
+            text("item_id"),
+            text("po_id"),
+            text("po_line_id"),
+            text("doc_id"),
+            int("pcs"),
+        ],
+    },
+    TableDef {
+        name: "dr_line_boxes",
+        cols: &[
+            text("dr_id"),
+            text("dr_line_id"),
+            text("box_id"),
             text("expiry"),
             int("qty"),
         ],

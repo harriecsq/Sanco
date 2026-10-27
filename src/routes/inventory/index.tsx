@@ -2,6 +2,7 @@ import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qw
 import { Link, useLocation, useNavigate, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
+  type BoxStock,
   type ItemStock,
   type LocationInfo,
   type StockKind,
@@ -9,7 +10,7 @@ import {
   type StockMove,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDay, formatQty } from "~/lib/format";
+import { boxSummary, formatDay, formatQty } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -62,7 +63,16 @@ const StockList = component$(() => {
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
+    [
+      "items",
+      "locations",
+      "stock_docs",
+      "stock_doc_lines",
+      "po_receipts",
+      "delivery_receipts",
+      "boxes",
+      "dr_line_boxes",
+    ],
     $(async () => {
       try {
         stock.value = unwrap(await commands.stockOverview());
@@ -202,6 +212,11 @@ const StockList = component$(() => {
                   })}
                   <td class={[td, "text-right font-medium whitespace-nowrap tabular-nums"]}>
                     {formatQty(s.on_hand, s.unit)}
+                    {s.serial_code && (s.full_boxes > 0 || s.open_boxes > 0) && (
+                      <span class={[hint, "block font-normal"]}>
+                        {boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)}
+                      </span>
+                    )}
                   </td>
                   <td class={[td, "text-right tabular-nums"]}>
                     {s.reorder_level == null ? "—" : formatQty(s.reorder_level)}
@@ -233,10 +248,21 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
   const missing = useSignal(false);
   const lots = useSignal<StockLot[]>([]);
   const moves = useSignal<StockMove[]>([]);
+  const boxes = useSignal<BoxStock[]>([]);
   const error = useSignal("");
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts", "doc_numbers"],
+    [
+      "items",
+      "locations",
+      "stock_docs",
+      "stock_doc_lines",
+      "po_receipts",
+      "delivery_receipts",
+      "boxes",
+      "dr_line_boxes",
+      "doc_numbers",
+    ],
     $(async () => {
       try {
         const all = unwrap(await commands.stockOverview());
@@ -244,6 +270,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
         missing.value = !item.value;
         lots.value = unwrap(await commands.stockLots(id));
         moves.value = unwrap(await commands.itemStockMoves(id));
+        boxes.value = item.value?.serial_code ? unwrap(await commands.boxStock(id)) : [];
       } catch (e) {
         error.value = errorText(e);
       }
@@ -275,7 +302,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
       </p>
       <PageHeader
         title={`${s.code} · ${s.name}`}
-        subtitle={`${formatQty(s.on_hand, s.unit)} on hand${s.reorder_level == null ? "" : ` · reorder at ${formatQty(s.reorder_level)}`}`}
+        subtitle={`${formatQty(s.on_hand, s.unit)} on hand${s.full_boxes || s.open_boxes ? ` (${boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)})` : ""}${s.reorder_level == null ? "" : ` · reorder at ${formatQty(s.reorder_level)}`}${s.serial_code ? ` · serial ${s.serial_code}${s.pcs_per_box ? `, ${formatQty(s.pcs_per_box)} a box` : ""}` : ""}`}
       >
         <div q:slot="actions" class="flex flex-wrap gap-2">
           {can(session.user, "items") && (
@@ -297,41 +324,107 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
         {s.low && <Alert tone="warning">This item is at or below its reorder level.</Alert>}
       </div>
       <div class="grid gap-4 xl:grid-cols-[26rem_minmax(0,1fr)]">
-        <section class={[card, "self-start"]}>
-          <h2 class="border-b border-line px-4 py-3 font-semibold">On hand</h2>
-          {lots.value.length === 0 ? (
-            <Empty>None in stock.</Empty>
-          ) : (
-            <table class={table}>
-              <thead>
-                <tr>
-                  <th class={th}>Location</th>
-                  <th class={th}>Expiry</th>
-                  <th class={[th, "text-right"]}>Qty</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lots.value.map((l) => (
-                  <tr key={`${l.location_id}/${l.expiry}`}>
-                    <td class={td}>{l.location_name ?? "Deleted location"}</td>
-                    <td class={[td, "whitespace-nowrap"]}>
-                      {l.expiry ? (
-                        <>
-                          {formatDay(l.expiry)} <ExpiryBadge days={l.days_left} />
-                        </>
-                      ) : (
-                        <span class="text-ink-muted">No expiry</span>
-                      )}
-                    </td>
-                    <td class={[td, "text-right tabular-nums", l.qty < 0 && "text-danger"]}>
-                      {formatQty(l.qty, l.unit)}
-                    </td>
+        <div class="space-y-4 self-start">
+          <section class={card}>
+            <h2 class="border-b border-line px-4 py-3 font-semibold">On hand</h2>
+            {lots.value.length === 0 ? (
+              <Empty>None in stock.</Empty>
+            ) : (
+              <table class={table}>
+                <thead>
+                  <tr>
+                    <th class={th}>Location</th>
+                    <th class={th}>Expiry</th>
+                    <th class={[th, "text-right"]}>Qty</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {lots.value.map((l) => (
+                    <tr key={`${l.location_id}/${l.expiry}`}>
+                      <td class={td}>{l.location_name ?? "Deleted location"}</td>
+                      <td class={[td, "whitespace-nowrap"]}>
+                        {l.expiry ? (
+                          <>
+                            {formatDay(l.expiry)} <ExpiryBadge days={l.days_left} />
+                          </>
+                        ) : (
+                          <span class="text-ink-muted">No expiry</span>
+                        )}
+                      </td>
+                      <td class={[td, "text-right whitespace-nowrap tabular-nums", l.qty < 0 && "text-danger"]}>
+                        {formatQty(l.qty, l.unit)}
+                        {(l.full_boxes > 0 || l.open_boxes > 0) && (
+                          <span class={[hint, "block"]}>
+                            {boxSummary(l.full_boxes, l.open_boxes, l.open_pcs)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+          {s.serial_code && (
+            <section class={[card, "overflow-x-auto"]}>
+              <div class="border-b border-line px-4 py-3">
+                <h2 class="font-semibold">Boxes</h2>
+                <p class={hint}>In stock, lowest serial first.</p>
+              </div>
+              {boxes.value.length === 0 ? (
+                <Empty>No boxes in stock.</Empty>
+              ) : (
+                <table class={table}>
+                  <thead>
+                    <tr>
+                      <th class={th}>Serial</th>
+                      <th class={th}>Location</th>
+                      <th class={[th, "text-right"]}>Left</th>
+                      <th class={th}>Expiry</th>
+                      <th class={th}>PO</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {boxes.value.map((b) => (
+                      <tr key={b.box_id}>
+                        <td class={[td, "whitespace-nowrap font-medium"]}>
+                          {b.serial ?? "—"}
+                          {b.open && (
+                            <span class="ml-2">
+                              <Badge>open</Badge>
+                            </span>
+                          )}
+                        </td>
+                        <td class={td}>{b.location_name ?? "Deleted location"}</td>
+                        <td class={[td, "text-right whitespace-nowrap tabular-nums", b.qty < 0 && "text-danger"]}>
+                          {formatQty(b.qty)} / {formatQty(b.pcs)}
+                        </td>
+                        <td class={[td, "whitespace-nowrap"]}>
+                          {b.expiry ? (
+                            <>
+                              {formatDay(b.expiry)} <ExpiryBadge days={b.days_left} />
+                            </>
+                          ) : (
+                            <span class="text-ink-muted">—</span>
+                          )}
+                        </td>
+                        <td class={[td, "whitespace-nowrap"]}>
+                          {b.po_id ? (
+                            <Link class="text-brand-700 hover:underline" href={`/orders/?id=${b.po_id}`}>
+                              {b.po_no ?? "PO"}
+                            </Link>
+                          ) : (
+                            <span class="text-ink-muted">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
           )}
-        </section>
+        </div>
         <section class={card}>
           <div class="border-b border-line px-4 py-3">
             <h2 class="font-semibold">Movements</h2>
@@ -347,6 +440,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                   <th class={th}>Document</th>
                   <th class={th}>Location</th>
                   <th class={th}>Expiry</th>
+                  {s.serial_code && <th class={th}>Box</th>}
                   <th class={[th, "text-right"]}>Change</th>
                 </tr>
               </thead>
@@ -371,6 +465,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                     </td>
                     <td class={td}>{m.location_name ?? "Deleted location"}</td>
                     <td class={[td, "whitespace-nowrap"]}>{m.expiry ? formatDay(m.expiry) : "—"}</td>
+                    {s.serial_code && <td class={[td, "whitespace-nowrap"]}>{m.serial ?? "—"}</td>}
                     <td
                       class={[
                         td,

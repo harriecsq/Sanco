@@ -15,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::domain::boxes::{self, Serial, SerialNeed, Serials};
 use crate::domain::text_opt;
 use crate::error::{Error, Result};
 use crate::repo::WriteTx;
@@ -87,6 +88,11 @@ pub struct StockLineInput {
     pub expiry: Option<String>,
     /// In the item's base unit. Signed for adjustments, positive otherwise.
     pub qty: i64,
+    /// The box the pieces go into or come out of, for items that come in
+    /// boxes. Blank on a stock receipt makes new boxes.
+    pub box_id: Option<String>,
+    /// Size of the new boxes a stock receipt makes; `None` = the item's.
+    pub pcs_per_box: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +107,8 @@ pub struct StockDocInput {
     /// Why stock was adjusted. Required for adjustments.
     pub reason: String,
     pub notes: String,
+    /// Year in the serials of new boxes (`YYYY`); blank = this year.
+    pub serial_year: String,
     pub lines: Vec<StockLineInput>,
 }
 
@@ -141,6 +149,8 @@ pub struct StockDocLine {
     pub unit: Option<String>,
     pub expiry: Option<String>,
     pub qty: i64,
+    pub box_id: Option<String>,
+    pub serial: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -165,6 +175,10 @@ pub struct StockLot {
     /// Days from today to expiry; negative once expired.
     pub days_left: Option<i64>,
     pub qty: i64,
+    /// Boxes still full, boxes started, and the pieces left in those.
+    pub full_boxes: i64,
+    pub open_boxes: i64,
+    pub open_pcs: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -196,6 +210,12 @@ pub struct ItemStock {
     pub negative: bool,
     /// Earliest expiry among lots in stock.
     pub next_expiry: Option<String>,
+    /// Box serial code; `None` = no boxes.
+    pub serial_code: Option<String>,
+    pub pcs_per_box: Option<i64>,
+    pub full_boxes: i64,
+    pub open_boxes: i64,
+    pub open_pcs: i64,
 }
 
 /// One line of an item's stock history.
@@ -214,6 +234,8 @@ pub struct StockMove {
     pub created_at: i64,
     /// The purchase order of a PO receiving report.
     pub po_id: Option<String>,
+    pub box_id: Option<String>,
+    pub serial: Option<String>,
 }
 
 // Writing -------------------------------------------------------------------
@@ -223,18 +245,38 @@ struct Prepared {
     date: String,
     to: Option<String>,
     reason: Option<String>,
-    /// (item, expiry, qty) per line.
-    lines: Vec<(String, Option<String>, i64)>,
+    lines: Vec<PreparedLine>,
     effects: Vec<Effect>,
 }
 
-/// Net change a document makes to one lot.
+struct PreparedLine {
+    item: String,
+    expiry: Option<String>,
+    qty: i64,
+    /// An existing box, or `None`.
+    box_id: Option<String>,
+    /// A box this stock receipt makes, of this item.
+    new_box: Option<Serial>,
+}
+
+/// Net change a document makes to one lot (and box).
 #[derive(Debug, Clone)]
 pub(crate) struct Effect {
     pub item_id: String,
     pub location_id: String,
     pub expiry: Option<String>,
     pub qty: i64,
+    pub box_id: Option<String>,
+}
+
+/// Whether the item has stock outside boxes at the location.
+fn has_loose_stock(conn: &Connection, item_id: &str, location_id: &str) -> Result<bool> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM v_stock WHERE item_id = ?1 AND location_id = ?2
+                            AND box_id IS NULL AND qty > 0)",
+        )?
+        .query_row([item_id, location_id], |r| r.get(0))?)
 }
 
 pub(crate) fn live_location(conn: &Connection, id: &str) -> Result<()> {
@@ -301,7 +343,8 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
     }
 
     let mut lines = Vec::with_capacity(input.lines.len());
-    let mut effects: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    type Key = (String, String, Option<String>, Option<String>);
+    let mut effects: BTreeMap<Key, i64> = BTreeMap::new();
     for line in &input.lines {
         let (code, tracks): (String, bool) = conn
             .query_row(
@@ -331,17 +374,80 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
             })?),
             None => None,
         };
+        let incoming = kind != StockKind::Transfer && line.qty > 0;
+        // Items in boxes name the box; a stock receipt without one makes
+        // new boxes.
+        let serial = boxes::serial_of(conn, &line.item_id)?;
+        let box_id = line
+            .box_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut box_lot = None;
+        if let Some(b) = box_id {
+            let (item, _) = boxes::box_row(conn, b)?
+                .ok_or_else(|| Error::Invalid("that box no longer exists".into()))?;
+            if item != line.item_id {
+                return Err(Error::Invalid(format!("that box doesn't hold {code}")));
+            }
+            box_lot = boxes::box_expiry(conn, b)?;
+        } else if let Some(s) = &serial {
+            if kind == StockKind::Receipt {
+                let size = s.size(line.pcs_per_box)?;
+                boxes::check_size(Some(size), &code)?;
+                let expiry = match (tracks, expiry) {
+                    (true, None) => {
+                        return Err(Error::Invalid(format!("enter the expiry date of {code}")));
+                    }
+                    (true, e) => e,
+                    (false, _) => None,
+                };
+                *effects
+                    .entry((line.item_id.clone(), input.location_id.clone(), expiry.clone(), None))
+                    .or_default() += line.qty;
+                for pcs in boxes::box_sizes(line.qty, size) {
+                    lines.push(PreparedLine {
+                        item: line.item_id.clone(),
+                        expiry: expiry.clone(),
+                        qty: pcs,
+                        box_id: None,
+                        new_box: Some(s.clone()),
+                    });
+                }
+                if lines.len() > boxes::MAX_BOXES {
+                    return Err(Error::Invalid(format!(
+                        "a document can make at most {} boxes",
+                        boxes::MAX_BOXES
+                    )));
+                }
+                continue;
+            }
+            if line.qty > 0 && kind == StockKind::Adjustment
+                || !has_loose_stock(conn, &line.item_id, &input.location_id)?
+            {
+                return Err(Error::Invalid(format!("choose the box of {code}")));
+            }
+        }
         // Incoming stock gets an expiry exactly when the item tracks one;
         // outgoing stock names the lot it comes from, as it was received.
-        let incoming = kind != StockKind::Transfer && line.qty > 0;
-        let expiry = match (incoming, tracks, expiry) {
-            (true, true, None) => {
+        // A box keeps the expiry it came in with.
+        let expiry = match (box_lot, incoming, tracks, expiry) {
+            (Some(lot), ..) => Some(lot),
+            (None, true, true, None) => {
                 return Err(Error::Invalid(format!("enter the expiry date of {code}")));
             }
-            (true, false, _) => None,
-            (_, _, e) => e,
+            (None, true, false, _) => None,
+            (None, _, _, e) => e,
         };
-        let key = |loc: &str| (line.item_id.clone(), loc.to_string(), expiry.clone());
+        let box_id = box_id.map(String::from);
+        let key = |loc: &str| {
+            (
+                line.item_id.clone(),
+                loc.to_string(),
+                expiry.clone(),
+                box_id.clone(),
+            )
+        };
         match &to {
             Some(to) => {
                 *effects.entry(key(&input.location_id)).or_default() -= line.qty;
@@ -349,15 +455,22 @@ fn prepare(conn: &Connection, input: &StockDocInput, today: &str) -> Result<Prep
             }
             None => *effects.entry(key(&input.location_id)).or_default() += line.qty,
         }
-        lines.push((line.item_id.clone(), expiry, line.qty));
+        lines.push(PreparedLine {
+            item: line.item_id.clone(),
+            expiry,
+            qty: line.qty,
+            box_id,
+            new_box: None,
+        });
     }
     let effects = effects
         .into_iter()
-        .map(|((item_id, location_id, expiry), qty)| Effect {
+        .map(|((item_id, location_id, expiry, box_id), qty)| Effect {
             item_id,
             location_id,
             expiry,
             qty,
+            box_id,
         })
         .collect();
     Ok(Prepared {
@@ -376,15 +489,43 @@ pub fn validate(conn: &Connection, input: &StockDocInput, today: &str) -> Result
     check_not_negative(conn, &p.effects, "")
 }
 
+/// Checks a document as [`create`] would and returns the serials of the
+/// boxes it makes. Call it before reserving them and the number.
+pub fn serials_for_doc(
+    conn: &Connection,
+    input: &StockDocInput,
+    today: &str,
+    now_ms: i64,
+) -> Result<Vec<SerialNeed>> {
+    let p = prepare(conn, input, today)?;
+    check_not_negative(conn, &p.effects, "")?;
+    let year = serial_year(input, now_ms)?;
+    Ok(boxes::needs_for(
+        p.lines.iter().filter_map(|l| l.new_box.as_ref()),
+        &year,
+    ))
+}
+
+fn serial_year(input: &StockDocInput, now_ms: i64) -> Result<String> {
+    Ok(boxes::check_year(&input.serial_year)?.unwrap_or_else(|| boxes::this_year(now_ms)))
+}
+
 /// Posts a stock document with the number reserved for it (`res.ref_id` is
-/// the new document's id). Returns the id.
-pub fn create(tx: &mut WriteTx, input: &StockDocInput, res: &Reservation) -> Result<String> {
+/// the new document's id). New boxes take their serials from `serials`.
+/// Returns the id.
+pub fn create(
+    tx: &mut WriteTx,
+    input: &StockDocInput,
+    res: &Reservation,
+    serials: &mut Serials,
+) -> Result<String> {
     if res.series != input.kind.series() {
         return Err(Error::Invalid(
             "wrong number series for this document".into(),
         ));
     }
     let today = manila_date_string(tx.now_ms());
+    let year = serial_year(input, tx.now_ms())?;
     let p = prepare(tx.conn(), input, &today)?;
     check_not_negative(tx.conn(), &p.effects, "")?;
     let id = tx.insert(
@@ -400,15 +541,26 @@ pub fn create(tx: &mut WriteTx, input: &StockDocInput, res: &Reservation) -> Res
             "status": "posted",
         }),
     )?;
-    for (i, (item, expiry, qty)) in p.lines.into_iter().enumerate() {
+    for (i, l) in p.lines.into_iter().enumerate() {
+        let box_id = match &l.new_box {
+            Some(serial) => Some(boxes::create_box(
+                tx,
+                serials,
+                serial,
+                &year,
+                json!({ "item_id": l.item, "doc_id": id, "pcs": l.qty }),
+            )?),
+            None => l.box_id,
+        };
         tx.insert(
             STOCK_DOC_LINES,
             json!({
                 "doc_id": id,
                 "line_no": i as i64 + 1,
-                "item_id": item,
-                "expiry": expiry,
-                "qty": qty,
+                "item_id": l.item,
+                "expiry": l.expiry,
+                "qty": l.qty,
+                "box_id": box_id,
             }),
         )?;
     }
@@ -441,16 +593,17 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
             "voided_by": user,
             "void_reason": reason,
         }),
-    )
-    .map(drop)
+    )?;
+    // Boxes a voided stock receipt made are empty now.
+    boxes::drop_unused_boxes_of_doc(tx, id)
 }
 
 /// Net change a posted document (stock document, delivered DR or PO
-/// receiving report) makes to each lot.
+/// receiving report) makes to each lot and box.
 pub(crate) fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT item_id, location_id, expiry, SUM(qty) FROM v_stock_moves
-         WHERE doc_id = ?1 GROUP BY item_id, location_id, expiry",
+        "SELECT item_id, location_id, expiry, SUM(qty), box_id FROM v_stock_moves
+         WHERE doc_id = ?1 GROUP BY item_id, location_id, expiry, box_id",
     )?;
     let rows = stmt.query_map([doc_id], |r| {
         Ok(Effect {
@@ -458,20 +611,23 @@ pub(crate) fn doc_effect(conn: &Connection, doc_id: &str) -> Result<Vec<Effect>>
             location_id: r.get(1)?,
             expiry: r.get(2)?,
             qty: r.get(3)?,
+            box_id: r.get(4)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// Fails if applying `effects` would take a lot below zero.
+/// Fails if applying `effects` would take a lot (or a box) below zero.
 pub(crate) fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: &str) -> Result<()> {
     for e in effects.iter().filter(|e| e.qty < 0) {
         let before: i64 = conn
             .prepare_cached(
                 "SELECT COALESCE(SUM(qty), 0) FROM v_stock
-                 WHERE item_id = ?1 AND location_id = ?2 AND expiry IS ?3",
+                 WHERE item_id = ?1 AND location_id = ?2 AND expiry IS ?3 AND box_id IS ?4",
             )?
-            .query_row((&e.item_id, &e.location_id, &e.expiry), |r| r.get(0))?;
+            .query_row((&e.item_id, &e.location_id, &e.expiry, &e.box_id), |r| {
+                r.get(0)
+            })?;
         if before + e.qty >= 0 {
             continue;
         }
@@ -488,9 +644,14 @@ pub(crate) fn check_not_negative(conn: &Connection, effects: &[Effect], prefix: 
             )
             .optional()?
             .flatten();
-        let lot = match &e.expiry {
-            Some(x) => format!(" (expiry {x})"),
-            None => String::new(),
+        let serial = match &e.box_id {
+            Some(b) => boxes::serial_no(conn, b)?,
+            None => None,
+        };
+        let lot = match (&serial, &e.expiry) {
+            (Some(s), _) => format!(" in box {s}"),
+            (None, Some(x)) => format!(" (expiry {x})"),
+            (None, None) => String::new(),
         };
         let unit = unit.map(|u| format!(" {u}")).unwrap_or_default();
         return Err(Error::Invalid(format!(
@@ -586,8 +747,11 @@ fn doc_from_row(r: &rusqlite::Row) -> rusqlite::Result<Option<StockDocInfo>> {
 
 fn lines_of(conn: &Connection, doc_id: Option<&str>) -> Result<Vec<(String, StockDocLine)>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT l.doc_id, l.id, l.item_id, i.code, i.name, i.unit, l.expiry, COALESCE(l.qty, 0)
+        "SELECT l.doc_id, l.id, l.item_id, i.code, i.name, i.unit, l.expiry, COALESCE(l.qty, 0),
+                l.box_id, bn.no
          FROM stock_doc_lines l LEFT JOIN items i ON i.id = l.item_id
+         LEFT JOIN doc_numbers bn ON bn.ref_id = l.box_id AND bn.ref_tbl = 'boxes'
+                                 AND bn._deleted = 0
          WHERE l._deleted = 0 AND (?1 IS NULL OR l.doc_id = ?1)
          ORDER BY l.doc_id, l.line_no, l.id",
     )?;
@@ -602,6 +766,8 @@ fn lines_of(conn: &Connection, doc_id: Option<&str>) -> Result<Vec<(String, Stoc
                 unit: r.get(5)?,
                 expiry: r.get(6)?,
                 qty: r.get(7)?,
+                box_id: r.get(8)?,
+                serial: r.get(9)?,
             },
         ))
     })?;
@@ -673,11 +839,18 @@ pub fn get_doc(conn: &Connection, id: &str) -> Result<Option<StockDocDetail>> {
 pub fn lots(conn: &Connection, item_id: Option<&str>, today: &str) -> Result<Vec<StockLot>> {
     let mut stmt = conn.prepare_cached(
         "SELECT s.item_id, i.code, i.name, i.unit, i.category, s.location_id, l.name,
-                s.expiry, s.qty
+                s.expiry, SUM(s.qty),
+                SUM(s.box_id IS NOT NULL AND s.qty > 0 AND s.qty >= COALESCE(b.pcs, 0)),
+                SUM(s.box_id IS NOT NULL AND s.qty > 0 AND s.qty < COALESCE(b.pcs, 0)),
+                SUM(CASE WHEN s.box_id IS NOT NULL AND s.qty > 0 AND s.qty < COALESCE(b.pcs, 0)
+                         THEN s.qty ELSE 0 END)
          FROM v_stock s
          JOIN items i ON i.id = s.item_id AND i._deleted = 0
+         LEFT JOIN boxes b ON b.id = s.box_id
          LEFT JOIN locations l ON l.id = s.location_id
-         WHERE s.qty <> 0 AND (?1 IS NULL OR s.item_id = ?1)
+         WHERE (?1 IS NULL OR s.item_id = ?1)
+         GROUP BY s.item_id, s.location_id, s.expiry
+         HAVING SUM(s.qty) <> 0
          ORDER BY i.code COLLATE NOCASE, i.id, l.sort, l.name COLLATE NOCASE,
                   s.location_id, s.expiry IS NULL, s.expiry",
     )?;
@@ -694,6 +867,9 @@ pub fn lots(conn: &Connection, item_id: Option<&str>, today: &str) -> Result<Vec
             days_left: expiry.as_deref().and_then(|e| days_between(today, e)),
             expiry,
             qty: r.get(8)?,
+            full_boxes: r.get(9)?,
+            open_boxes: r.get(10)?,
+            open_pcs: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -705,9 +881,17 @@ pub fn item_stock(conn: &Connection, today: &str) -> Result<Vec<ItemStock>> {
     for lot in lots(conn, None, today)? {
         by_item.entry(lot.item_id.clone()).or_default().push(lot);
     }
+    // A box below zero can hide inside a lot that isn't.
+    let negative_boxes: Vec<String> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT item_id FROM v_stock WHERE box_id IS NOT NULL AND qty < 0",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
     let mut stmt = conn.prepare(
         "SELECT id, code, name, unit, category, supplier_id, COALESCE(active, 1),
-                COALESCE(tracks_expiry, 0), reorder_level
+                COALESCE(tracks_expiry, 0), reorder_level, serial_code, pcs_per_box
          FROM items WHERE _deleted = 0
          ORDER BY code COLLATE NOCASE, name COLLATE NOCASE, id",
     )?;
@@ -727,6 +911,11 @@ pub fn item_stock(conn: &Connection, today: &str) -> Result<Vec<ItemStock>> {
             low: false,
             negative: false,
             next_expiry: None,
+            serial_code: r.get(9)?,
+            pcs_per_box: r.get(10)?,
+            full_boxes: 0,
+            open_boxes: 0,
+            open_pcs: 0,
         })
     })?;
     let mut out = Vec::new();
@@ -749,7 +938,10 @@ pub fn item_stock(conn: &Connection, today: &str) -> Result<Vec<ItemStock>> {
             .filter(|l| l.qty != 0)
             .collect();
         s.on_hand = lots.iter().map(|l| l.qty).sum();
-        s.negative = lots.iter().any(|l| l.qty < 0);
+        s.full_boxes = lots.iter().map(|l| l.full_boxes).sum();
+        s.open_boxes = lots.iter().map(|l| l.open_boxes).sum();
+        s.open_pcs = lots.iter().map(|l| l.open_pcs).sum();
+        s.negative = lots.iter().any(|l| l.qty < 0) || negative_boxes.contains(&s.item_id);
         s.low = s.active && s.reorder_level.is_some_and(|r| s.on_hand <= r);
         s.next_expiry = lots
             .iter()
@@ -794,8 +986,10 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.doc_id, n.no, m.kind, m.date, m.location_id, l.name, m.expiry, m.qty,
                 COALESCE(d.created_at, r.delivered_at, r.created_at, p.created_at, 0) AS at,
-                p.po_id
+                p.po_id, m.box_id, bn.no
          FROM v_stock_moves m
+         LEFT JOIN doc_numbers bn ON bn.ref_id = m.box_id AND bn.ref_tbl = 'boxes'
+                                 AND bn._deleted = 0
          LEFT JOIN stock_docs d ON d.id = m.doc_id
                                AND m.kind NOT IN ('delivery', 'po_receipt')
          LEFT JOIN delivery_receipts r ON r.id = m.doc_id AND m.kind = 'delivery'
@@ -822,6 +1016,8 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
                 qty: r.get(7)?,
                 created_at: r.get(8)?,
                 po_id: r.get(9)?,
+                box_id: r.get(10)?,
+                serial: r.get(11)?,
             },
         ))
     })?;

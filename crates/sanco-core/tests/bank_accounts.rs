@@ -157,6 +157,9 @@ fn add_po(db: &Db, actor: &Actor) -> String {
         default_margin_bp: None,
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     };
     let item = db
         .write(actor.clone(), move |tx| items::save(tx, &item_input, true))
@@ -176,7 +179,9 @@ fn add_po(db: &Db, actor: &Actor) -> String {
             qty: 10,
             price_minor: Some(1_000),
             notes: String::new(),
+            pcs_per_box: None,
         }],
+        serial_year: String::new(),
     };
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::PO, &id).unwrap();

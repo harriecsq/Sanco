@@ -5,6 +5,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::TestPeer;
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::auth::{Action, Module, Perms};
 use sanco_core::domain::bd::{self, BdInput, BdLineInput, BdStatus};
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
@@ -79,6 +80,9 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -105,11 +109,14 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
             item_id: id.clone(),
             expiry: None,
             qty: 100,
+            box_id: None,
+            pcs_per_box: None,
         }],
+        serial_year: String::new(),
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res))
+    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res, &mut Serials::none()))
         .unwrap();
     id
 }
@@ -160,6 +167,7 @@ fn request_dr(db: &Db, actor: &Actor, booking: &str, line: &str, qty: i64) -> St
             booking_line_id: line.into(),
             expiry: None,
             qty,
+            boxes: vec![],
         }],
     };
     db.write(actor.clone(), move |tx| delivery::request(tx, &input))

@@ -1,6 +1,7 @@
 mod common;
 
 use common::{TestPeer, pull};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::bd::{self, BdInput, BdLineInput, BdStatus};
 use sanco_core::domain::bookings::{
     self, BookingAction, BookingInput, BookingLineInput, BookingStatus, DeliveryProgress,
@@ -84,6 +85,9 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -114,11 +118,14 @@ fn receive(db: &Db, actor: &Actor, item: &str, expiry: Option<&str>, qty: i64) {
             item_id: item.into(),
             expiry: expiry.map(String::from),
             qty,
+            box_id: None,
+            pcs_per_box: None,
         }],
+        serial_year: String::new(),
     };
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res))
+    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res, &mut Serials::none()))
         .unwrap();
 }
 
@@ -191,6 +198,7 @@ fn request_dr(
                 booking_line_id,
                 expiry: expiry.map(String::from),
                 qty,
+                boxes: vec![],
             })
             .collect(),
     };
@@ -763,6 +771,7 @@ fn dr_lines_stay_editable_even_after_delivery() {
                 booking_line_id,
                 expiry: expiry.map(String::from),
                 qty,
+                boxes: vec![],
             })
             .collect(),
     };

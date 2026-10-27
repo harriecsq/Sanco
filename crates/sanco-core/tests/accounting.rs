@@ -1,6 +1,7 @@
 mod common;
 
 use common::{T0, TestPeer, pull};
+use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::conflicts;
@@ -84,6 +85,9 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -110,11 +114,14 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
             item_id: id.clone(),
             expiry: None,
             qty: 100,
+            box_id: None,
+            pcs_per_box: None,
         }],
+        serial_year: String::new(),
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res))
+    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res, &mut Serials::none()))
         .unwrap();
     id
 }
@@ -172,6 +179,7 @@ fn dr_input(booking: &str, line: &str, qty: i64, line_id: Option<String>) -> DrR
             booking_line_id: line.into(),
             expiry: None,
             qty,
+            boxes: vec![],
         }],
     }
 }

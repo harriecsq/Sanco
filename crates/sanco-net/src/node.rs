@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sanco_core::db::migrations::SCHEMA_VERSION;
+use sanco_core::domain::boxes::{SerialNeed, Serials};
 use sanco_core::db::registry::DOC_NUMBERS;
 use sanco_core::repo::Listener;
 use sanco_core::sync::hlc::MAX_SKEW_MS;
@@ -296,6 +297,30 @@ impl Node {
                 let refs: Vec<&dyn NumberPeer> =
                     peers.iter().map(|p| p as &dyn NumberPeer).collect();
                 numbering::reserve(db, &refs, &series, &ref_id)
+            })
+            .await
+    }
+
+    /// Reserves the box serials a write needs (`ref_id` is the document
+    /// that makes the boxes) with every reachable peer. See
+    /// [`numbering::reserve_batch`].
+    pub async fn reserve_serials(&self, needs: Vec<SerialNeed>, ref_id: &str) -> Result<Serials> {
+        if needs.is_empty() {
+            return Ok(Serials::none());
+        }
+        let peers = self.inner.number_peers().await?;
+        let ref_id = ref_id.to_string();
+        self.inner
+            .blocking(move |db| {
+                let refs: Vec<&dyn NumberPeer> =
+                    peers.iter().map(|p| p as &dyn NumberPeer).collect();
+                let batches = needs
+                    .iter()
+                    .map(|n| {
+                        numbering::reserve_batch(db, &refs, &n.series, &n.period, &ref_id, n.count)
+                    })
+                    .collect::<sanco_core::Result<Vec<_>>>()?;
+                Ok(Serials::new(batches))
             })
             .await
     }

@@ -2,13 +2,14 @@ import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
 import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
+  type BoxDraw,
   type Choice,
   type DrDetail,
   type DrInfo,
   type LocationInfo,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDateTime, formatDay, formatPeso, formatQty, todayManila } from "~/lib/format";
+import { boxEquiv, formatDateTime, formatDay, formatPeso, formatQty, todayManila } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -45,6 +46,12 @@ const TABLES = [
 
 /** The date that matters: delivered on, else planned for. */
 const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
+
+/** The lots of a line's boxes: "Exp. Mar 4, 2027 · Exp. Jun 1, 2027". */
+const boxLots = (boxes: BoxDraw[]) =>
+  [...new Set(boxes.map((b) => b.expiry).filter((e): e is string => !!e))]
+    .map((e) => `Exp. ${formatDay(e)}`)
+    .join(" · ");
 
 const DrList = component$(() => {
   const loc = useLocation();
@@ -383,7 +390,7 @@ const DrView = component$<{ id: string }>(({ id }) => {
             <thead>
               <tr>
                 <th class={th}>Item</th>
-                <th class={th}>Lot</th>
+                <th class={th}>{det.lines.some((l) => l.boxes.length) ? "Lot / boxes" : "Lot"}</th>
                 <th class={[th, "text-right"]}>Qty</th>
                 <th class={[th, "text-right"]}>Price</th>
                 <th class={[th, "text-right"]}>Amount</th>
@@ -395,8 +402,25 @@ const DrView = component$<{ id: string }>(({ id }) => {
                   <td class={td}>
                     <span class="font-medium">{l.item_code ?? "Deleted item"}</span> {l.item_name}
                   </td>
-                  <td class={[td, "whitespace-nowrap"]}>{l.expiry ? `Exp. ${formatDay(l.expiry)}` : "—"}</td>
-                  <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>{formatQty(l.qty, l.unit)}</td>
+                  {l.boxes.length ? (
+                    <td class={td}>
+                      {l.boxes.map((b, i) => (
+                        <span key={b.box_id} class="whitespace-nowrap">
+                          {i > 0 && " · "}
+                          {b.serial ?? "Box"} ×{b.qty}
+                        </span>
+                      ))}
+                      {boxLots(l.boxes) && <span class={[hint, "block"]}>{boxLots(l.boxes)}</span>}
+                    </td>
+                  ) : (
+                    <td class={[td, "whitespace-nowrap"]}>{l.expiry ? `Exp. ${formatDay(l.expiry)}` : "—"}</td>
+                  )}
+                  <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                    {formatQty(l.qty, l.unit)}
+                    {l.boxed && l.pcs_per_box != null && (
+                      <span class={[hint, "block"]}>{boxEquiv(l.qty, l.pcs_per_box)}</span>
+                    )}
+                  </td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(l.price_c)}</td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(l.amount_c)}</td>
                 </tr>

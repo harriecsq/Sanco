@@ -90,6 +90,9 @@ fn item_input(code: &str, supplier: Option<&str>, margin: Option<i64>) -> ItemIn
         default_margin_bp: margin,
         notes: String::new(),
         active: true,
+        serial_code: String::new(),
+        serial_digits: None,
+        pcs_per_box: None,
     }
 }
 

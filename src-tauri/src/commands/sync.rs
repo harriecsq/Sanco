@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use sanco_core::Db;
 use sanco_core::domain::auth::{self, SessionUser};
+use sanco_core::domain::boxes::{SerialNeed, Serials};
 use sanco_core::domain::users::{self, NewUser};
 use sanco_core::sync::numbering::Reservation;
 use sanco_net::{LocalChanges, Node, PeerState};
@@ -73,6 +74,25 @@ pub async fn reserve_number(
         .as_ref()
         .ok_or_else(|| "this PC is not set up yet".to_string())?;
     node.reserve_number(series, ref_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Reserves the box serials a write needs, for the document `ref_id` that
+/// makes the boxes, with every reachable peer.
+pub async fn reserve_serials(
+    state: &AppState,
+    needs: Vec<SerialNeed>,
+    ref_id: &str,
+) -> Result<Serials, String> {
+    if needs.is_empty() {
+        return Ok(Serials::none());
+    }
+    let node = state.node.lock().await;
+    let node = node
+        .as_ref()
+        .ok_or_else(|| "this PC is not set up yet".to_string())?;
+    node.reserve_serials(needs, ref_id)
         .await
         .map_err(|e| e.to_string())
 }

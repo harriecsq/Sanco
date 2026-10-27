@@ -75,11 +75,25 @@ export const phpOf = (minor: number, currency: string, fx: number | null) =>
 
 // PO form --------------------------------------------------------------------
 
+/** What the PO form needs to know about an item that comes in boxes. */
+interface BoxMeta {
+  serial_code: string | null;
+  pcs_per_box: number | null;
+  unit: string | null;
+}
+
 interface FormLine {
   key: number;
   id: string | null;
   item_id: string;
+  /** The item's serial code: set = entered as boxes + loose pieces. */
+  serial_code: string | null;
+  unit: string | null;
+  /** Total pieces, for items without boxes. */
   qty: string;
+  boxes: string;
+  per_box: string;
+  loose: string;
   price: string;
   notes: string;
 }
@@ -93,20 +107,71 @@ export interface PoForm {
   expected_date: string;
   supplier_ref: string;
   notes: string;
+  /** `YYYY` in the box serials. */
+  serial_year: string;
+  /** Boxes already given serials; the year is fixed then. */
+  box_count: number;
   lines: FormLine[];
 }
 
 let nextKey = 1;
 const newKey = () => nextKey++;
 
+const thisYear = () => todayManila().slice(0, 4);
+
 const blankLine = (): FormLine => ({
   key: newKey(),
   id: null,
   item_id: "",
+  serial_code: null,
+  unit: null,
   qty: "",
+  boxes: "",
+  per_box: "",
+  loose: "",
   price: "",
   notes: "",
 });
+
+/** Fill a line's quantity fields with `qty` pieces at `per` a box. */
+const setQty = (line: FormLine, qty: number | null, per: number | null) => {
+  line.per_box = per ? String(per) : "";
+  if (qty == null) {
+    line.boxes = line.loose = "";
+    return;
+  }
+  const full = per ? Math.floor(qty / per) : 0;
+  const rest = per ? qty % per : qty;
+  line.qty = String(qty);
+  line.boxes = full ? String(full) : "";
+  line.loose = rest ? String(rest) : "";
+};
+
+/** Total pieces of a line in either entry mode; null when nothing is entered. */
+const lineQty = (l: FormLine, what = "an item"): number | null => {
+  if (!l.serial_code) return parseCount(l.qty, `quantity for ${what}`);
+  const boxes = parseCount(l.boxes, `number of boxes for ${what}`);
+  const per = parseCount(l.per_box, `pcs/box for ${what}`);
+  const loose = parseCount(l.loose, `loose pieces for ${what}`);
+  if (boxes == null && loose == null) return null;
+  if (boxes && !per) throw new Error(`enter the pcs/box for ${what}`);
+  return (boxes ?? 0) * (per ?? 0) + (loose ?? 0);
+};
+
+/** Change a line's item, keeping the quantity in pieces and switching
+ *  between box and plain entry. */
+const pickItem = (line: FormLine, id: string, meta: BoxMeta | undefined) => {
+  let qty: number | null = null;
+  try {
+    qty = lineQty(line);
+  } catch {
+    qty = null;
+  }
+  line.item_id = id;
+  line.serial_code = meta?.serial_code ?? null;
+  line.unit = meta?.unit ?? null;
+  setQty(line, qty, meta?.pcs_per_box ?? null);
+};
 
 export const blankPo = (): PoForm => ({
   id: "",
@@ -117,6 +182,8 @@ export const blankPo = (): PoForm => ({
   expected_date: "",
   supplier_ref: "",
   notes: "",
+  serial_year: thisYear(),
+  box_count: 0,
   lines: [blankLine()],
 });
 
@@ -129,15 +196,31 @@ export const poToForm = (d: PoDetail): PoForm => ({
   expected_date: d.po.expected_date ?? "",
   supplier_ref: d.po.supplier_ref ?? "",
   notes: d.po.notes ?? "",
-  lines: d.lines.map((l) => ({
-    key: newKey(),
-    id: l.id,
-    item_id: l.item_id,
-    qty: String(l.qty),
-    price: moneyText(l.price_minor),
-    notes: l.notes ?? "",
-  })),
+  serial_year: d.po.serial_year ?? thisYear(),
+  box_count: d.po.box_count,
+  lines: d.lines.map((l) => {
+    const line: FormLine = {
+      ...blankLine(),
+      id: l.id,
+      item_id: l.item_id,
+      serial_code: l.serial_code,
+      unit: l.unit,
+      qty: String(l.qty),
+      price: moneyText(l.price_minor),
+      notes: l.notes ?? "",
+    };
+    if (l.serial_code) setQty(line, l.qty, l.pcs_per_box ?? l.item_pcs_per_box);
+    return line;
+  }),
 });
+
+/** Serial years to offer: ten back, five ahead, plus `keep`. */
+const serialYears = (keep: string) => {
+  const now = Number(thisYear());
+  const years = Array.from({ length: 16 }, (_, i) => String(now - 10 + i));
+  if (/^\d{4}$/.test(keep) && !years.includes(keep)) years.push(keep);
+  return years.sort();
+};
 
 const pickable = <T extends { id: string; active: boolean }>(list: T[], current: string) =>
   list.filter((o) => o.active || o.id === current);
@@ -151,6 +234,8 @@ export const PoFormModal = component$<{
 }>(({ open, form, costs, saved$ }) => {
   const suppliers = useSignal<SupplierChoice[]>([]);
   const items = useSignal<Choice[]>([]);
+  /** Box details by item id. */
+  const boxMeta = useSignal<Record<string, BoxMeta>>({});
   const error = useSignal("");
   const busy = useSignal(false);
 
@@ -159,7 +244,14 @@ export const PoFormModal = component$<{
     $(async () => {
       try {
         suppliers.value = unwrap(await commands.supplierOptions());
-        items.value = unwrap(await commands.itemOptions());
+        const list = unwrap(await commands.itemOptions());
+        items.value = list;
+        boxMeta.value = Object.fromEntries(
+          list.map((i) => [
+            i.id,
+            { serial_code: i.serial_code, pcs_per_box: i.pcs_per_box, unit: i.unit },
+          ]),
+        );
       } catch (e) {
         error.value = errorText(e);
       }
@@ -171,11 +263,11 @@ export const PoFormModal = component$<{
     error.value = "";
     try {
       const lines = form.lines
-        .filter((l) => l.item_id || l.qty.trim())
+        .filter((l) => l.item_id || l.qty.trim() || l.boxes.trim() || l.loose.trim())
         .map((l) => {
           const what = items.value.find((i) => i.id === l.item_id)?.label ?? "an item";
           if (!l.item_id) throw new Error("choose an item on every line, or remove it");
-          const qty = parseCount(l.qty, `quantity for ${what}`);
+          const qty = lineQty(l, what);
           if (!qty) throw new Error(`enter a quantity for ${what}`);
           return {
             id: l.id,
@@ -183,6 +275,7 @@ export const PoFormModal = component$<{
             qty,
             price_minor: costs ? parseMoney(l.price, `price for ${what}`) : null,
             notes: l.notes,
+            pcs_per_box: l.serial_code ? parseCount(l.per_box) || null : null,
           };
         });
       const id = unwrap(
@@ -195,6 +288,7 @@ export const PoFormModal = component$<{
           expected_date: form.expected_date,
           supplier_ref: form.supplier_ref,
           notes: form.notes,
+          serial_year: form.serial_year,
           lines,
         }),
       );
@@ -211,12 +305,14 @@ export const PoFormModal = component$<{
   let total = 0;
   for (const l of form.lines) {
     try {
-      total += (parseCount(l.qty) ?? 0) * (parseMoney(l.price) ?? 0);
+      total += (lineQty(l) ?? 0) * (parseMoney(l.price) ?? 0);
     } catch {
       /* shown on save */
     }
   }
   const php = phpOf(total, form.currency, fxOf(form.fx_rate));
+  const boxedCode = form.lines.find((l) => l.serial_code)?.serial_code;
+  const yearFixed = !!form.id && form.box_count > 0;
 
   return (
     <Modal open={open} title={form.id ? "Edit purchase order" : "New purchase order"} wide>
@@ -287,6 +383,28 @@ export const PoFormModal = component$<{
               />
             </Field>
           )}
+          {boxedCode && (
+            <Field label="Serial year">
+              <select
+                class={input}
+                disabled={yearFixed}
+                onChange$={(_, el) => (form.serial_year = el.value)}
+              >
+                {serialYears(form.serial_year).map((y) => (
+                  <option key={y} value={y} selected={y === form.serial_year}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+              {/* In the slot, not the `hint` prop: a prop computed from the
+                  form here could be treated as constant and go stale. */}
+              <span class={[hint, "block"]}>
+                {yearFixed
+                  ? "Boxes have serials; put the PO back to draft to change the year."
+                  : `Box serials read ${boxedCode}${form.serial_year.slice(2)}-…, given when the PO is marked ordered.`}
+              </span>
+            </Field>
+          )}
         </div>
 
         <div>
@@ -295,51 +413,104 @@ export const PoFormModal = component$<{
             {costs && <span class={hint}>Unit prices in {form.currency}; blank if not known yet.</span>}
           </div>
           <div class="space-y-2">
-            {form.lines.map((line, idx) => (
-              <div
-                key={line.key}
-                class={[
-                  "grid items-start gap-2",
-                  costs ? "grid-cols-[minmax(0,1fr)_6rem_9rem_auto]" : "grid-cols-[minmax(0,1fr)_6rem_auto]",
-                ]}
-              >
-                <select class={input} aria-label="Item" onChange$={(_, el) => (line.item_id = el.value)}>
-                  <option value="">Choose an item…</option>
-                  {pickable(items.value, line.item_id).map((i) => (
-                    <option key={i.id} value={i.id} selected={i.id === line.item_id}>
-                      {i.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  class={[inputBase, "w-full text-right"]}
-                  aria-label="Quantity"
-                  inputMode="numeric"
-                  placeholder="Qty"
-                  value={line.qty}
-                  onInput$={(_, el) => (line.qty = el.value)}
-                />
-                {costs && (
-                  <input
-                    class={[inputBase, "w-full text-right"]}
-                    aria-label="Unit price"
-                    inputMode="decimal"
-                    placeholder={`${form.currency} price`}
-                    value={line.price}
-                    onInput$={(_, el) => (line.price = el.value)}
-                  />
-                )}
-                <button
-                  type="button"
-                  class={btnGhost}
-                  aria-label="Remove line"
-                  disabled={form.lines.length === 1}
-                  onClick$={() => form.lines.splice(idx, 1)}
+            {form.lines.map((line, idx) => {
+              let pieces: number | null = null;
+              try {
+                pieces = line.serial_code ? lineQty(line) : null;
+              } catch {
+                /* shown on save */
+              }
+              return (
+                <div
+                  key={line.key}
+                  class={[
+                    "grid items-start gap-2",
+                    costs ? "grid-cols-[minmax(0,1fr)_6rem_9rem_auto]" : "grid-cols-[minmax(0,1fr)_6rem_auto]",
+                  ]}
                 >
-                  ✕
-                </button>
-              </div>
-            ))}
+                  <select
+                    data-search="on"
+                    class={input}
+                    aria-label="Item"
+                    onChange$={(_, el) => pickItem(line, el.value, boxMeta.value[el.value])}
+                  >
+                    <option value="">Choose an item…</option>
+                    {pickable(items.value, line.item_id).map((i) => (
+                      <option key={i.id} value={i.id} selected={i.id === line.item_id}>
+                        {i.label}
+                      </option>
+                    ))}
+                  </select>
+                  {line.serial_code ? (
+                    <span class="pt-1.5 text-right text-sm tabular-nums" title="Total pieces">
+                      {pieces == null ? "—" : formatQty(pieces, line.unit)}
+                    </span>
+                  ) : (
+                    <input
+                      class={[inputBase, "w-full text-right"]}
+                      aria-label="Quantity"
+                      inputMode="numeric"
+                      placeholder="Qty"
+                      value={line.qty}
+                      onInput$={(_, el) => (line.qty = el.value)}
+                    />
+                  )}
+                  {costs && (
+                    <input
+                      class={[inputBase, "w-full text-right"]}
+                      aria-label="Unit price"
+                      inputMode="decimal"
+                      placeholder={`${form.currency} price`}
+                      value={line.price}
+                      onInput$={(_, el) => (line.price = el.value)}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    class={btnGhost}
+                    aria-label="Remove line"
+                    disabled={form.lines.length === 1}
+                    onClick$={() => form.lines.splice(idx, 1)}
+                  >
+                    ✕
+                  </button>
+                  {line.serial_code && (
+                    <div class="col-span-full flex flex-wrap items-center gap-2 pb-1 pl-3 text-sm">
+                      <input
+                        class={[inputBase, "w-20 text-right"]}
+                        aria-label="Boxes"
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={line.boxes}
+                        onInput$={(_, el) => (line.boxes = el.value)}
+                      />
+                      <span>boxes of</span>
+                      <input
+                        class={[inputBase, "w-20 text-right"]}
+                        aria-label="Pieces per box"
+                        inputMode="numeric"
+                        placeholder="pcs"
+                        value={line.per_box}
+                        onInput$={(_, el) => (line.per_box = el.value)}
+                      />
+                      <span>pcs, plus</span>
+                      <input
+                        class={[inputBase, "w-20 text-right"]}
+                        aria-label="Loose pieces"
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={line.loose}
+                        onInput$={(_, el) => (line.loose = el.value)}
+                      />
+                      <span>loose</span>
+                      <span class={hint}>
+                        {line.serial_code} serials; loose pieces make one more box.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <button type="button" class={[btnGhost, "mt-2"]} onClick$={() => form.lines.push(blankLine())}>
             + Add item
@@ -540,6 +711,13 @@ export const TtModal = component$<{ open: Signal<boolean>; form: TtForm }>(({ op
 interface ReceiveRow {
   key: number;
   po_line_id: string;
+  /** Set for a line with boxes: this row is that one box. */
+  box_id: string | null;
+  serial: string;
+  /** What the box holds when full. */
+  pcs: number;
+  /** Box rows only: receive this box now. */
+  include: boolean;
   qty: string;
   expiry: string;
 }
@@ -551,24 +729,55 @@ export interface ReceiveForm {
   rows: ReceiveRow[];
 }
 
+const plainRow = (poLineId: string, qty: string): ReceiveRow => ({
+  key: newKey(),
+  po_line_id: poLineId,
+  box_id: null,
+  serial: "",
+  pcs: 0,
+  include: true,
+  qty,
+  expiry: "",
+});
+
 /** A fresh receiving form: one row per line still to come, prefilled with
- *  what is left. */
+ *  what is left, or for a line with boxes one row per box not received yet. */
 export const receiveForm = (d: PoDetail): ReceiveForm => ({
   location_id: "",
   date: todayManila(),
   notes: "",
-  rows: d.lines
-    .filter((l) => l.remaining > 0)
-    .map((l) => ({ key: newKey(), po_line_id: l.id, qty: String(l.remaining), expiry: "" })),
+  rows: d.lines.flatMap((l) =>
+    l.boxes.length
+      ? l.boxes
+          .filter((b) => b.received <= 0)
+          .map((b) => ({
+            ...plainRow(l.id, String(b.pcs)),
+            box_id: b.id,
+            serial: b.serial ?? "",
+            pcs: b.pcs,
+          }))
+      : l.remaining > 0
+        ? [plainRow(l.id, String(l.remaining))]
+        : [],
+  ),
 });
 
 const addLot = (form: ReceiveForm, idx: number) => {
-  const row = form.rows[idx];
-  form.rows.splice(idx + 1, 0, { key: newKey(), po_line_id: row.po_line_id, qty: "", expiry: "" });
+  form.rows.splice(idx + 1, 0, plainRow(form.rows[idx].po_line_id, ""));
+};
+
+/** Tick or untick every box of a PO line. */
+const includeAll = (form: ReceiveForm, poLineId: string, on: boolean) => {
+  for (const r of form.rows) if (r.po_line_id === poLineId) r.include = on;
+};
+
+/** One expiry date for every ticked box of a PO line. */
+const expiryAll = (form: ReceiveForm, poLineId: string, date: string) => {
+  for (const r of form.rows) if (r.po_line_id === poLineId && r.include) r.expiry = date;
 };
 
 /** Receive goods of a PO into one location. Each PO line can be split over
- *  several expiry dates. */
+ *  several expiry dates; a line with boxes is received box by box. */
 export const ReceiveModal = component$<{
   open: Signal<boolean>;
   detail: PoDetail;
@@ -595,13 +804,15 @@ export const ReceiveModal = component$<{
     error.value = "";
     try {
       const lines = form.rows
-        .filter((r) => r.qty.trim() && r.qty.trim() !== "0")
+        .filter((r) => (r.box_id ? r.include : r.qty.trim() && r.qty.trim() !== "0"))
         .map((r) => {
           const l = detail.lines.find((x) => x.id === r.po_line_id);
-          const what = l?.item_code ?? "an item";
+          const what = r.box_id ? `box ${r.serial}` : (l?.item_code ?? "an item");
           const qty = parseCount(r.qty, `quantity of ${what}`);
+          if (r.box_id && !qty) throw new Error(`enter the quantity in ${what}, or untick it`);
+          if (r.box_id && qty && qty > r.pcs) throw new Error(`${what} holds only ${r.pcs}`);
           if (l?.tracks_expiry && !r.expiry) throw new Error(`enter the expiry date of ${what}`);
-          return { po_line_id: r.po_line_id, qty: qty ?? 0, expiry: r.expiry || null };
+          return { po_line_id: r.po_line_id, box_id: r.box_id, qty: qty ?? 0, expiry: r.expiry || null };
         });
       const id = unwrap(
         await commands.receivePo({
@@ -661,6 +872,78 @@ export const ReceiveModal = component$<{
             {form.rows.map((r, idx) => {
               const l = detail.lines.find((x) => x.id === r.po_line_id);
               const first = idx === 0 || form.rows[idx - 1].po_line_id !== r.po_line_id;
+              if (r.box_id) {
+                const mine = first ? form.rows.filter((x) => x.po_line_id === r.po_line_id) : [];
+                return (
+                  <div key={r.key} class="space-y-2">
+                    {first && (
+                      <div class="flex flex-wrap items-end justify-between gap-2 pt-1 text-sm">
+                        <div>
+                          <label class="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              class="accent-brand-500"
+                              aria-label="All boxes of this item"
+                              checked={mine.every((x) => x.include)}
+                              onChange$={(_, el) => includeAll(form, r.po_line_id, el.checked)}
+                            />
+                            <span>
+                              <span class="font-medium">{l?.item_code}</span> {l?.item_name}
+                            </span>
+                          </label>
+                          <span class={[hint, "block pl-6"]}>
+                            Ordered {formatQty(l?.qty ?? 0, l?.unit)} in {l?.boxes.length ?? 0} boxes, received{" "}
+                            {l?.received ?? 0}; {mine.length} {mine.length === 1 ? "box" : "boxes"} to receive
+                          </span>
+                        </div>
+                        {l?.tracks_expiry && (
+                          <label class="flex items-center gap-2">
+                            <span class={hint}>Expiry for all ticked</span>
+                            <input
+                              type="date"
+                              class={inputBase}
+                              onChange$={(_, el) => expiryAll(form, r.po_line_id, el.value)}
+                            />
+                          </label>
+                        )}
+                      </div>
+                    )}
+                    <div class="grid grid-cols-[minmax(0,1fr)_6rem_10rem_auto] items-start gap-2">
+                      <label class="flex items-center gap-2 pt-1.5 pl-6 text-sm">
+                        <input
+                          type="checkbox"
+                          class="accent-brand-500"
+                          checked={r.include}
+                          onChange$={(_, el) => (r.include = el.checked)}
+                        />
+                        <span class="font-mono">{r.serial || "no serial"}</span>
+                        <span class={hint}>holds {r.pcs}</span>
+                      </label>
+                      <input
+                        class={[inputBase, "w-full text-right"]}
+                        aria-label={`Quantity in box ${r.serial}`}
+                        inputMode="numeric"
+                        disabled={!r.include}
+                        value={r.qty}
+                        onInput$={(_, el) => (r.qty = el.value)}
+                      />
+                      {l?.tracks_expiry ? (
+                        <input
+                          type="date"
+                          class={input}
+                          aria-label={`Expiry date of box ${r.serial}`}
+                          disabled={!r.include}
+                          value={r.expiry}
+                          onChange$={(_, el) => (r.expiry = el.value)}
+                        />
+                      ) : (
+                        <span class={[hint, "pt-2"]}>no expiry</span>
+                      )}
+                      <span />
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div key={r.key} class="grid grid-cols-[minmax(0,1fr)_6rem_10rem_auto] items-start gap-2">
                   <div class="pt-1.5 text-sm">
@@ -726,7 +1009,8 @@ export const ReceiveModal = component$<{
         </Field>
         <p class={hint}>
           Posting adds the goods to stock with a new receiving report number. Leave a quantity blank to skip
-          that item. A wrong report is voided and entered again.
+          that item{form.rows.some((r) => r.box_id) && ", and untick a box to receive it later"}. A wrong
+          report is voided and entered again.
         </p>
         <div class="flex justify-end gap-2">
           <button type="button" class={btnSecondary} onClick$={() => (open.value = false)}>

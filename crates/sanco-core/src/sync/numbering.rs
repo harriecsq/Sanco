@@ -197,6 +197,19 @@ pub struct NumberClaim {
     pub ref_id: String,
     /// Site making the reservation.
     pub site: String,
+    /// How many numbers from `seq` on (box serials are claimed in a batch).
+    #[serde(default = "one")]
+    pub count: i64,
+}
+
+fn one() -> i64 {
+    1
+}
+
+impl NumberClaim {
+    fn last(&self) -> i64 {
+        self.seq + self.count.max(1) - 1
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,25 +243,30 @@ pub(crate) fn handle_claim(conn: &Connection, c: &NumberClaim, now: i64) -> Resu
     let taken: bool = conn
         .prepare_cached(
             "SELECT EXISTS (SELECT 1 FROM doc_numbers
-                            WHERE series = ?1 AND period = ?2 AND seq = ?3
+                            WHERE series = ?1 AND period = ?2 AND seq BETWEEN ?3 AND ?5
                               AND _deleted = 0 AND ref_id IS NOT ?4)
                  OR EXISTS (SELECT 1 FROM number_claims
-                            WHERE series = ?1 AND period = ?2 AND seq = ?3)",
+                            WHERE series = ?1 AND period = ?2 AND seq BETWEEN ?3 AND ?5)",
         )?
-        .query_row(params![c.series, c.period, c.seq, c.ref_id], |r| r.get(0))?;
+        .query_row(
+            params![c.series, c.period, c.seq, c.ref_id, c.last()],
+            |r| r.get(0),
+        )?;
     if !taken {
-        conn.prepare_cached(
+        let mut insert = conn.prepare_cached(
             "INSERT INTO number_claims (series, period, seq, ref_id, site_id, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )?
-        .execute(params![
-            c.series,
-            c.period,
-            c.seq,
-            c.ref_id,
-            c.site,
-            now + CLAIM_TTL_MS
-        ])?;
+        )?;
+        for seq in c.seq..=c.last() {
+            insert.execute(params![
+                c.series,
+                c.period,
+                seq,
+                c.ref_id,
+                c.site,
+                now + CLAIM_TTL_MS
+            ])?;
+        }
     }
     Ok(ClaimReply {
         granted: !taken,
@@ -319,6 +337,65 @@ fn reserve_in(
     ref_id: &str,
 ) -> Result<Reservation> {
     let now = local.now_ms();
+    let b = claim_run(local, peers, series, period, ref_id, 1)?;
+    Ok(Reservation {
+        no: fmt.render(period, now, b.first),
+        series: b.series,
+        period: b.period,
+        seq: b.first,
+        ref_id: b.ref_id,
+        reached: b.reached,
+        unreachable: b.unreachable,
+        manual: false,
+    })
+}
+
+/// `count` consecutive numbers held for documents made in one write (the
+/// boxes of a purchase order). Each gets its own `doc_numbers` row
+/// ([`assign_seq`]); the claim is made for `ref_id`, the document that
+/// creates them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Batch {
+    pub series: String,
+    pub period: String,
+    pub first: i64,
+    pub count: i64,
+    pub ref_id: String,
+    pub reached: usize,
+    pub unreachable: usize,
+}
+
+impl Batch {
+    pub fn confirmed(&self) -> bool {
+        self.unreachable == 0
+    }
+}
+
+/// Reserves `count` consecutive numbers of `series` in `period`, above
+/// every number used or claimed, on this PC and every reachable peer.
+pub fn reserve_batch(
+    local: &Db,
+    peers: &[&dyn NumberPeer],
+    series: &str,
+    period: &str,
+    ref_id: &str,
+    count: i64,
+) -> Result<Batch> {
+    if count < 1 {
+        return Err(Error::Invalid("nothing to number".into()));
+    }
+    claim_run(local, peers, series, period, ref_id, count)
+}
+
+fn claim_run(
+    local: &Db,
+    peers: &[&dyn NumberPeer],
+    series: &str,
+    period: &str,
+    ref_id: &str,
+    count: i64,
+) -> Result<Batch> {
+    let now = local.now_ms();
     let mut seq = local.read(|c| max_seq(c, series, period, ref_id, now))? + 1;
     for _ in 0..MAX_ROUNDS {
         let claim = NumberClaim {
@@ -327,6 +404,7 @@ fn reserve_in(
             seq,
             ref_id: ref_id.to_string(),
             site: local.site_id().to_string(),
+            count,
         };
         let mine = local.claim_number(claim.clone())?;
         let (mut granted, mut max) = (mine.granted, mine.max);
@@ -347,15 +425,14 @@ fn reserve_in(
             }
         }
         if granted && max < seq {
-            return Ok(Reservation {
+            return Ok(Batch {
                 series: claim.series,
                 period: claim.period,
-                seq,
-                no: fmt.render(period, now, seq),
+                first: seq,
+                count,
                 ref_id: claim.ref_id,
                 reached,
                 unreachable,
-                manual: false,
             });
         }
         seq = max.max(seq) + 1;
@@ -384,6 +461,7 @@ pub fn reserve_exact(
         seq,
         ref_id: ref_id.to_string(),
         site: local.site_id().to_string(),
+        count: 1,
     };
     let taken = || Error::Invalid(format!("number {no} is already used on another document"));
     if !local.claim_number(claim.clone())?.granted {
@@ -441,6 +519,45 @@ pub fn assign(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> Result<Stri
     Ok(res.no.clone())
 }
 
+/// Stores one number of a [`Batch`] for document `ref_tbl`/`ref_id`, shown
+/// as `no`. Call inside the write that creates the document.
+pub fn assign_seq(
+    tx: &mut WriteTx,
+    batch: &Batch,
+    seq: i64,
+    no: &str,
+    ref_tbl: &str,
+    ref_id: &str,
+) -> Result<()> {
+    if seq < batch.first || seq >= batch.first + batch.count {
+        return Err(Error::Invalid("that number wasn't reserved".into()));
+    }
+    let (site, now) = (tx.site().to_string(), tx.now_ms());
+    tx.insert(
+        DOC_NUMBERS,
+        json!({
+            "id": number_row_id(ref_id, &batch.series),
+            "series": batch.series,
+            "period": batch.period,
+            "seq": seq,
+            "no": no,
+            "ref_tbl": ref_tbl,
+            "ref_id": ref_id,
+            "site": site,
+            "assigned_at": now,
+            "confirmed": batch.confirmed(),
+            "manual": false,
+        }),
+    )?;
+    Ok(())
+}
+
+/// Series whose numbers are never renumbered after an offline clash (box
+/// serials: two PCs can't give out the same one in practice).
+pub fn keeps_clashes(series: &str) -> bool {
+    series.starts_with("BOX:")
+}
+
 /// Gives a document a number, or changes the one it has (a typed number
 /// corrected by staff). The old text is kept in `prev_no`.
 pub fn assign_or_change(tx: &mut WriteTx, res: &Reservation, ref_tbl: &str) -> Result<String> {
@@ -496,7 +613,7 @@ pub fn resolve_clashes(db: &Db, peers: &[&dyn NumberPeer]) -> Result<Vec<Renumbe
     let losers: Vec<Row> = db
         .read(clash_losers)?
         .into_iter()
-        .filter(|r| owned.contains(text(r, "site")))
+        .filter(|r| owned.contains(text(r, "site")) && !keeps_clashes(text(r, "series")))
         .collect();
 
     let mut done = Vec::new();

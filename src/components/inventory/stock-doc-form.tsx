@@ -1,6 +1,7 @@
 import { $, component$, useSignal, type QRL, type Signal } from "@builder.io/qwik";
 import {
   commands,
+  type BoxStock,
   type ItemStock,
   type LocationInfo,
   type StockKind,
@@ -23,6 +24,8 @@ export const KIND_LABEL: Record<StockKind, string> = {
 /** Lot picker values besides an expiry date. */
 const NO_EXPIRY = "-";
 const NEW_EXPIRY = "+new";
+/** Box picker value for stock outside boxes. */
+const LOOSE = "-";
 
 const REASONS = ["Stock count", "Damaged", "Expired", "Sample", "Found", "Returned"];
 
@@ -33,7 +36,13 @@ export interface DocLine {
   lot: string;
   /** Receipts and new adjustment lots. */
   expiry: string;
+  /** Pieces. Boxed receipts: the loose pieces on top of the boxes. */
   qty: string;
+  /** Boxed items, not receipts: a box id or LOOSE; blank = the first box. */
+  box_id: string;
+  /** Boxed receipts: full boxes and their size (blank = the item's). */
+  boxes: string;
+  per_box: string;
 }
 
 export interface DocForm {
@@ -43,6 +52,8 @@ export interface DocForm {
   to_location_id: string;
   reason: string;
   notes: string;
+  /** Receipts of boxed items: the year in the new serials. */
+  serial_year: string;
   lines: DocLine[];
 }
 
@@ -53,6 +64,9 @@ const blankLine = (item_id = ""): DocLine => ({
   lot: "",
   expiry: "",
   qty: "",
+  box_id: "",
+  boxes: "",
+  per_box: "",
 });
 
 /** A new document. `location_id` empty means the first active location. */
@@ -66,6 +80,7 @@ export const blankDoc = (
   to_location_id: "",
   reason: "",
   notes: "",
+  serial_year: todayManila().slice(0, 4),
   lines: [blankLine(opts.item_id)],
 });
 
@@ -77,6 +92,7 @@ const datalist = (id: string) => ({ list: id }) as Record<string, string>;
 interface Data {
   items: ItemStock[];
   lots: StockLot[];
+  boxes: BoxStock[];
   locations: LocationInfo[];
 }
 
@@ -84,15 +100,30 @@ interface Data {
 const fromOf = (d: Data, form: DocForm) =>
   form.location_id || d.locations.find((l) => l.active)?.id || "";
 
-/** Lots a line can take from: in stock (any non-zero lot for adjustments). */
+const boxed = (d: Data, item: string) =>
+  !!d.items.find((i) => i.item_id === item)?.serial_code;
+
+/** Boxes of an item at the line's location, lowest serial first. */
+const boxesAt = (d: Data, form: DocForm, item: string) => {
+  const from = fromOf(d, form);
+  return d.boxes.filter((b) => b.item_id === item && b.location_id === from);
+};
+
+/** Lots a line can take from: in stock (any non-zero lot for adjustments).
+ * For boxed items only the pieces outside boxes count. */
 const lotsAt = (d: Data, form: DocForm, item: string) => {
   const from = fromOf(d, form);
-  return d.lots.filter(
-    (l) =>
-      l.item_id === item &&
-      l.location_id === from &&
-      (form.kind === "adjustment" ? l.qty !== 0 : l.qty > 0),
-  );
+  const lots = d.lots.filter((l) => l.item_id === item && l.location_id === from);
+  if (boxed(d, item)) {
+    const boxes = boxesAt(d, form, item);
+    return lots
+      .map((l) => ({
+        ...l,
+        qty: l.qty - boxes.filter((b) => b.expiry === l.expiry).reduce((s, b) => s + b.qty, 0),
+      }))
+      .filter((l) => l.qty > 0);
+  }
+  return lots.filter((l) => (form.kind === "adjustment" ? l.qty !== 0 : l.qty > 0));
 };
 
 /** The lot a line points at: its pick, else the first one available. */
@@ -108,8 +139,50 @@ const lotOf = (d: Data, form: DocForm, line: DocLine) => {
   return form.kind === "adjustment" && item?.tracks_expiry ? NEW_EXPIRY : NO_EXPIRY;
 };
 
+/** The box a non-receipt line of a boxed item points at: its pick, else the
+ * first box, else stock outside boxes (LOOSE). Blank when there's neither. */
+const boxOf = (d: Data, form: DocForm, line: DocLine) => {
+  const boxes = boxesAt(d, form, line.item_id);
+  const loose = lotsAt(d, form, line.item_id).length > 0;
+  if (line.box_id === LOOSE && loose) return LOOSE;
+  if (line.box_id && boxes.some((b) => b.box_id === line.box_id)) return line.box_id;
+  if (boxes.length) return boxes[0].box_id;
+  return loose ? LOOSE : "";
+};
+
 const lotLabel = (l: StockLot) =>
   `${l.expiry ? `Exp. ${formatDay(l.expiry)}` : "No expiry"} · ${formatQty(l.qty, l.unit)}`;
+
+/** "MT26-0002 · 7 of 10 left · exp. Jan 31, 2027" */
+const boxLabel = (b: BoxStock) =>
+  [
+    b.serial ?? "Box",
+    b.qty === b.pcs ? `full (${formatQty(b.pcs)})` : `${formatQty(b.qty)} of ${formatQty(b.pcs)} left`,
+    b.expiry ? `exp. ${formatDay(b.expiry)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+/** A boxed receipt line: total pieces and the boxes they make. Null while
+ * the input isn't valid or there's no box size. */
+const receiptBoxes = (item: ItemStock | undefined, line: DocLine) => {
+  try {
+    const boxes = parseCount(line.boxes) ?? 0;
+    const loose = parseCount(line.qty) ?? 0;
+    const per = parseCount(line.per_box) ?? item?.pcs_per_box ?? null;
+    if (!per) return null;
+    const total = boxes * per + loose;
+    return { total, made: Math.ceil(total / per), rest: total % per };
+  } catch {
+    return null;
+  }
+};
+
+/** Years offered for new serials: ten back, five ahead. */
+const serialYears = () => {
+  const y = Number(todayManila().slice(0, 4));
+  return Array.from({ length: 16 }, (_, i) => String(y - 10 + i));
+};
 
 /** Receive, adjust or transfer stock. */
 export const StockDocModal = component$<{
@@ -117,17 +190,27 @@ export const StockDocModal = component$<{
   form: DocForm;
   saved$?: QRL<(id: string) => void>;
 }>(({ open, form, saved$ }) => {
-  const data = useSignal<Data>({ items: [], lots: [], locations: [] });
+  const data = useSignal<Data>({ items: [], lots: [], boxes: [], locations: [] });
   const error = useSignal("");
   const busy = useSignal(false);
 
   useLiveLoad(
-    ["items", "locations", "stock_docs", "stock_doc_lines", "po_receipts", "delivery_receipts"],
+    [
+      "items",
+      "locations",
+      "stock_docs",
+      "stock_doc_lines",
+      "po_receipts",
+      "delivery_receipts",
+      "boxes",
+      "dr_line_boxes",
+    ],
     $(async () => {
       try {
         data.value = {
           items: unwrap(await commands.stockOverview()),
           lots: unwrap(await commands.stockLots(null)),
+          boxes: unwrap(await commands.boxStock(null)),
           locations: unwrap(await commands.listLocations()),
         };
       } catch (e) {
@@ -144,22 +227,43 @@ export const StockDocModal = component$<{
       const d = data.value;
       const kind = form.kind;
       const lines = form.lines
-        .filter((l) => l.item_id || l.qty.trim())
+        .filter((l) => l.item_id || l.qty.trim() || l.boxes.trim())
         .map((l) => {
           const item = d.items.find((i) => i.item_id === l.item_id);
           if (!item) throw new Error("choose an item on every line");
+          if (kind === "receipt" && item.serial_code) {
+            // Boxes × size + loose pieces; the backend splits them into boxes.
+            const boxes = parseCount(l.boxes, `boxes for ${item.code}`) ?? 0;
+            const loose = parseCount(l.qty, `loose pieces for ${item.code}`) ?? 0;
+            const typed = parseCount(l.per_box, `pcs per box for ${item.code}`);
+            if (typed === 0) throw new Error(`pcs per box for ${item.code} must be at least 1`);
+            const per = typed ?? item.pcs_per_box;
+            if (!per) throw new Error(`enter the pcs per box for ${item.code}`);
+            const qty = boxes * per + loose;
+            if (!qty) throw new Error(`enter the boxes for ${item.code}`);
+            return { item_id: l.item_id, expiry: l.expiry || null, qty, box_id: null, pcs_per_box: per };
+          }
           const qty =
             kind === "adjustment"
               ? parseSigned(l.qty, `change for ${item.code}`)
               : parseCount(l.qty, `quantity for ${item.code}`);
           if (!qty) throw new Error(`enter a quantity for ${item.code}`);
+          if (kind !== "receipt" && item.serial_code) {
+            const box = boxOf(d, form, l);
+            if (!box) throw new Error(`${item.code} has no stock here`);
+            if (box !== LOOSE) {
+              // The backend takes the lot from the box.
+              const expiry = d.boxes.find((b) => b.box_id === box)?.expiry ?? null;
+              return { item_id: l.item_id, expiry, qty, box_id: box, pcs_per_box: null };
+            }
+          }
           let expiry: string | null;
           if (kind === "receipt") expiry = l.expiry || null;
           else {
             const lot = lotOf(d, form, l);
             expiry = lot === NEW_EXPIRY ? l.expiry || null : lot === NO_EXPIRY ? null : lot;
           }
-          return { item_id: l.item_id, expiry, qty };
+          return { item_id: l.item_id, expiry, qty, box_id: null, pcs_per_box: null };
         });
       const id = unwrap(
         await commands.postStockDoc({
@@ -169,6 +273,7 @@ export const StockDocModal = component$<{
           to_location_id: kind === "transfer" ? form.to_location_id || null : null,
           reason: kind === "adjustment" ? form.reason : "",
           notes: form.notes,
+          serial_year: kind === "receipt" ? form.serial_year : "",
           lines,
         }),
       );
@@ -190,6 +295,7 @@ export const StockDocModal = component$<{
   const pickable = d.items.filter(
     (i) => i.active || form.lines.some((l) => l.item_id === i.item_id),
   );
+  const boxedReceipt = kind === "receipt" && form.lines.some((l) => boxed(d, l.item_id));
 
   return (
     <Modal open={open} title={`New ${KIND_LABEL[kind].toLowerCase()}`} wide>
@@ -212,7 +318,10 @@ export const StockDocModal = component$<{
               required
               onChange$={(_, el) => {
                 form.location_id = el.value;
-                form.lines.forEach((l) => (l.lot = ""));
+                form.lines.forEach((l) => {
+                  l.lot = "";
+                  l.box_id = "";
+                });
               }}
             >
               {shownLocations.map((l) => (
@@ -237,6 +346,17 @@ export const StockDocModal = component$<{
                       {l.name}
                     </option>
                   ))}
+              </select>
+            </Field>
+          )}
+          {boxedReceipt && (
+            <Field label="Serial year">
+              <select class={input} onChange$={(_, el) => (form.serial_year = el.value)}>
+                {serialYears().map((y) => (
+                  <option key={y} value={y} selected={y === form.serial_year}>
+                    {y}
+                  </option>
+                ))}
               </select>
             </Field>
           )}
@@ -265,19 +385,29 @@ export const StockDocModal = component$<{
               {kind === "adjustment"
                 ? "Enter the change: +5 adds, −5 removes."
                 : kind === "transfer"
-                  ? "Choose the lot (expiry date) to move."
-                  : "Quantities are in each item's base unit."}
+                  ? "Choose the box or lot (expiry date) to move."
+                  : boxedReceipt
+                    ? "Boxed items: enter full boxes, their size and any loose pieces."
+                    : "Quantities are in each item's base unit."}
             </span>
           </div>
           <div class="space-y-2">
             {form.lines.map((line, idx) => {
               const item = d.items.find((i) => i.item_id === line.item_id);
+              const isBoxed = !!item?.serial_code;
+              const boxLine = isBoxed && kind !== "receipt";
               const available = lotsAt(d, form, line.item_id);
+              const boxes = boxLine ? boxesAt(d, form, line.item_id) : [];
+              const box = boxLine ? boxOf(d, form, line) : "";
+              const boxRow = boxes.find((b) => b.box_id === box);
+              const left = boxRow?.qty ?? 0;
               const lot = lotOf(d, form, line);
-              const onHand =
-                lot === NEW_EXPIRY
+              const onHand = boxRow
+                ? boxRow.qty
+                : lot === NEW_EXPIRY
                   ? 0
                   : (available.find((l) => lotKey(l.expiry) === lot)?.qty ?? 0);
+              const made = kind === "receipt" && isBoxed ? receiptBoxes(item, line) : null;
               let after: number | null = null;
               try {
                 const q =
@@ -286,18 +416,59 @@ export const StockDocModal = component$<{
               } catch {
                 after = null;
               }
+              const lotPicker = (
+                <>
+                  <select
+                    class={input}
+                    aria-label="Lot"
+                    disabled={!item}
+                    onChange$={(_, el) => (line.lot = el.value)}
+                  >
+                    {available.map((l) => (
+                      <option key={lotKey(l.expiry)} value={lotKey(l.expiry)} selected={lotKey(l.expiry) === lot}>
+                        {lotLabel(l)}
+                      </option>
+                    ))}
+                    {kind === "adjustment" && item?.tracks_expiry && !isBoxed && (
+                      <option value={NEW_EXPIRY} selected={lot === NEW_EXPIRY}>
+                        New expiry date…
+                      </option>
+                    )}
+                    {kind === "adjustment" && item && !item.tracks_expiry && !available.length && (
+                      <option value={NO_EXPIRY}>No expiry · 0</option>
+                    )}
+                    {kind === "transfer" && item && !available.length && (
+                      <option value="">None here</option>
+                    )}
+                  </select>
+                  {lot === NEW_EXPIRY && (
+                    <input
+                      type="date"
+                      class={input}
+                      aria-label="Expiry date"
+                      required
+                      value={line.expiry}
+                      onChange$={(_, el) => (line.expiry = el.value)}
+                    />
+                  )}
+                </>
+              );
               return (
                 <div
                   key={line.key}
                   class="grid grid-cols-[minmax(0,1fr)_14rem_7rem_auto] items-start gap-2"
                 >
                   <select
+                    data-search="on"
                     class={input}
                     aria-label="Item"
                     onChange$={(_, el) => {
                       line.item_id = el.value;
                       line.lot = "";
                       line.expiry = "";
+                      line.box_id = "";
+                      const size = data.value.items.find((i) => i.item_id === el.value)?.pcs_per_box;
+                      line.per_box = size ? String(size) : "";
                     }}
                   >
                     <option value="">Choose an item…</option>
@@ -321,53 +492,56 @@ export const StockDocModal = component$<{
                       ) : (
                         <span class={[hint, "block pt-2"]}>{item ? "No expiry" : ""}</span>
                       )
-                    ) : (
+                    ) : boxLine ? (
                       <>
-                        <select
-                          class={input}
-                          aria-label="Lot"
-                          disabled={!item}
-                          onChange$={(_, el) => (line.lot = el.value)}
-                        >
-                          {available.map((l) => (
-                            <option key={lotKey(l.expiry)} value={lotKey(l.expiry)} selected={lotKey(l.expiry) === lot}>
-                              {lotLabel(l)}
+                        <select class={input} aria-label="Box" onChange$={(_, el) => (line.box_id = el.value)}>
+                          {boxes.map((b) => (
+                            <option key={b.box_id} value={b.box_id} selected={b.box_id === box}>
+                              {boxLabel(b)}
                             </option>
                           ))}
-                          {kind === "adjustment" && item?.tracks_expiry && (
-                            <option value={NEW_EXPIRY} selected={lot === NEW_EXPIRY}>
-                              New expiry date…
+                          {available.length > 0 && (
+                            <option value={LOOSE} selected={box === LOOSE}>
+                              Not in a box
                             </option>
                           )}
-                          {kind === "adjustment" && item && !item.tracks_expiry && !available.length && (
-                            <option value={NO_EXPIRY}>No expiry · 0</option>
-                          )}
-                          {kind === "transfer" && item && !available.length && (
-                            <option value="">None here</option>
-                          )}
+                          {!box && <option value="">No boxes here</option>}
                         </select>
-                        {lot === NEW_EXPIRY && (
-                          <input
-                            type="date"
-                            class={input}
-                            aria-label="Expiry date"
-                            required
-                            value={line.expiry}
-                            onChange$={(_, el) => (line.expiry = el.value)}
-                          />
+                        {box === LOOSE && lotPicker}
+                        {kind === "transfer" && left > 0 && (
+                          <button
+                            type="button"
+                            class="text-xs text-brand-700 hover:underline"
+                            onClick$={() => (line.qty = String(left))}
+                          >
+                            Whole box ({formatQty(left)})
+                          </button>
                         )}
                       </>
+                    ) : (
+                      lotPicker
                     )}
                   </div>
                   <div class="space-y-1">
-                    <input
-                      class={[inputBase, "w-full text-right"]}
-                      aria-label={kind === "adjustment" ? "Change" : "Quantity"}
-                      inputMode={kind === "adjustment" ? "text" : "numeric"}
-                      placeholder={kind === "adjustment" ? "+/−" : "Qty"}
-                      value={line.qty}
-                      onInput$={(_, el) => (line.qty = el.value)}
-                    />
+                    {kind === "receipt" && isBoxed ? (
+                      <input
+                        class={[inputBase, "w-full text-right"]}
+                        aria-label="Boxes"
+                        inputMode="numeric"
+                        placeholder="Boxes"
+                        value={line.boxes}
+                        onInput$={(_, el) => (line.boxes = el.value)}
+                      />
+                    ) : (
+                      <input
+                        class={[inputBase, "w-full text-right"]}
+                        aria-label={kind === "adjustment" ? "Change" : "Quantity"}
+                        inputMode={kind === "adjustment" ? "text" : "numeric"}
+                        placeholder={kind === "adjustment" ? "+/−" : "Qty"}
+                        value={line.qty}
+                        onInput$={(_, el) => (line.qty = el.value)}
+                      />
+                    )}
                     {item && after != null && (
                       <span class={["block text-right text-xs", after < 0 ? "text-danger" : "text-ink-muted"]}>
                         {formatQty(onHand)} → {formatQty(after, item.unit)}
@@ -383,6 +557,35 @@ export const StockDocModal = component$<{
                   >
                     ✕
                   </button>
+                  {kind === "receipt" && isBoxed && item && (
+                    <div class="col-span-3 flex flex-wrap items-center justify-end gap-2">
+                      <label class="flex items-center gap-1.5">
+                        <span class={hint}>Pcs/box</span>
+                        <input
+                          class={[inputBase, "w-20 text-right"]}
+                          inputMode="numeric"
+                          placeholder={item.pcs_per_box ? String(item.pcs_per_box) : "Size"}
+                          value={line.per_box}
+                          onInput$={(_, el) => (line.per_box = el.value)}
+                        />
+                      </label>
+                      <label class="flex items-center gap-1.5">
+                        <span class={hint}>+ loose pcs</span>
+                        <input
+                          class={[inputBase, "w-20 text-right"]}
+                          inputMode="numeric"
+                          placeholder="0"
+                          value={line.qty}
+                          onInput$={(_, el) => (line.qty = el.value)}
+                        />
+                      </label>
+                      <span class={[hint, "w-48 text-right"]}>
+                        {made && made.total > 0
+                          ? `= ${formatQty(made.total, item.unit)} · makes ${made.made} ${made.made === 1 ? "box" : "boxes"}${made.rest ? ` (last holds ${made.rest})` : ""}`
+                          : ""}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}
