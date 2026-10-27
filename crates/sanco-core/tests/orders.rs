@@ -3,7 +3,9 @@ mod common;
 use common::{TestPeer, pull};
 use sanco_core::domain::conflicts;
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
-use sanco_core::domain::items::{self, ItemInput};
+use sanco_core::domain::charge_types;
+use sanco_core::domain::items::{self, CostLineInput, CostSheetInput, ItemInput};
+use sanco_core::domain::pricing::ChargeMode;
 use sanco_core::domain::purchasing::{
     self, PoAction, PoInput, PoLineInput, PoStatus, PoStatusInput, ReceiptInput, ReceiptLineInput,
     ReceiveProgress, TtInput,
@@ -490,7 +492,38 @@ fn po_payments_and_receiving_into_stock() {
     status(&a.db, &actor, &po, PoAction::Reopen).unwrap();
     assert_eq!(detail(&a.db, &po).po.status, PoStatus::Arrived);
 
-    // Cost sheets from the PO.
+    // Cost sheets from the PO. The charge lines already on GLV's sheet
+    // follow the new supplier price and ordered quantity.
+    let charge = |name: &str| {
+        a.db.read(charge_types::list)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .id
+    };
+    let sheet = CostSheetInput {
+        item_id: glv.clone(),
+        currency: "PHP".into(),
+        supplier_price_minor: Some(100),
+        fx_rate: String::new(),
+        shipment_qty: Some(1),
+        notes: String::new(),
+        lines: vec![
+            CostLineInput {
+                charge_type_id: charge("Freight"),
+                mode: ChargeMode::Shipment,
+                value: Some(1_200_000),
+            },
+            CostLineInput {
+                charge_type_id: charge("Customs duty"),
+                mode: ChargeMode::Pct,
+                value: Some(1_000),
+            },
+        ],
+    };
+    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &sheet))
+        .unwrap();
     let p = po.clone();
     let codes =
         a.db.write(actor.clone(), move |tx| {
@@ -503,6 +536,70 @@ fn po_payments_and_receiving_into_stock() {
             .unwrap()
             .unwrap();
     assert_eq!(landed.base_c, 70_625); // US$12.50 × 56.50
+    let sheet = a.db.read(|c| items::cost_sheet(c, &glv)).unwrap().unwrap();
+    assert_eq!(sheet.shipment_qty, Some(120)); // the ordered quantity
+    assert_eq!(sheet.currency, "USD");
+    let amount = |name: &str| sheet.lines.iter().find(|l| l.name == name).unwrap().amount_c;
+    assert_eq!(amount("Freight"), Some(10_000)); // ₱12,000 ÷ 120
+    assert_eq!(amount("Customs duty"), Some(7_063)); // 10% of ₱706.25
+    assert_eq!(landed.total_c, 70_625 + 10_000 + 7_063);
+    assert!(!sheet.price_pending);
+    assert_eq!(sheet.changed_by.as_deref(), Some("Ana"));
+    let sp = sheet.supplier_price.clone().unwrap();
+    assert_eq!((sp.po_id.as_str(), sp.price_minor, sp.qty), (po.as_str(), 1250, Some(120)));
+
+    // A typed price leaves the PO price pending until the button copies it
+    // back. A draft PO's price never counts.
+    let mut typed = CostSheetInput {
+        item_id: glv.clone(),
+        currency: "USD".into(),
+        supplier_price_minor: Some(1_300),
+        fx_rate: "56.5".into(),
+        shipment_qty: Some(120),
+        notes: String::new(),
+        lines: vec![],
+    };
+    let t = typed.clone();
+    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &t))
+        .unwrap();
+    let sheet = a.db.read(|c| items::cost_sheet(c, &glv)).unwrap().unwrap();
+    assert!(sheet.price_pending);
+    assert_eq!(sheet.lines.iter().filter(|l| l.value.is_some()).count(), 2);
+    let draft = create_po(&a.db, &actor, po_input(&sup, vec![po_line(&glv, 5, Some(9_999))])).unwrap();
+    let g = glv.clone();
+    let used =
+        a.db.write(actor.clone(), move |tx| purchasing::apply_latest_price(tx, &g))
+            .unwrap();
+    assert_eq!(used.po_id, po);
+    a.db.write(actor.clone(), move |tx| purchasing::delete(tx, &draft))
+        .unwrap();
+    let sheet = a.db.read(|c| items::cost_sheet(c, &glv)).unwrap().unwrap();
+    assert!(!sheet.price_pending);
+    assert_eq!(sheet.supplier_price_minor, Some(1_250));
+    assert_eq!(sheet.landed.unwrap().total_c, 70_625 + 10_000 + 7_063);
+    // Same FX written differently is not a new rate.
+    typed.supplier_price_minor = Some(1_250);
+    typed.fx_rate = "56.500".into();
+    typed.lines = sheet
+        .lines
+        .iter()
+        .map(|l| CostLineInput {
+            charge_type_id: l.charge_type_id.clone(),
+            mode: l.mode,
+            value: l.value,
+        })
+        .collect();
+    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &typed))
+        .unwrap();
+    assert!(!a.db.read(|c| items::cost_sheet(c, &glv)).unwrap().unwrap().price_pending);
+    // An item never ordered has nothing to apply.
+    let gown = add_item(&a.db, &actor, "GOWN", &sup, true);
+    let sheet = a.db.read(|c| items::cost_sheet(c, &gown)).unwrap().unwrap();
+    assert_eq!((sheet.supplier_price, sheet.price_pending), (None, false));
+    assert!(
+        invalid(a.db.write(actor.clone(), move |tx| purchasing::apply_latest_price(tx, &gown)))
+            .starts_with("no placed purchase order")
+    );
 
     // Delete guards.
     let s = sup.clone();

@@ -113,6 +113,7 @@ fn set_cost(db: &Db, actor: &Actor, item: &str) {
         currency: "USD".into(),
         supplier_price_minor: Some(1_000),
         fx_rate: "56.50".into(),
+        shipment_qty: None,
         notes: String::new(),
         lines: vec![
             CostLineInput {
@@ -496,6 +497,7 @@ fn cost_sheet_validation_and_php() {
         currency: "USD".into(),
         supplier_price_minor: Some(100),
         fx_rate: "abc".into(),
+        shipment_qty: None,
         notes: String::new(),
         lines: vec![],
     };
@@ -553,4 +555,56 @@ fn cost_sheet_validation_and_php() {
     let r =
         a.db.write(actor, move |tx| charge_types::delete(tx, &vat_type));
     assert!(matches!(r, Err(Error::Invalid(_))));
+}
+
+#[test]
+fn shipment_charges_need_a_quantity() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let item = add_item(&a.db, &actor, item_input("MSK-1", None, None)).unwrap();
+
+    // ₱100 base; freight ₱10,000 for the shipment; brokerage ₱5 per unit.
+    let mut input = CostSheetInput {
+        item_id: item.clone(),
+        currency: "PHP".into(),
+        supplier_price_minor: Some(10_000),
+        fx_rate: String::new(),
+        shipment_qty: None,
+        notes: String::new(),
+        lines: vec![
+            CostLineInput {
+                charge_type_id: charge(&a.db, "Freight"),
+                mode: ChargeMode::Shipment,
+                value: Some(1_000_000),
+            },
+            CostLineInput {
+                charge_type_id: charge(&a.db, "Brokerage"),
+                mode: ChargeMode::PerUnit,
+                value: Some(500),
+            },
+        ],
+    };
+    for qty in [None, Some(0), Some(-5)] {
+        input.shipment_qty = qty;
+        let i2 = input.clone();
+        let r =
+            a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &i2));
+        assert!(matches!(r, Err(Error::Invalid(_))), "{qty:?}");
+    }
+
+    input.shipment_qty = Some(400);
+    a.db.write(actor.clone(), move |tx| items::save_cost_sheet(tx, &input))
+        .unwrap();
+    let sheet = a.db.read(|c| items::cost_sheet(c, &item)).unwrap().unwrap();
+    assert_eq!(sheet.shipment_qty, Some(400));
+    let freight = sheet.lines.iter().find(|l| l.name == "Freight").unwrap();
+    assert_eq!(freight.mode, ChargeMode::Shipment);
+    assert_eq!(freight.value, Some(1_000_000));
+    assert_eq!(freight.amount_c, Some(2_500)); // ₱10,000 ÷ 400
+    assert_eq!(sheet.landed.unwrap().total_c, 10_000 + 2_500 + 500);
+    assert_eq!(
+        a.db.read(|c| items::landed_cost_of(c, &item)).unwrap(),
+        sheet.landed
+    );
 }

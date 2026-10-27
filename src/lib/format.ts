@@ -34,6 +34,19 @@ export const formatAgo = (ms: number | null | undefined, now = Date.now()) => {
   return formatDateTime(ms);
 };
 
+/** "just now", "5 min ago", "3 h ago", "6 days ago", "2 months ago". */
+export const formatSince = (ms: number, now = Date.now()) => {
+  const min = Math.floor((now - ms) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 60) return d === 1 ? "1 day ago" : `${d} days ago`;
+  const mo = Math.floor(d / 30);
+  return mo < 24 ? `${mo} months ago` : `${Math.floor(d / 365)} years ago`;
+};
+
 /** ₱1,234.50 */
 export const formatPeso = (centavos: number) => peso.format(centavos / 100);
 

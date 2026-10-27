@@ -30,6 +30,7 @@ import {
 const MODES: { value: ChargeMode; label: string }[] = [
   { value: "per_unit", label: "₱ per unit" },
   { value: "pct", label: "% of base cost" },
+  { value: "shipment", label: "₱ per shipment" },
 ];
 
 interface Form {

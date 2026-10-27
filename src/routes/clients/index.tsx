@@ -20,6 +20,7 @@ import {
   type ClientInfo,
   type DrInfo,
   type PaymentInfo,
+  type PayMethod,
   type RateInfo,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
@@ -45,7 +46,14 @@ import {
   rateForm,
   type RateForm,
 } from "~/components/rates/rates";
-import { BOOKING_STATUS, DrNo, DrStatusBadge, PROGRESS_LABEL, StatusBadge } from "~/components/sales/sales";
+import {
+  BOOKING_STATUS,
+  DR_STATUS,
+  DrNo,
+  DrStatusBadge,
+  PROGRESS_LABEL,
+  StatusBadge,
+} from "~/components/sales/sales";
 import {
   METHOD_LABEL,
   PaymentBadge,
@@ -64,6 +72,7 @@ import {
   NoAccess,
   PageHeader,
 } from "~/components/ui/ui";
+import { TabNav } from "~/components/ui/tabs";
 import {
   btnPrimary,
   btnSecondary,
@@ -422,11 +431,20 @@ const ClientList = component$(() => {
 });
 
 /** A client's balance: owed, overdue, credit and limit. */
-const BalanceList = component$<{ b: ClientBalance }>(({ b }) => {
+const BalanceList = component$<{ b: ClientBalance; unpaidHref?: string }>(({ b, unpaidHref }) => {
   const over = b.credit_limit_c != null && b.balance_c > b.credit_limit_c;
   return (
     <dl class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-sm">
-      <dt class="text-ink-muted">Owed on {b.open_drs} DR(s)</dt>
+      <dt class="text-ink-muted">
+        Owed on{" "}
+        {unpaidHref && b.open_drs > 0 ? (
+          <Link class="text-brand-700 hover:underline" href={unpaidHref}>
+            {b.open_drs} DR(s)
+          </Link>
+        ) : (
+          `${b.open_drs} DR(s)`
+        )}
+      </dt>
       <dd class="text-right tabular-nums">{formatPeso(b.outstanding_c)}</dd>
       <dt class="text-ink-muted">Of that, overdue</dt>
       <dd class={["text-right tabular-nums", b.overdue_c > 0 && "text-danger"]}>{formatPeso(b.overdue_c)}</dd>
@@ -453,8 +471,309 @@ const BalanceList = component$<{ b: ClientBalance }>(({ b }) => {
   );
 });
 
+type DetailTab = "bookings" | "drs" | "payments" | "rates";
+
+/** Rows a tab shows before "Show more". */
+const PAGE = 50;
+
+const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
+
+/** Footer under a long table: how many are shown, and a button for more. */
+const ShowMore = component$<{ limit: Signal<number>; total: number }>(({ limit, total }) =>
+  total > limit.value ? (
+    <div class="flex items-center justify-between border-t border-line px-4 py-2.5 text-sm">
+      <span class={hint}>
+        Showing {limit.value} of {total}
+      </span>
+      <button type="button" class={btnSecondary} onClick$={() => (limit.value += PAGE)}>
+        Show {Math.min(PAGE, total - limit.value)} more
+      </button>
+    </div>
+  ) : null,
+);
+
+const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
+  const loc = useLocation();
+  const limit = useSignal(PAGE);
+  const shown = useComputed$(() => {
+    const f = filtersOf(loc.url, ["q", "from", "to", "status"]);
+    const q = f.q.toLowerCase();
+    return props.rows.filter(
+      (b) =>
+        (!q ||
+          [b.no, b.client_ref, b.summary, b.notes].some((v) => v?.toLowerCase().includes(q))) &&
+        (!f.from || b.date >= f.from) &&
+        (!f.to || b.date <= f.to) &&
+        (!f.status ||
+          (f.status === "to_deliver"
+            ? b.status === "confirmed" && b.progress !== "full"
+            : b.status === f.status)),
+    );
+  });
+  const total = shown.value.reduce((s, b) => s + (b.status === "cancelled" ? 0 : b.totals.gross_c), 0);
+  return (
+    <>
+      <FilterBar
+        search="Search number, PO, items"
+        dates
+        selects={[
+          {
+            key: "status",
+            label: "Statuses",
+            options: [
+              ...(["draft", "confirmed", "closed", "cancelled"] as const).map((s) => ({
+                value: s,
+                label: BOOKING_STATUS[s].label,
+              })),
+              { value: "to_deliver", label: "Still to deliver" },
+            ],
+          },
+        ]}
+      >
+        <span class={hint}>
+          {shown.value.length} booking(s) · {formatPeso(total)}
+        </span>
+      </FilterBar>
+      <section class={[card, "overflow-x-auto"]}>
+        {shown.value.length === 0 ? (
+          <Empty>{props.rows.length ? "No bookings match." : "No bookings yet."}</Empty>
+        ) : (
+          <table class={table}>
+            <thead>
+              <tr>
+                <th class={th}>Number</th>
+                <th class={th}>Date</th>
+                <th class={th}>Items</th>
+                <th class={[th, "text-right"]}>Gross</th>
+                <th class={th}>Delivery</th>
+                <th class={th}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.value.slice(0, limit.value).map((b) => (
+                <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
+                      {b.no ?? "—"}
+                    </Link>
+                    {b.client_ref && <span class={[hint, "block"]}>{b.client_ref}</span>}
+                  </td>
+                  <td class={[td, "whitespace-nowrap"]}>{formatDay(b.date)}</td>
+                  <td class={td}>{b.summary}</td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
+                  </td>
+                  <td class={td}>
+                    <StatusBadge s={BOOKING_STATUS[b.status]} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <ShowMore limit={limit} total={shown.value.length} />
+      </section>
+    </>
+  );
+});
+
+const DrsTab = component$<{ rows: DrInfo[] }>((props) => {
+  const loc = useLocation();
+  const limit = useSignal(PAGE);
+  const shown = useComputed$(() => {
+    const f = filtersOf(loc.url, ["q", "from", "to", "status"]);
+    const q = f.q.toLowerCase();
+    return props.rows.filter(
+      (d) =>
+        (!q ||
+          [d.no, d.booking_no, d.summary, d.received_by, d.notes].some((v) =>
+            v?.toLowerCase().includes(q),
+          )) &&
+        (!f.from || dayOf(d) >= f.from) &&
+        (!f.to || dayOf(d) <= f.to) &&
+        (!f.status ||
+          (f.status === "unpaid"
+            ? d.status === "delivered" && d.balance_c > 0
+            : f.status === "void"
+              ? d.voided
+              : f.status === "no_number"
+                ? !d.no && d.status !== "cancelled"
+                : d.status === f.status && !d.voided)),
+    );
+  });
+  const unpaid = shown.value.reduce((s, d) => s + (d.status === "delivered" ? d.balance_c : 0), 0);
+  return (
+    <>
+      <FilterBar
+        search="Search DR no., booking, items"
+        dates
+        selects={[
+          {
+            key: "status",
+            label: "Statuses",
+            options: [
+              { value: "unpaid", label: "Unpaid" },
+              ...(["requested", "approved", "delivered", "cancelled"] as const).map((s) => ({
+                value: s,
+                label: DR_STATUS[s].label,
+              })),
+              { value: "void", label: "Void" },
+              { value: "no_number", label: "No DR no. yet" },
+            ],
+          },
+        ]}
+      >
+        <span class={hint}>
+          {shown.value.length} DR(s) · {formatPeso(unpaid)} unpaid
+        </span>
+      </FilterBar>
+      <section class={[card, "overflow-x-auto"]}>
+        {shown.value.length === 0 ? (
+          <Empty>{props.rows.length ? "No DRs match." : "No DRs yet."}</Empty>
+        ) : (
+          <table class={table}>
+            <thead>
+              <tr>
+                <th class={th}>DR no.</th>
+                <th class={th}>Date</th>
+                <th class={th}>Booking</th>
+                <th class={th}>Items</th>
+                <th class={[th, "text-right"]}>Gross</th>
+                <th class={[th, "text-right"]}>Balance</th>
+                <th class={th}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.value.slice(0, limit.value).map((d) => (
+                <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
+                      <DrNo d={d} />
+                    </Link>
+                  </td>
+                  <td class={[td, "whitespace-nowrap"]}>{formatDay(dayOf(d))}</td>
+                  <td class={[td, "whitespace-nowrap"]}>{d.booking_no ?? "—"}</td>
+                  <td class={td}>{d.summary}</td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                  <td class={[td, "text-right tabular-nums"]}>
+                    {d.status === "delivered" ? (d.balance_c === 0 ? "Paid" : formatPeso(d.balance_c)) : "—"}
+                  </td>
+                  <td class={td}>
+                    <DrStatusBadge d={d} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <ShowMore limit={limit} total={shown.value.length} />
+      </section>
+    </>
+  );
+});
+
+const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
+  const loc = useLocation();
+  const limit = useSignal(PAGE);
+  const shown = useComputed$(() => {
+    const f = filtersOf(loc.url, ["q", "from", "to", "method", "status"]);
+    const q = f.q.toLowerCase();
+    return props.rows.filter(
+      (p) =>
+        (!q ||
+          [p.no, p.reference, p.or_no, p.notes, p.check?.check_no, p.check?.bank, p.bank_account_name, ...p.dr_nos].some(
+            (v) => v?.toLowerCase().includes(q),
+          )) &&
+        (!f.from || p.date >= f.from) &&
+        (!f.to || p.date <= f.to) &&
+        (!f.method || p.method === f.method) &&
+        (!f.status ||
+          (f.status === "void"
+            ? p.status === "void"
+            : f.status === "unapplied"
+              ? p.counts && p.unapplied_c !== 0
+              : f.status === "not_counting"
+                ? p.status === "posted" && !p.counts
+                : p.counts)),
+    );
+  });
+  const total = shown.value.filter((p) => p.counts).reduce((s, p) => s + p.amount_c, 0);
+  return (
+    <>
+      <FilterBar
+        search="Search no., OR, check, DR"
+        dates
+        selects={[
+          {
+            key: "method",
+            label: "Methods",
+            options: (Object.keys(METHOD_LABEL) as PayMethod[]).map((m) => ({ value: m, label: METHOD_LABEL[m] })),
+          },
+          {
+            key: "status",
+            label: "Statuses",
+            options: [
+              { value: "counting", label: "Counting as paid" },
+              { value: "unapplied", label: "Not fully applied" },
+              { value: "not_counting", label: "Bounced / replaced check" },
+              { value: "void", label: "Void" },
+            ],
+          },
+        ]}
+      >
+        <span class={hint}>
+          {shown.value.length} payment(s) · {formatPeso(total)} counting
+        </span>
+      </FilterBar>
+      <section class={[card, "overflow-x-auto"]}>
+        {shown.value.length === 0 ? (
+          <Empty>{props.rows.length ? "No payments match." : "No payments yet."}</Empty>
+        ) : (
+          <table class={table}>
+            <thead>
+              <tr>
+                <th class={th}>No.</th>
+                <th class={th}>Received</th>
+                <th class={th}>Method</th>
+                <th class={[th, "text-right"]}>Amount</th>
+                <th class={th}>Applied to</th>
+                <th class={th}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.value.slice(0, limit.value).map((p) => (
+                <tr key={p.id} class={p.counts ? "" : "text-ink-muted"}>
+                  <td class={[td, "whitespace-nowrap"]}>
+                    <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.id}`}>
+                      {p.no ?? "—"}
+                    </Link>
+                    {p.or_no && <span class={[hint, "block"]}>{p.or_no}</span>}
+                  </td>
+                  <td class={[td, "whitespace-nowrap"]}>{formatDay(p.date)}</td>
+                  <td class={td}>
+                    {METHOD_LABEL[p.method]}
+                    {p.check && <span class={[hint, "block"]}>{checkText(p)}</span>}
+                  </td>
+                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
+                  <td class={td}>{p.dr_nos.length ? p.dr_nos.map((n) => `DR ${n}`).join(", ") : "—"}</td>
+                  <td class={td}>
+                    <PaymentBadge p={p} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <ShowMore limit={limit} total={shown.value.length} />
+      </section>
+    </>
+  );
+});
+
 const ClientDetail = component$<{ id: string }>(({ id }) => {
   const session = useSession();
+  const loc = useLocation();
   const nav = useNavigate();
   const client = useSignal<ClientInfo | null>(null);
   const missing = useSignal(false);
@@ -511,6 +830,34 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
     }),
   );
 
+  // Tabs the user may see, in order; the first is the default.
+  const tabs = useComputed$(() => {
+    const user = session.user;
+    const all: { key: DetailTab; label: string; count: number; show: boolean }[] = [
+      { key: "bookings", label: "Bookings", count: bookings.value.length, show: can(user, "bookings") },
+      {
+        key: "drs",
+        label: "Delivery receipts",
+        count: drs.value.length,
+        show: can(user, "bookings") || can(user, "accounting"),
+      },
+      { key: "payments", label: "Payments and checks", count: payments.value.length, show: can(user, "accounting") },
+      { key: "rates", label: "Rates", count: rates.value.length, show: true },
+    ];
+    const visible = all.filter((t) => t.show);
+    const asked = loc.url.searchParams.get("tab");
+    const current = visible.find((t) => t.key === asked)?.key ?? visible[0].key;
+    return {
+      current,
+      nav: visible.map((t) => ({
+        href: `/clients/?id=${id}&tab=${t.key}`,
+        label: t.label,
+        count: t.count,
+        active: t.key === current,
+      })),
+    };
+  });
+
   const c = client.value;
   if (missing.value) {
     return (
@@ -565,202 +912,88 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         </div>
       )}
       <div class="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
-        <div class="space-y-4 self-start">
-        <section class={[card, "p-5"]}>
-          <h2 class="mb-3 font-semibold">Details</h2>
-          <InfoList
-            rows={[
-              ["Contact person", c.contact_person ?? ""],
-              ["Phone", c.phone ?? ""],
-              ["Email", c.email ?? ""],
-              ["TIN", c.tin ?? ""],
-              ["Address", c.address ?? ""],
-              ["Payment terms", c.terms_days == null ? "" : `${c.terms_days} days`],
-              ["Credit limit", c.credit_limit_c == null ? "No limit" : formatPesoOr(c.credit_limit_c)],
-              ...(margins
-                ? ([["Margin tier", c.margin_tier_bp == null ? "Item defaults" : formatPct(c.margin_tier_bp)]] as [string, string][])
-                : []),
-              ["Notes", c.notes ?? ""],
-            ]}
-          />
-        </section>
-        {balance.value && (
+        <div class="space-y-4 self-start lg:sticky lg:top-6">
           <section class={[card, "p-5"]}>
-            <div class="mb-3 flex items-center justify-between">
-              <h2 class="font-semibold">Balance</h2>
-              {can(session.user, "accounting", "create") && (
-                <button
-                  class={btnSecondary}
-                  onClick$={() => {
-                    Object.assign(pay, blankPayment(id));
-                    payOpen.value = true;
-                  }}
-                >
-                  Record payment
-                </button>
-              )}
-            </div>
-            <BalanceList b={balance.value} />
+            <h2 class="mb-3 font-semibold">Details</h2>
+            <InfoList
+              rows={[
+                ["Contact person", c.contact_person ?? ""],
+                ["Phone", c.phone ?? ""],
+                ["Email", c.email ?? ""],
+                ["TIN", c.tin ?? ""],
+                ["Address", c.address ?? ""],
+                ["Payment terms", c.terms_days == null ? "" : `${c.terms_days} days`],
+                ["Credit limit", c.credit_limit_c == null ? "No limit" : formatPesoOr(c.credit_limit_c)],
+                ...(margins
+                  ? ([["Margin tier", c.margin_tier_bp == null ? "Item defaults" : formatPct(c.margin_tier_bp)]] as [string, string][])
+                  : []),
+                ["Notes", c.notes ?? ""],
+              ]}
+            />
           </section>
-        )}
+          {balance.value && (
+            <section class={[card, "p-5"]}>
+              <div class="mb-3 flex items-center justify-between">
+                <h2 class="font-semibold">Balance</h2>
+                {can(session.user, "accounting", "create") && (
+                  <button
+                    class={btnSecondary}
+                    onClick$={() => {
+                      Object.assign(pay, blankPayment(id));
+                      payOpen.value = true;
+                    }}
+                  >
+                    Record payment
+                  </button>
+                )}
+              </div>
+              <BalanceList
+                b={balance.value}
+                unpaidHref={
+                  can(session.user, "bookings") || can(session.user, "accounting")
+                    ? `/clients/?id=${id}&tab=drs&status=unpaid`
+                    : undefined
+                }
+              />
+            </section>
+          )}
         </div>
-        <div class="space-y-4">
-          <section class={card}>
-            <div class="flex items-center justify-between border-b border-line px-4 py-3">
-              <div>
-                <h2 class="font-semibold">Rates</h2>
+        <div class="min-w-0">
+          <TabNav label="Client records" tabs={tabs.value.nav} />
+          {tabs.value.current === "bookings" && <BookingsTab rows={bookings.value} />}
+          {tabs.value.current === "drs" && <DrsTab rows={drs.value} />}
+          {tabs.value.current === "payments" && <PaymentsTab rows={payments.value} />}
+          {tabs.value.current === "rates" && (
+            <section class={card}>
+              <div class="flex items-center justify-between border-b border-line px-4 py-3">
                 <p class={hint}>
                   Manual prices for this client. Other items use{" "}
                   {c.margin_tier_bp != null || !margins ? "the client's margin tier" : "each item's default margin"}.
                 </p>
-              </div>
-              {canEditRates && (
-                <button
-                  class={btnSecondary}
-                  onClick$={() => {
-                    Object.assign(rate, blankRate(id));
-                    rateOpen.value = true;
-                  }}
-                >
-                  Add rate
-                </button>
-              )}
-            </div>
-            <RatesTable
-              rates={rates.value}
-              showItem
-              edit$={
-                canEditRates
-                  ? $((r: RateInfo) => {
-                      Object.assign(rate, rateForm(r));
+                {canEditRates && (
+                  <button
+                    class={btnSecondary}
+                    onClick$={() => {
+                      Object.assign(rate, blankRate(id));
                       rateOpen.value = true;
-                    })
-                  : undefined
-              }
-            />
-          </section>
-          {can(session.user, "bookings") && (
-            <section class={[card, "overflow-x-auto"]}>
-              <h2 class="border-b border-line px-4 py-3 font-semibold">Bookings</h2>
-              {bookings.value.length === 0 ? (
-                <Empty>No bookings yet.</Empty>
-              ) : (
-                <table class={table}>
-                  <thead>
-                    <tr>
-                      <th class={th}>Number</th>
-                      <th class={th}>Date</th>
-                      <th class={th}>Items</th>
-                      <th class={[th, "text-right"]}>Gross</th>
-                      <th class={th}>Delivery</th>
-                      <th class={th}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bookings.value.map((b) => (
-                      <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
-                            {b.no ?? "—"}
-                          </Link>
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>{formatDay(b.date)}</td>
-                        <td class={td}>{b.summary}</td>
-                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
-                        <td class={td}>
-                          {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
-                        </td>
-                        <td class={td}>
-                          <StatusBadge s={BOOKING_STATUS[b.status]} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </section>
-          )}
-          {(can(session.user, "bookings") || can(session.user, "accounting")) && (
-            <section class={[card, "overflow-x-auto"]}>
-              <h2 class="border-b border-line px-4 py-3 font-semibold">Delivery receipts</h2>
-              {drs.value.length === 0 ? (
-                <Empty>No DRs yet.</Empty>
-              ) : (
-                <table class={table}>
-                  <thead>
-                    <tr>
-                      <th class={th}>DR no.</th>
-                      <th class={th}>Date</th>
-                      <th class={th}>Items</th>
-                      <th class={[th, "text-right"]}>Gross</th>
-                      <th class={[th, "text-right"]}>Balance</th>
-                      <th class={th}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {drs.value.map((d) => (
-                      <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/?id=${d.id}`}>
-                            <DrNo d={d} />
-                          </Link>
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
-                        <td class={td}>{d.summary}</td>
-                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
-                        <td class={[td, "text-right tabular-nums"]}>
-                          {d.status === "delivered" ? (d.balance_c === 0 ? "Paid" : formatPeso(d.balance_c)) : "—"}
-                        </td>
-                        <td class={td}>
-                          <DrStatusBadge d={d} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </section>
-          )}
-          {can(session.user, "accounting") && (
-            <section class={[card, "overflow-x-auto"]}>
-              <h2 class="border-b border-line px-4 py-3 font-semibold">Payments and checks</h2>
-              {payments.value.length === 0 ? (
-                <Empty>No payments yet.</Empty>
-              ) : (
-                <table class={table}>
-                  <thead>
-                    <tr>
-                      <th class={th}>No.</th>
-                      <th class={th}>Received</th>
-                      <th class={th}>Method</th>
-                      <th class={[th, "text-right"]}>Amount</th>
-                      <th class={th}>Applied to</th>
-                      <th class={th}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {payments.value.map((p) => (
-                      <tr key={p.id} class={p.counts ? "" : "text-ink-muted"}>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.id}`}>
-                            {p.no ?? "—"}
-                          </Link>
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>{formatDay(p.date)}</td>
-                        <td class={td}>
-                          {METHOD_LABEL[p.method]}
-                          {p.check && <span class={[hint, "block"]}>{checkText(p)}</span>}
-                        </td>
-                        <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
-                        <td class={td}>{p.dr_nos.length ? p.dr_nos.map((n) => `DR ${n}`).join(", ") : "—"}</td>
-                        <td class={td}>
-                          <PaymentBadge p={p} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    }}
+                  >
+                    Add rate
+                  </button>
+                )}
+              </div>
+              <RatesTable
+                rates={rates.value}
+                showItem
+                edit$={
+                  canEditRates
+                    ? $((r: RateInfo) => {
+                        Object.assign(rate, rateForm(r));
+                        rateOpen.value = true;
+                      })
+                    : undefined
+                }
+              />
             </section>
           )}
         </div>

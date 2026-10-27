@@ -118,9 +118,16 @@ export const FilterBar = component$<{
         <button
           type="button"
           class={btnGhost}
-          onClick$={() =>
-            nav(loc.url.pathname, { replaceState: true, scroll: false })
-          }
+          onClick$={() => {
+            // Keeps other params, e.g. a detail page's `?id=…&tab=…`.
+            const next = new URLSearchParams(loc.url.search);
+            for (const k of keys) next.delete(k);
+            const qs = next.toString();
+            nav(`${loc.url.pathname}${qs ? `?${qs}` : ""}`, {
+              replaceState: true,
+              scroll: false,
+            });
+          }}
         >
           Clear filters
         </button>

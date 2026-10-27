@@ -79,6 +79,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::items::delete_item,
             commands::items::get_cost_sheet,
             commands::items::save_cost_sheet,
+            commands::items::apply_supplier_price,
             commands::items::list_rates,
             commands::items::save_rate,
             commands::items::price_quote,

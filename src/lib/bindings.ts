@@ -149,13 +149,28 @@ export const commands = {
 	currency: string,
 	supplier_price_minor: number | null,
 	fx_rate: string | null,
+	/**  Units the shipment charges are spread over. */
+	shipment_qty: number | null,
 	notes: string | null,
 	lines: CostLine[],
 	landed: LandedCost | null,
-	/**  When the sheet itself was last saved, if ever (UTC ms). */
+	/**
+	 *  When the sheet or one of its charge lines last changed, if ever
+	 *  (UTC ms), and by whom.
+	 */
 	changed_at: number | null,
+	changed_by: string | null,
+	/**  The price on the item's latest placed PO. */
+	supplier_price: SupplierPrice | null,
+	/**  The latest PO's currency, price or FX differs from the sheet's. */
+	price_pending: boolean,
 } | null, string>(__TAURI_INVOKE("get_cost_sheet", { itemId })),
 	saveCostSheet: (sheet: CostSheetInput) => typedError<null, string>(__TAURI_INVOKE("save_cost_sheet", { sheet })),
+	/**
+	 *  Copies the item's latest placed-PO price into its cost sheet. Returns
+	 *  the price used.
+	 */
+	applySupplierPrice: (itemId: string) => typedError<SupplierPrice, string>(__TAURI_INVOKE("apply_supplier_price", { itemId })),
 	/**  Client rates, by client and/or item. Clients screens show them too. */
 	listRates: (filter: RateFilter) => typedError<RateInfo[], string>(__TAURI_INVOKE("list_rates", { filter })),
 	/**  Sets or clears (price `None`) a client's rate for an item. */
@@ -689,7 +704,12 @@ export type ChargeMode =
 /**  A PHP amount per unit, in centavos. */
 "per_unit" | 
 /**  Basis points of the PHP base cost (supplier price × FX). */
-"pct";
+"pct" | 
+/**
+ *  A PHP amount for the whole shipment, in centavos, divided by the cost
+ *  sheet's shipment quantity.
+ */
+"shipment";
 
 export type ChargeTypeInfo = {
 	id: string,
@@ -860,7 +880,10 @@ export type CostLine = {
 	charge_type_id: string,
 	name: string,
 	mode: ChargeMode,
-	/**  Centavos per unit, or basis points of the base cost. */
+	/**
+	 *  Centavos per unit, basis points of the base cost, or centavos for the
+	 *  whole shipment.
+	 */
 	value: number | null,
 	/**  What the line adds per unit, once the base cost is known. */
 	amount_c: number | null,
@@ -880,11 +903,21 @@ export type CostSheetInfo = {
 	currency: string,
 	supplier_price_minor: number | null,
 	fx_rate: string | null,
+	/**  Units the shipment charges are spread over. */
+	shipment_qty: number | null,
 	notes: string | null,
 	lines: CostLine[],
 	landed: LandedCost | null,
-	/**  When the sheet itself was last saved, if ever (UTC ms). */
+	/**
+	 *  When the sheet or one of its charge lines last changed, if ever
+	 *  (UTC ms), and by whom.
+	 */
 	changed_at: number | null,
+	changed_by: string | null,
+	/**  The price on the item's latest placed PO. */
+	supplier_price: SupplierPrice | null,
+	/**  The latest PO's currency, price or FX differs from the sheet's. */
+	price_pending: boolean,
 };
 
 export type CostSheetInput = {
@@ -893,6 +926,11 @@ export type CostSheetInput = {
 	supplier_price_minor: number | null,
 	/**  PHP per unit of `currency`. Ignored for PHP. */
 	fx_rate: string,
+	/**
+	 *  Units the shipment charges are spread over. Required while a shipment
+	 *  charge has a value.
+	 */
+	shipment_qty: number | null,
 	notes: string,
 	lines: CostLineInput[],
 };
@@ -1864,6 +1902,22 @@ export type SupplierInput = {
 	address: string,
 	notes: string,
 	active: boolean,
+};
+
+/**
+ *  The newest supplier price of an item: its first priced line on the
+ *  latest placed PO (not a draft, not cancelled).
+ */
+export type SupplierPrice = {
+	po_id: string,
+	po_no: string | null,
+	po_date: string | null,
+	currency: string,
+	price_minor: number,
+	/**  `None` for PHP, or while the PO has no rate yet. */
+	fx_rate: string | null,
+	/**  Total ordered on that PO; becomes the cost sheet's shipment quantity. */
+	qty: number | null,
 };
 
 export type TodoInfo = {

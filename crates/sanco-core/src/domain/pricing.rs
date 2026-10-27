@@ -133,6 +133,9 @@ pub enum ChargeMode {
     PerUnit,
     /// Basis points of the PHP base cost (supplier price × FX).
     Pct,
+    /// A PHP amount for the whole shipment, in centavos, divided by the cost
+    /// sheet's shipment quantity.
+    Shipment,
 }
 
 impl ChargeMode {
@@ -140,22 +143,27 @@ impl ChargeMode {
         match self {
             ChargeMode::PerUnit => "per_unit",
             ChargeMode::Pct => "pct",
+            ChargeMode::Shipment => "shipment",
         }
     }
 
     pub fn parse(s: Option<&str>) -> Self {
-        if s == Some("pct") {
-            ChargeMode::Pct
-        } else {
-            ChargeMode::PerUnit
+        match s {
+            Some("pct") => ChargeMode::Pct,
+            Some("shipment") => ChargeMode::Shipment,
+            _ => ChargeMode::PerUnit,
         }
     }
 
-    /// The charge in centavos per unit.
-    pub fn amount_c(self, value: i64, base_c: i64) -> i64 {
+    /// The charge in centavos per unit. `None` for a shipment charge without
+    /// a positive shipment quantity.
+    pub fn amount_c(self, value: i64, base_c: i64, shipment_qty: Option<i64>) -> Option<i64> {
         match self {
-            ChargeMode::PerUnit => value,
-            ChargeMode::Pct => pct_of(base_c, value),
+            ChargeMode::PerUnit => Some(value),
+            ChargeMode::Pct => Some(pct_of(base_c, value)),
+            ChargeMode::Shipment => shipment_qty
+                .filter(|&q| q > 0)
+                .map(|q| to_i64(div_round(value as i128, q as i128))),
         }
     }
 }
@@ -172,12 +180,14 @@ pub struct LandedCost {
 }
 
 /// Landed cost from a supplier price, its currency and FX, and charge lines
-/// `(mode, value)`. `None` while the price or rate is missing. PHP prices
-/// ignore the FX rate.
+/// `(mode, value)`. Shipment charges are divided by `shipment_qty`. `None`
+/// while the price or rate is missing, or while a shipment charge has no
+/// quantity to divide by. PHP prices ignore the FX rate.
 pub fn landed_cost(
     currency: &str,
     price_minor: Option<i64>,
     fx_rate: Option<&str>,
+    shipment_qty: Option<i64>,
     charges: impl IntoIterator<Item = (ChargeMode, i64)>,
 ) -> Option<LandedCost> {
     let price = price_minor?;
@@ -189,8 +199,8 @@ pub fn landed_cost(
     let base_c = base_cost_c(price, fx)?;
     let charges_c = charges
         .into_iter()
-        .map(|(mode, v)| mode.amount_c(v, base_c))
-        .sum::<i64>();
+        .map(|(mode, v)| mode.amount_c(v, base_c, shipment_qty))
+        .sum::<Option<i64>>()?;
     Some(LandedCost {
         base_c,
         charges_c,
@@ -473,6 +483,7 @@ mod tests {
             "USD",
             Some(1_000),
             Some("56.50"),
+            None,
             [(ChargeMode::PerUnit, 2_000), (ChargeMode::Pct, 1_000)],
         )
         .unwrap();
@@ -481,17 +492,45 @@ mod tests {
         assert_eq!(l.total_c, 64_150);
         // PHP ignores FX; missing FX for a foreign price → no cost.
         assert_eq!(
-            landed_cost("PHP", Some(100), None, []).unwrap().total_c,
+            landed_cost("PHP", Some(100), None, None, [])
+                .unwrap()
+                .total_c,
             100
         );
-        assert_eq!(landed_cost("USD", Some(100), None, []), None);
-        assert_eq!(landed_cost("USD", None, Some("56"), []), None);
+        assert_eq!(landed_cost("USD", Some(100), None, None, []), None);
+        assert_eq!(landed_cost("USD", None, Some("56"), None, []), None);
         // ¥1.23 at 7.8125 = ₱9.609375 → 961 centavos.
         assert_eq!(
-            landed_cost("CNY", Some(123), Some("7.8125"), [])
+            landed_cost("CNY", Some(123), Some("7.8125"), None, [])
                 .unwrap()
                 .base_c,
             961
+        );
+    }
+
+    #[test]
+    fn shipment_charges_divide_by_qty() {
+        // ₱100 base; freight ₱10,000 for 300 units = ₱33.333… → ₱33.33.
+        let freight = [(ChargeMode::Shipment, 1_000_000)];
+        let l = landed_cost("PHP", Some(10_000), None, Some(300), freight).unwrap();
+        assert_eq!(l.charges_c, 3_333);
+        assert_eq!(l.total_c, 13_333);
+        // ₱10,000 for 600 units = ₱16.666… → ₱16.67.
+        let l = landed_cost("PHP", Some(10_000), None, Some(600), freight).unwrap();
+        assert_eq!(l.charges_c, 1_667);
+        // No quantity to divide by → no cost.
+        assert_eq!(landed_cost("PHP", Some(10_000), None, None, freight), None);
+        assert_eq!(
+            landed_cost("PHP", Some(10_000), None, Some(0), freight),
+            None
+        );
+        // Without shipment charges the quantity doesn't matter.
+        let per_unit = [(ChargeMode::PerUnit, 5)];
+        assert_eq!(
+            landed_cost("PHP", Some(10_000), None, None, per_unit)
+                .unwrap()
+                .total_c,
+            10_005
         );
     }
 }

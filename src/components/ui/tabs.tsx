@@ -4,6 +4,10 @@ import { Link, useLocation } from "@builder.io/qwik-city";
 export interface Tab {
   href: string;
   label: string;
+  /** Shown after the label, e.g. how many rows the tab holds. */
+  count?: number;
+  /** Overrides the path match, for tabs kept in the query string. */
+  active?: boolean;
 }
 
 /** Underlined tabs between a module's screens. The first tab is the
@@ -18,7 +22,8 @@ export const TabNav = component$<{ tabs: Tab[]; label: string }>(
         aria-label={label}
       >
         {tabs.map((t, i) => {
-          const active = i === 0 ? path === t.href : path.startsWith(t.href);
+          const active =
+            t.active ?? (i === 0 ? path === t.href : path.startsWith(t.href));
           return (
             <Link
               key={t.href}
@@ -32,6 +37,16 @@ export const TabNav = component$<{ tabs: Tab[]; label: string }>(
               ]}
             >
               {t.label}
+              {t.count != null && (
+                <span
+                  class={[
+                    "ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-medium tabular-nums",
+                    active ? "bg-brand-50 text-brand-700" : "bg-line text-ink-muted",
+                  ]}
+                >
+                  {t.count}
+                </span>
+              )}
             </Link>
           );
         })}

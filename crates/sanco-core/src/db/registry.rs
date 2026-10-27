@@ -206,6 +206,7 @@ pub static TABLES: &[TableDef] = &[
             int("supplier_price_minor"),
             text("fx_rate"),
             text("notes"),
+            int("shipment_qty"),
         ],
     },
     TableDef {

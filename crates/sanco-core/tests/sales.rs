@@ -93,6 +93,7 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
         currency: "PHP".into(),
         supplier_price_minor: Some(10_000),
         fx_rate: String::new(),
+        shipment_qty: None,
         notes: String::new(),
         lines: vec![],
     };

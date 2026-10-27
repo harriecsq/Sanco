@@ -707,7 +707,8 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
 
 /// Copies the PO's supplier prices, currency and FX into the cost sheets of
 /// its items (charge lines are kept). The first priced line of an item
-/// wins. Returns the item codes updated.
+/// wins. The item's total ordered quantity becomes the shipment quantity
+/// that shipment charges are divided by. Returns the item codes updated.
 pub fn apply_to_cost_sheets(tx: &mut WriteTx, po_id: &str) -> Result<Vec<String>> {
     let old = existing(tx.conn(), po_id)?;
     if old.currency != "PHP" && old.fx_rate.is_none() {
@@ -731,24 +732,117 @@ pub fn apply_to_cost_sheets(tx: &mut WriteTx, po_id: &str) -> Result<Vec<String>
         if done.contains_key(&item) {
             continue;
         }
-        let fx = (old.currency != "PHP")
-            .then(|| old.fx_rate.clone())
-            .flatten();
-        tx.upsert(
-            ITEM_COSTS,
-            &items::cost_id(&item),
-            json!({
-                "item_id": item,
-                "currency": old.currency,
-                "supplier_price_minor": price,
-                "fx_rate": fx,
-            }),
-        )?;
+        copy_to_sheet(tx, po_id, &item, &old.currency, old.fx_rate.as_deref(), price)?;
         done.insert(item, code);
     }
     let mut codes: Vec<String> = done.into_values().collect();
     codes.sort();
     Ok(codes)
+}
+
+/// Writes a PO price into an item's cost sheet, with the item's total
+/// ordered quantity on that PO as the shipment quantity.
+fn copy_to_sheet(
+    tx: &mut WriteTx,
+    po_id: &str,
+    item: &str,
+    currency: &str,
+    fx: Option<&str>,
+    price: i64,
+) -> Result<()> {
+    let fx = if currency == "PHP" { None } else { fx };
+    let qty: Option<i64> = tx.conn().query_row(
+        "SELECT SUM(qty) FROM po_lines
+         WHERE po_id = ?1 AND item_id = ?2 AND _deleted = 0 AND qty > 0",
+        [po_id, item],
+        |r| r.get(0),
+    )?;
+    let mut data = json!({
+        "item_id": item,
+        "currency": currency,
+        "supplier_price_minor": price,
+        "fx_rate": fx,
+    });
+    if let Some(q) = qty {
+        data["shipment_qty"] = json!(q);
+    }
+    tx.upsert(ITEM_COSTS, &items::cost_id(item), data)
+}
+
+/// The newest supplier price of an item: its first priced line on the
+/// latest placed PO (not a draft, not cancelled).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SupplierPrice {
+    pub po_id: String,
+    pub po_no: Option<String>,
+    pub po_date: Option<String>,
+    pub currency: String,
+    pub price_minor: i64,
+    /// `None` for PHP, or while the PO has no rate yet.
+    pub fx_rate: Option<String>,
+    /// Total ordered on that PO; becomes the cost sheet's shipment quantity.
+    pub qty: Option<i64>,
+}
+
+/// Latest by PO date, then by when it was placed.
+pub fn latest_price(conn: &Connection, item_id: &str) -> Result<Option<SupplierPrice>> {
+    let found = conn
+        .query_row(
+            "SELECT p.id, n.no, p.date, COALESCE(p.currency, 'PHP'), l.price_minor, p.fx_rate,
+                    (SELECT SUM(q.qty) FROM po_lines q
+                     WHERE q.po_id = p.id AND q.item_id = l.item_id AND q._deleted = 0
+                       AND q.qty > 0)
+             FROM po_lines l
+             JOIN purchase_orders p ON p.id = l.po_id AND p._deleted = 0
+             LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PO' AND n._deleted = 0
+             WHERE l.item_id = ?1 AND l._deleted = 0 AND l.price_minor IS NOT NULL
+               AND COALESCE(p.status, 'draft') NOT IN ('draft', 'cancelled')
+             ORDER BY p.date DESC, COALESCE(p.ordered_at, 0) DESC, p.id DESC, l.line_no, l.id
+             LIMIT 1",
+            [item_id],
+            |r| {
+                Ok(SupplierPrice {
+                    po_id: r.get(0)?,
+                    po_no: r.get(1)?,
+                    po_date: r.get(2)?,
+                    currency: r.get(3)?,
+                    price_minor: r.get(4)?,
+                    fx_rate: r.get(5)?,
+                    qty: r.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(found.map(|mut p| {
+        if p.currency == "PHP" {
+            p.fx_rate = None;
+        }
+        p
+    }))
+}
+
+/// Copies an item's latest supplier price ([`latest_price`]) into its cost
+/// sheet. Charge lines are kept. Only ever done on request.
+pub fn apply_latest_price(tx: &mut WriteTx, item_id: &str) -> Result<SupplierPrice> {
+    let price = latest_price(tx.conn(), item_id)?.ok_or_else(|| {
+        Error::Invalid("no placed purchase order has a price for this item yet".into())
+    })?;
+    if price.currency != "PHP" && price.fx_rate.is_none() {
+        return Err(Error::Invalid(format!(
+            "enter the exchange rate on {} first",
+            price.po_no.as_deref().unwrap_or("the purchase order")
+        )));
+    }
+    copy_to_sheet(
+        tx,
+        &price.po_id,
+        item_id,
+        &price.currency,
+        price.fx_rate.as_deref(),
+        price.price_minor,
+    )?;
+    Ok(price)
 }
 
 // Writing: TT payments ------------------------------------------------------

@@ -15,6 +15,7 @@ use crate::domain::charge_types::CHARGE_TYPES;
 use crate::domain::pricing::{
     self, CLIENT_ITEM_RATES, ChargeMode, LandedCost, check_currency, price_from_cost,
 };
+use crate::domain::purchasing::{self, SupplierPrice};
 use crate::domain::suppliers::SUPPLIERS;
 use crate::domain::{inventory, require_text, text_opt};
 use crate::error::{Error, Result};
@@ -283,7 +284,8 @@ fn costs_for(conn: &Connection, item: Option<&str>) -> Result<HashMap<String, La
         }
     }
     let mut stmt = conn.prepare_cached(
-        "SELECT c.item_id, c.currency, c.supplier_price_minor, c.fx_rate FROM item_costs c
+        "SELECT c.item_id, c.currency, c.supplier_price_minor, c.fx_rate, c.shipment_qty
+         FROM item_costs c
          JOIN items i ON i.id = c.item_id AND i._deleted = 0
          WHERE c._deleted = 0 AND (?1 IS NULL OR c.item_id = ?1)",
     )?;
@@ -293,14 +295,15 @@ fn costs_for(conn: &Connection, item: Option<&str>) -> Result<HashMap<String, La
             r.get::<_, Option<String>>(1)?,
             r.get::<_, Option<i64>>(2)?,
             r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<i64>>(4)?,
         ))
     })?;
     let mut out = HashMap::new();
     for row in rows {
-        let (id, currency, price, fx) = row?;
+        let (id, currency, price, fx, qty) = row?;
         let charges = lines.remove(&id).unwrap_or_default();
         let currency = currency.unwrap_or_else(|| "PHP".into());
-        if let Some(l) = pricing::landed_cost(&currency, price, fx.as_deref(), charges) {
+        if let Some(l) = pricing::landed_cost(&currency, price, fx.as_deref(), qty, charges) {
             out.insert(id, l);
         }
     }
@@ -313,7 +316,8 @@ pub struct CostLine {
     pub charge_type_id: String,
     pub name: String,
     pub mode: ChargeMode,
-    /// Centavos per unit, or basis points of the base cost.
+    /// Centavos per unit, basis points of the base cost, or centavos for the
+    /// whole shipment.
     pub value: Option<i64>,
     /// What the line adds per unit, once the base cost is known.
     pub amount_c: Option<i64>,
@@ -328,11 +332,19 @@ pub struct CostSheetInfo {
     pub currency: String,
     pub supplier_price_minor: Option<i64>,
     pub fx_rate: Option<String>,
+    /// Units the shipment charges are spread over.
+    pub shipment_qty: Option<i64>,
     pub notes: Option<String>,
     pub lines: Vec<CostLine>,
     pub landed: Option<LandedCost>,
-    /// When the sheet itself was last saved, if ever (UTC ms).
+    /// When the sheet or one of its charge lines last changed, if ever
+    /// (UTC ms), and by whom.
     pub changed_at: Option<i64>,
+    pub changed_by: Option<String>,
+    /// The price on the item's latest placed PO.
+    pub supplier_price: Option<SupplierPrice>,
+    /// The latest PO's currency, price or FX differs from the sheet's.
+    pub price_pending: bool,
 }
 
 /// The cost sheet of a live item: its saved values plus a line for every
@@ -352,8 +364,8 @@ pub fn cost_sheet(conn: &Connection, item_id: &str) -> Result<Option<CostSheetIn
     };
     let saved = conn
         .query_row(
-            "SELECT currency, supplier_price_minor, fx_rate, notes, _hlc / 1000 FROM item_costs
-             WHERE id = ?1 AND _deleted = 0",
+            "SELECT currency, supplier_price_minor, fx_rate, notes, shipment_qty
+             FROM item_costs WHERE id = ?1 AND _deleted = 0",
             [cost_id(item_id)],
             |r| {
                 Ok((
@@ -361,15 +373,28 @@ pub fn cost_sheet(conn: &Connection, item_id: &str) -> Result<Option<CostSheetIn
                     r.get::<_, Option<i64>>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
         .optional()?;
-    let (currency, price, fx, notes, changed_at) = match saved {
-        Some((c, p, f, n, at)) => (c, p, f, n, Some(at)),
-        None => (None, None, None, None, None),
-    };
+    let (currency, price, fx, notes, shipment_qty) = saved.unwrap_or_default();
+    // Saves skip unchanged rows, so a charge-only edit doesn't touch
+    // item_costs: take the newest of the sheet and its lines.
+    let (changed_at, changed_by) = conn
+        .query_row(
+            "SELECT c._hlc / 1000, u.display_name FROM (
+                 SELECT _hlc, updated_by FROM item_costs WHERE id = ?1 AND _deleted = 0
+                 UNION ALL
+                 SELECT _hlc, updated_by FROM item_cost_charges
+                 WHERE item_id = ?2 AND _deleted = 0
+             ) c LEFT JOIN users u ON u.id = c.updated_by
+             ORDER BY c._hlc DESC LIMIT 1",
+            [cost_id(item_id).as_str(), item_id],
+            |r| Ok((Some(r.get::<_, i64>(0)?), r.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
     let currency = currency
         .or(supplier_currency)
         .unwrap_or_else(|| "PHP".into());
@@ -417,22 +442,38 @@ pub fn cost_sheet(conn: &Connection, item_id: &str) -> Result<Option<CostSheetIn
         &currency,
         price,
         fx.as_deref(),
+        shipment_qty,
         lines.iter().filter_map(|l| l.value.map(|v| (l.mode, v))),
     );
     if let Some(l) = landed {
         for line in &mut lines {
-            line.amount_c = line.value.map(|v| line.mode.amount_c(v, l.base_c));
+            line.amount_c = line
+                .value
+                .and_then(|v| line.mode.amount_c(v, l.base_c, shipment_qty));
         }
     }
+    let supplier_price = purchasing::latest_price(conn, item_id)?;
+    let price_pending = supplier_price.as_ref().is_some_and(|sp| {
+        let same_fx = sp.currency == "PHP"
+            || match (&sp.fx_rate, &fx) {
+                (Some(a), Some(b)) => pricing::parse_fx(a).ok() == pricing::parse_fx(b).ok(),
+                (a, b) => a == b,
+            };
+        sp.currency != currency || Some(sp.price_minor) != price || !same_fx
+    });
     Ok(Some(CostSheetInfo {
         item_id: item_id.to_string(),
         currency,
         supplier_price_minor: price,
         fx_rate: fx,
+        shipment_qty,
         notes,
         lines,
         landed,
         changed_at,
+        changed_by,
+        supplier_price,
+        price_pending,
     }))
 }
 
@@ -453,6 +494,9 @@ pub struct CostSheetInput {
     pub supplier_price_minor: Option<i64>,
     /// PHP per unit of `currency`. Ignored for PHP.
     pub fx_rate: String,
+    /// Units the shipment charges are spread over. Required while a shipment
+    /// charge has a value.
+    pub shipment_qty: Option<i64>,
     pub notes: String,
     pub lines: Vec<CostLineInput>,
 }
@@ -470,6 +514,20 @@ pub fn save_cost_sheet(tx: &mut WriteTx, input: &CostSheetInput) -> Result<()> {
         ("PHP", _) | (_, "") => None,
         (_, text) => Some(pricing::parse_fx(text)?.to_string()),
     };
+    if input.shipment_qty.is_some_and(|q| q <= 0) {
+        return Err(Error::Invalid(
+            "the shipment quantity must be more than zero".into(),
+        ));
+    }
+    let per_shipment = input
+        .lines
+        .iter()
+        .any(|l| l.mode == ChargeMode::Shipment && l.value.is_some());
+    if per_shipment && input.shipment_qty.is_none() {
+        return Err(Error::Invalid(
+            "enter the shipment quantity to divide the shipment charges by".into(),
+        ));
+    }
     tx.upsert(
         ITEM_COSTS,
         &cost_id(item),
@@ -478,6 +536,7 @@ pub fn save_cost_sheet(tx: &mut WriteTx, input: &CostSheetInput) -> Result<()> {
             "currency": currency,
             "supplier_price_minor": input.supplier_price_minor,
             "fx_rate": fx,
+            "shipment_qty": input.shipment_qty,
             "notes": text_opt(&input.notes),
         }),
     )?;

@@ -5,6 +5,7 @@
 use sanco_core::domain::auth::{Action, Field, Module, SessionUser};
 use sanco_core::domain::items::{self, CostSheetInfo, CostSheetInput, ItemInfo, ItemInput};
 use sanco_core::domain::pricing::{self, PriceQuote, RateFilter, RateInfo, RateInput};
+use sanco_core::domain::purchasing::{self, SupplierPrice};
 use serde::Serialize;
 use specta::Type;
 use tauri::State;
@@ -86,6 +87,22 @@ pub async fn save_cost_sheet(state: State<'_, AppState>, sheet: CostSheetInput) 
     let (db, user) = require(&state, Module::Items, Action::Edit).await?;
     require_costs(&user)?;
     blocking(move || db.write(user.actor(), move |tx| items::save_cost_sheet(tx, &sheet))).await
+}
+
+/// Copies the item's latest placed-PO price into its cost sheet. Returns
+/// the price used.
+#[tauri::command]
+#[specta::specta]
+pub async fn apply_supplier_price(
+    state: State<'_, AppState>,
+    item_id: String,
+) -> Result<SupplierPrice, String> {
+    let (db, user) = require(&state, Module::Items, Action::Edit).await?;
+    require_costs(&user)?;
+    blocking(move || {
+        db.write(user.actor(), move |tx| purchasing::apply_latest_price(tx, &item_id))
+    })
+    .await
 }
 
 /// Client rates, by client and/or item. Clients screens show them too.
