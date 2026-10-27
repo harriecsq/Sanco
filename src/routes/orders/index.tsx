@@ -42,6 +42,7 @@ import {
   type TtForm,
 } from "~/components/orders/orders";
 import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 const PoList = component$(() => {
@@ -88,6 +89,7 @@ const PoList = component$(() => {
                 : p.status === f.status)),
     );
   });
+  const pg = usePage(shown);
   const costs = pos.value.some((p) => p.total_minor != null);
   const today = todayManila();
 
@@ -150,7 +152,7 @@ const PoList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((p) => {
+              {pg.value.rows.map((p) => {
                 const open = ["ordered", "shipped", "arrived"].includes(p.status);
                 const late = open && p.progress !== "full" && !!p.expected_date && p.expected_date < today;
                 return (
@@ -200,6 +202,7 @@ const PoList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <PoFormModal
         open={open}

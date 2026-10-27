@@ -13,6 +13,7 @@ import { isAdmin } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { Pager, usePage } from "~/components/ui/pager";
 import {
   Alert,
   Badge,
@@ -88,6 +89,7 @@ export default component$(() => {
         (!f.role || u.role_ids.includes(f.role)),
     );
   });
+  const pg = usePage(shown);
 
   const roleName = (id: string) =>
     roles.value.find((r) => r.id === id)?.name ?? "?";
@@ -178,7 +180,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((u) => (
+              {pg.value.rows.map((u) => (
                 <tr key={u.id} class={u.active ? "" : "text-ink-muted"}>
                   <td class={[td, "font-medium"]}>
                     {u.display_name}
@@ -234,6 +236,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
 
       <Modal open={editOpen} title={form.id ? "Edit user" : "New user"}>

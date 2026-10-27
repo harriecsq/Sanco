@@ -16,6 +16,7 @@ import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { OfflineBadge } from "~/components/sales/sales";
 import { ORDER_TABLES } from "~/components/orders/orders";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 const ReceiptList = component$(() => {
@@ -52,6 +53,7 @@ const ReceiptList = component$(() => {
         (!f.status || (f.status === "void") === r.voided),
     );
   });
+  const pg = usePage(shown);
 
   return (
     <>
@@ -101,7 +103,7 @@ const ReceiptList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((r) => (
+              {pg.value.rows.map((r) => (
                 <tr key={r.id} class={r.voided ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={`/orders/receiving/?id=${r.id}`}>
@@ -124,6 +126,7 @@ const ReceiptList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

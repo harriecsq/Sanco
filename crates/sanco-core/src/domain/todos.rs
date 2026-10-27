@@ -51,10 +51,15 @@ pub struct TodoInfo {
     pub created_by_name: Option<String>,
 }
 
-/// To-dos `user_id` sees, open ones first (by due date), then done ones,
-/// newest first. `include_done` adds those ticked off.
-pub fn list(conn: &Connection, user_id: &str, include_done: bool) -> Result<Vec<TodoInfo>> {
-    let mut stmt = conn.prepare_cached(
+/// To-dos `user_id` sees: the open ones by due date, or with `archived` the
+/// ticked-off ones, most recently changed first.
+pub fn list(conn: &Connection, user_id: &str, archived: bool) -> Result<Vec<TodoInfo>> {
+    let order = if archived {
+        "t._hlc DESC, t.id"
+    } else {
+        "t.due IS NULL, t.due, t.created_at DESC"
+    };
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT t.id, t.title, t.notes, t.due, t.assignee_id,
                 COALESCE(a.display_name, a.username), COALESCE(t.done, 0),
                 t.ref_tbl, t.ref_id,
@@ -66,11 +71,10 @@ pub fn list(conn: &Connection, user_id: &str, include_done: bool) -> Result<Vec<
          LEFT JOIN users c ON c.id = t.created_by
          WHERE t._deleted = 0
            AND (t.assignee_id IS NULL OR t.assignee_id = ?1 OR t.created_by = ?1)
-           AND (?2 OR COALESCE(t.done, 0) = 0)
-         ORDER BY COALESCE(t.done, 0), t.due IS NULL, t.due, t.created_at DESC
-         LIMIT 500",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![user_id, include_done], |r| {
+           AND (COALESCE(t.done, 0) != 0) = ?2
+         ORDER BY {order}"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![user_id, archived], |r| {
         Ok(TodoInfo {
             id: r.get(0)?,
             title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),

@@ -1,5 +1,6 @@
-import { type QRL, useVisibleTask$ } from "@builder.io/qwik";
+import { type QRL, useComputed$, useVisibleTask$ } from "@builder.io/qwik";
 import { useLocation } from "@builder.io/qwik-city";
+import { isPageKey } from "~/components/ui/pager";
 import { listen } from "@tauri-apps/api/event";
 import { useSession } from "./session";
 
@@ -36,15 +37,22 @@ export function useLiveLoad(tables: string[] | null, fn: QRL<() => unknown>) {
 
 /**
  * Like `useLiveLoad`, and also reloads when the query string changes (for
- * screens whose loader reads filters such as a date range).
+ * screens whose loader reads filters such as a date range). Turning a page
+ * of a table doesn't reload.
  */
 export function useLiveLoadUrl(tables: string[] | null, fn: QRL<() => unknown>) {
   const session = useSession();
   const loc = useLocation();
+  // A computed only notifies when its value changes, so page keys drop out.
+  const filters = useComputed$(() => {
+    const p = new URLSearchParams(loc.url.search);
+    for (const k of [...p.keys()]) if (isPageKey(k)) p.delete(k);
+    return p.toString();
+  });
   useLiveLoad(tables, fn);
   // eslint-disable-next-line qwik/no-use-visible-task
   useVisibleTask$(({ track }) => {
-    const search = track(() => loc.url.search);
+    const search = track(() => filters.value);
     if (!session.user || search === undefined) return;
     fn();
   }, { strategy: "document-ready" });

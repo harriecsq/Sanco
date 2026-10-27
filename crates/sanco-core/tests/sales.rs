@@ -1,7 +1,6 @@
 mod common;
 
 use common::{TestPeer, pull};
-use sanco_core::domain::bd::{self, BdInput, BdLineInput, BdStatus};
 use sanco_core::domain::bookings::{
     self, BookingAction, BookingInput, BookingLineInput, BookingStatus, DeliveryProgress,
     PriceSource,
@@ -259,7 +258,7 @@ fn invalid<T: std::fmt::Debug>(r: Result<T>) -> String {
 }
 
 #[test]
-fn bd_request_to_delivered_dr() {
+fn booking_to_delivered_dr() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
@@ -268,81 +267,27 @@ fn bd_request_to_delivered_dr() {
     receive(&a.db, &actor, &glv, Some("2027-03-31"), 50);
     receive(&a.db, &actor, &glv, Some("2026-12-31"), 10);
     receive(&a.db, &actor, &tape, None, 100);
-
-    // A prospect asks for gloves (quoted) and tape, plus something not in
-    // the catalog.
-    let input = BdInput {
-        id: None,
-        client_id: None,
-        prospect_name: "Mercury Drug Cubao".into(),
-        contact: "Liza 0917".into(),
-        date: TODAY.into(),
-        status: BdStatus::Quoted,
-        follow_up: Some("2026-10-25".into()),
-        vat: true,
-        notes: String::new(),
-        lost_reason: String::new(),
-        lines: vec![
-            BdLineInput {
-                id: None,
-                item_id: Some(glv.clone()),
-                description: String::new(),
-                qty: 30,
-                price_c: Some(12_000),
-            },
-            BdLineInput {
-                id: None,
-                item_id: Some(tape.clone()),
-                description: String::new(),
-                qty: 20,
-                price_c: None,
-            },
-            BdLineInput {
-                id: None,
-                item_id: None,
-                description: "Wheelchair, folding".into(),
-                qty: 1,
-                price_c: None,
-            },
-        ],
-    };
-    a.db.read(|c| bd::validate(c, &input)).unwrap();
-    let bd_id = a.db.new_id().unwrap();
-    let res = numbering::reserve(&a.db, &[], series::BD, &bd_id).unwrap();
-    a.db.write(actor.clone(), move |tx| bd::create(tx, &input, &res))
-        .unwrap();
-    let req = a.db.read(|c| bd::get(c, &bd_id)).unwrap().unwrap();
-    assert_eq!(req.request.no.as_deref(), Some("BD-2026-0001"));
-    assert_eq!(req.request.quoted_net_c, 30 * 12_000);
-    assert_eq!(
-        req.request.summary,
-        "GLV ×30, TAPE ×20, Wheelchair, folding ×1"
-    );
-
-    // A prospect has to become a client first.
-    let msg = invalid(a.db.read(|c| bd::check_convert(c, &bd_id, None, TODAY)));
-    assert!(msg.contains("client"), "{msg}");
     let client = add_client(&a.db, &actor, "Mercury Drug Cubao", None);
-    a.db.read(|c| bd::check_convert(c, &bd_id, Some(&client), TODAY))
-        .unwrap();
-    let bk_id = a.db.new_id().unwrap();
-    let res = numbering::reserve(&a.db, &[], series::BOOKING, &bk_id).unwrap();
-    let (b, c) = (bd_id.clone(), client.clone());
-    a.db.write(actor.clone(), move |tx| bd::convert(tx, &b, Some(&c), &res))
-        .unwrap();
-    let req = a.db.read(|c| bd::get(c, &bd_id)).unwrap().unwrap().request;
-    assert_eq!(req.status, BdStatus::Won);
-    assert_eq!(req.client_id.as_deref(), Some(client.as_str()));
-    assert_eq!(req.booking_no.as_deref(), Some("BK-2026-0001"));
 
-    // The booking: quoted gloves at ₱120, tape at the item default ₱125.
+    // Gloves at a typed ₱120, tape at the item default ₱125.
+    let bk_id = create_booking(
+        &a.db,
+        &actor,
+        booking_input(
+            &client,
+            vec![
+                booking_line(&glv, 30, Some(12_000)),
+                booking_line(&tape, 20, None),
+            ],
+        ),
+    );
     let det = booking(&a.db, &bk_id);
+    assert_eq!(det.booking.no.as_deref(), Some("BK-2026-0001"));
     assert_eq!(det.booking.status, BookingStatus::Draft);
-    assert_eq!(det.booking.bd_no.as_deref(), Some("BD-2026-0001"));
     assert_eq!(det.lines.len(), 2);
     assert_eq!(
         (det.lines[0].price_c, det.lines[0].price_rule),
-        (12_000, PriceSource::Quoted)
+        (12_000, PriceSource::Custom)
     );
     assert_eq!(
         (det.lines[1].price_c, det.lines[1].price_rule),

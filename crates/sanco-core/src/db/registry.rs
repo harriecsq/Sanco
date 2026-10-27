@@ -259,6 +259,9 @@ pub static TABLES: &[TableDef] = &[
             text("box_id"),
         ],
     },
+    // Business Development was removed from the app (2026-10-27). Its tables
+    // stay replicated (migrations are additive only, and older versions
+    // still sync them) but nothing reads or writes them.
     TableDef {
         name: "bd_requests",
         cols: &[
@@ -288,6 +291,7 @@ pub static TABLES: &[TableDef] = &[
         name: "bookings",
         cols: &[
             text("client_id"),
+            // Unused since Business Development was removed.
             text("bd_request_id"),
             text("date"),
             text("status"),

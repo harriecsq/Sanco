@@ -43,7 +43,6 @@ const MAX_PAD: u32 = 12;
 
 /// Series used by the app. Their formats are editable in Settings.
 pub mod series {
-    pub const BD: &str = "BD";
     pub const BOOKING: &str = "BK";
     pub const DR: &str = "DR";
     /// Sales invoices: delivery receipts with VAT (their own BIR booklet).

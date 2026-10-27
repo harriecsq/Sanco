@@ -10,7 +10,16 @@ import {
   type ReceiptKind,
   type StockLot,
 } from "~/lib/bindings";
-import { boxEquiv, boxSummary, formatDay, formatPct, formatQty, parseCount, todayManila } from "~/lib/format";
+import {
+  boxEquiv,
+  boxSummary,
+  formatDay,
+  formatPct,
+  formatQty,
+  oldestBox,
+  parseCount,
+  todayManila,
+} from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Field, Modal } from "~/components/ui/ui";
 import { RECEIPT, Totals } from "~/components/sales/sales";
@@ -24,12 +33,10 @@ interface Row {
   /** The lot's expiry date, or "" for the first lot in stock. */
   lot: string;
   qty: string;
-  /** Items in boxes: the boxes were chosen by hand (`picks`). */
-  manual: boolean;
+  /** Items in boxes: the boxes chosen and the pieces taken from each. */
   picks: { box_id: string; qty: string }[];
-  /** The edited line's draws, kept while its qty and location stay. */
+  /** The edited line's saved draws, for the serials of boxes no longer listed. */
   saved: BoxDraw[] | null;
-  saved_qty: number;
 }
 
 interface Form {
@@ -56,10 +63,8 @@ const newRow = (line_id: string, qty = ""): Row => ({
   line_id,
   lot: "",
   qty,
-  manual: false,
   picks: [],
   saved: null,
-  saved_qty: 0,
 });
 
 /** A typed count, or 0 while it isn't one. */
@@ -87,8 +92,6 @@ interface BoxLeft {
 
 /** What a row of an item in boxes takes. */
 interface BoxPlan {
-  /** Chosen by hand, the edited line's saved draws, or picked automatically. */
-  mode: "manual" | "saved" | "auto";
   avail: BoxLeft[];
   draws: BoxDraw[];
   /** Pieces in those boxes for this row. */
@@ -97,41 +100,15 @@ interface BoxPlan {
 }
 
 /**
- * The backend's automatic pick: started boxes first, then the earliest
- * expiry, then the lowest serial (the order `drBoxes` lists them in).
- */
-const autoDraws = (avail: BoxLeft[], qty: number): BoxDraw[] => {
-  const order = avail
-    .map((a, i) => ({ ...a, i }))
-    .filter((a) => a.left > 0)
-    .sort(
-      (a, b) =>
-        Number(b.left < b.box.pcs) - Number(a.left < a.box.pcs) ||
-        (a.box.expiry ?? "9999").localeCompare(b.box.expiry ?? "9999") ||
-        a.i - b.i,
-    );
-  const out: BoxDraw[] = [];
-  let need = qty;
-  for (const a of order) {
-    if (need <= 0) break;
-    const take = Math.min(a.left, need);
-    out.push({ box_id: a.box.box_id, serial: a.box.serial, expiry: a.box.expiry, qty: take });
-    need -= take;
-  }
-  return out;
-};
-
-/**
  * What each row of an item in boxes takes from which box (null for other
- * rows). Earlier rows' draws are no longer available to later ones, as in
- * the backend.
+ * rows): the boxes chosen by hand, never picked automatically. Earlier
+ * rows' draws are no longer available to later ones, as in the backend.
  */
 const planRows = (
   rows: Row[],
   lines: BookingLine[],
   boxes: BoxStock[],
   location: string,
-  sameLocation: boolean,
   boxed: Set<string>,
 ) => {
   const used = new Map<string, number>();
@@ -141,32 +118,20 @@ const planRows = (
     const avail = boxes
       .filter((x) => x.item_id === line.item_id && x.location_id === location)
       .map((box) => ({ box, left: box.qty - (used.get(box.box_id) ?? 0) }));
-    const qty = countOf(row.qty);
-    let mode: BoxPlan["mode"] = "auto";
-    let draws: BoxDraw[];
-    if (row.manual) {
-      mode = "manual";
-      draws = row.picks
-        .map((p) => {
-          const box = boxes.find((x) => x.box_id === p.box_id);
-          const was = row.saved?.find((d) => d.box_id === p.box_id);
-          return {
-            box_id: p.box_id,
-            serial: box?.serial ?? was?.serial ?? null,
-            expiry: box?.expiry ?? was?.expiry ?? null,
-            qty: countOf(p.qty),
-          };
-        })
-        .filter((d) => d.qty > 0);
-    } else if (row.saved && sameLocation && qty === row.saved_qty) {
-      mode = "saved";
-      draws = row.saved;
-    } else {
-      draws = autoDraws(avail, qty);
-    }
+    const draws = row.picks
+      .map((p) => {
+        const box = boxes.find((x) => x.box_id === p.box_id);
+        const was = row.saved?.find((d) => d.box_id === p.box_id);
+        return {
+          box_id: p.box_id,
+          serial: box?.serial ?? was?.serial ?? null,
+          expiry: box?.expiry ?? was?.expiry ?? null,
+          qty: countOf(p.qty),
+        };
+      })
+      .filter((d) => d.qty > 0);
     for (const d of draws) used.set(d.box_id, (used.get(d.box_id) ?? 0) + d.qty);
     return {
-      mode,
       avail,
       draws,
       onHand: avail.reduce((n, a) => n + Math.max(a.left, 0), 0),
@@ -175,7 +140,19 @@ const planRows = (
   });
 };
 
-const drawsText = (draws: BoxDraw[]) => draws.map((d) => `${d.serial ?? "Box"} ×${d.qty}`).join(" · ");
+/** Tick a box (with what the row still needs, else all that's left in
+ *  it) or untick it. */
+const tickBox = (row: Row, plan: BoxPlan, box_id: string, left: number, on: boolean) => {
+  const i = row.picks.findIndex((p) => p.box_id === box_id);
+  if (!on) {
+    if (i >= 0) row.picks.splice(i, 1);
+    return;
+  }
+  if (i >= 0) return;
+  const need = countOf(row.qty) - plan.total;
+  const take = need > 0 ? Math.min(left, need) : left;
+  row.picks.push({ box_id, qty: String(Math.max(take, 0)) });
+};
 
 /** Lots of an item at a location, soonest expiry first. */
 const lotsFor = (lots: Lot[], line: BookingLine, location: string) =>
@@ -198,7 +175,7 @@ export const DrRequestModal = component$<{
   open: Signal<boolean>;
   bookingId: string;
   dr?: DrDetail | null;
-  saved$?: QRL<(id: string) => void>;
+  saved$?: QRL<(id: string, kind: ReceiptKind) => void>;
 }>(({ open, bookingId, dr, saved$ }) => {
   const booking = useSignal<BookingDetail | null>(null);
   const locations = useSignal<LocationInfo[]>([]);
@@ -314,8 +291,8 @@ export const DrRequestModal = component$<{
           ...newRow(l.booking_line_id ?? "", String(l.qty)),
           id: l.id,
           lot: l.expiry ?? "",
+          picks: l.boxes.map((d) => ({ box_id: d.box_id, qty: String(d.qty) })),
           saved: l.boxes.length ? l.boxes.map((d) => ({ ...d })) : null,
-          saved_qty: l.qty,
         }));
         // Other booking lines with something left can be added.
         for (const l of lines) {
@@ -354,7 +331,6 @@ export const DrRequestModal = component$<{
         b.lines,
         boxes.value,
         form.location_id,
-        !dr || dr.dr.from_location_id === form.location_id,
         boxedItems(b, dr, boxes.value),
       );
       const lines = form.rows
@@ -364,9 +340,10 @@ export const DrRequestModal = component$<{
           const line = b.lines.find((l) => l.id === r.line_id);
           if (!line) throw new Error("reload the booking: a line changed");
           const qty = parseCount(r.qty, `quantity for ${line.item_code}`) ?? 0;
-          // Boxed items: each box has its own lot; no draws = picked by the backend.
+          // Boxed items: each box has its own lot, and the boxes are chosen by hand.
           if (plan) {
-            if (plan.mode === "manual" && qty > 0 && plan.total !== qty) {
+            if (qty > 0 && !plan.draws.length) throw new Error(`choose the boxes of ${line.item_code}`);
+            if (qty > 0 && plan.total !== qty) {
               throw new Error(`the boxes of ${line.item_code} add up to ${plan.total}, not ${qty}`);
             }
             return {
@@ -374,7 +351,7 @@ export const DrRequestModal = component$<{
               booking_line_id: r.line_id,
               expiry: null,
               qty,
-              boxes: plan.mode === "auto" ? [] : plan.draws.map((d) => ({ box_id: d.box_id, qty: d.qty })),
+              boxes: plan.draws.map((d) => ({ box_id: d.box_id, qty: d.qty })),
             };
           }
           const lot = r.lot || lotsFor(lots.value, line, form.location_id)[0]?.expiry || null;
@@ -408,7 +385,7 @@ export const DrRequestModal = component$<{
         id = unwrap(await commands.requestDr(request));
       }
       open.value = false;
-      if (saved$) await saved$(id);
+      if (saved$) await saved$(id, form.kind);
     } catch (e) {
       error.value = errorText(e);
     } finally {
@@ -435,7 +412,6 @@ export const DrRequestModal = component$<{
     b?.lines ?? [],
     boxes.value,
     form.location_id,
-    !dr || dr.dr.from_location_id === form.location_id,
     boxedItems(b, dr, boxes.value),
   );
 
@@ -511,7 +487,6 @@ export const DrRequestModal = component$<{
                 // Lots and boxes chosen at the old location don't apply.
                 form.rows.forEach((r) => {
                   r.lot = "";
-                  r.manual = false;
                   r.picks = [];
                 });
               }}
@@ -581,9 +556,7 @@ export const DrRequestModal = component$<{
                 const qty = countOf(row.qty);
                 const short = qty > onHand;
                 const perBox = line.pcs_per_box ?? dr?.lines.find((l) => l.id === row.id)?.pcs_per_box;
-                // "Choose boxes" starts from what would be taken now.
-                const prefill = (plan?.draws ?? []).map((d) => ({ box_id: d.box_id, qty: String(d.qty) }));
-                // Boxes to type into: those with something left here, plus
+                // Boxes to tick: those with something left here, plus
                 // any already picked that aren't (e.g. a saved draw's box).
                 const choices = plan
                   ? [
@@ -610,6 +583,8 @@ export const DrRequestModal = component$<{
                         }),
                     ]
                   : [];
+                // The box to break first, among those with something left.
+                const oldest = oldestBox(choices.filter((c) => c.left > 0));
                 return (
                   <div
                     key={row.key}
@@ -689,90 +664,81 @@ export const DrRequestModal = component$<{
                     </div>
                     {plan && (
                       <div class="col-span-full rounded-md border border-line bg-surface-muted px-3 py-2 text-sm">
-                        {plan.mode === "manual" ? (
-                          <>
-                            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                              <span>
-                                <span class="font-medium">Boxes</span>{" "}
-                                <span class={plan.total === qty ? "text-ink-muted" : "text-danger"}>
-                                  {formatQty(plan.total)} of {formatQty(qty, line.unit)}
-                                  {plan.total !== qty && " · must add up to the quantity"}
-                                </span>
-                              </span>
-                              <button
-                                type="button"
-                                class={btnGhost}
-                                onClick$={() => {
-                                  row.manual = false;
-                                  row.picks = [];
-                                  row.saved = null;
-                                }}
-                              >
-                                Pick automatically
-                              </button>
-                            </div>
-                            {choices.length ? (
-                              <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                {choices.map((c) => {
-                                  const id = c.box_id;
-                                  const pick = row.picks.find((p) => p.box_id === id)?.qty ?? "";
-                                  const over = countOf(pick) > Math.max(c.left, 0);
-                                  return (
-                                    <label
-                                      key={id}
-                                      class="flex items-center justify-between gap-2 rounded-md border border-line bg-white px-2 py-1"
-                                    >
-                                      <span class="min-w-0">
-                                        <span class="font-medium">{c.serial ?? "Box"}</span>
-                                        <span class={[hint, "block"]}>
-                                          {c.expiry ? `Exp. ${formatDay(c.expiry)} · ` : ""}
-                                          {c.pcs ? `${c.left} of ${c.pcs} left` : `${c.left} left`}
-                                        </span>
-                                      </span>
-                                      <span class="text-right">
-                                        <input
-                                          class={[inputBase, "w-16 text-right"]}
-                                          aria-label={`Pieces from ${c.serial ?? "this box"}`}
-                                          inputMode="numeric"
-                                          value={pick}
-                                          onInput$={(_, el) => {
-                                            const p = row.picks.find((x) => x.box_id === id);
-                                            if (p) p.qty = el.value;
-                                            else row.picks.push({ box_id: id, qty: el.value });
-                                          }}
-                                        />
-                                        {over && (
-                                          <span class="block text-xs text-danger">only {Math.max(c.left, 0)}</span>
-                                        )}
-                                      </span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <p class={hint}>No boxes of this item here.</p>
-                            )}
-                          </>
-                        ) : (
-                          <div class="flex flex-wrap items-center justify-between gap-2">
-                            <span>
-                              <span class="font-medium">Boxes</span>{" "}
-                              <span class="text-ink-muted">
-                                {plan.mode === "saved" ? "as saved" : "picked automatically"}
-                              </span>
-                              {plan.draws.length > 0 && `: ${drawsText(plan.draws)}`}
+                        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <span>
+                            <span class="font-medium">Boxes to take from</span>{" "}
+                            <span class={plan.total === qty ? "text-ink-muted" : "text-danger"}>
+                              {formatQty(plan.total)} of {formatQty(qty, line.unit)}
+                              {plan.total !== qty &&
+                                (plan.draws.length ? " · must add up to the quantity" : " · tick the boxes")}
                             </span>
-                            <button
-                              type="button"
-                              class={btnGhost}
-                              onClick$={() => {
-                                row.manual = true;
-                                row.picks = prefill;
-                              }}
-                            >
-                              Choose boxes
-                            </button>
+                          </span>
+                          {oldest && choices.length > 1 && (
+                            <span class={hint}>Oldest = earliest expiry, then lowest serial</span>
+                          )}
+                        </div>
+                        {choices.length ? (
+                          <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                            {choices.map((c) => {
+                              const id = c.box_id;
+                              const pick = row.picks.find((p) => p.box_id === id);
+                              const over = countOf(pick?.qty ?? "") > Math.max(c.left, 0);
+                              const opened = c.pcs > 0 && c.left > 0 && c.left < c.pcs;
+                              return (
+                                <div
+                                  key={id}
+                                  class={[
+                                    "flex items-center justify-between gap-2 rounded-md border bg-white px-2 py-1",
+                                    pick ? "border-brand-500" : "border-line",
+                                  ]}
+                                >
+                                  <label class="flex min-w-0 items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      class="accent-brand-500"
+                                      checked={!!pick}
+                                      onChange$={(_, el) => tickBox(row, plan, id, Math.max(c.left, 0), el.checked)}
+                                    />
+                                    <span class="min-w-0">
+                                      <span class="font-medium">{c.serial ?? "Box"}</span>
+                                      {id === oldest && choices.length > 1 && (
+                                        <span class="ml-1.5 rounded bg-brand-50 px-1 text-xs text-brand-700">
+                                          oldest
+                                        </span>
+                                      )}
+                                      {opened && (
+                                        <span class="ml-1.5 rounded border border-line px-1 text-xs text-ink-muted">
+                                          opened
+                                        </span>
+                                      )}
+                                      <span class={[hint, "block"]}>
+                                        {c.expiry ? `Exp. ${formatDay(c.expiry)} · ` : ""}
+                                        {c.pcs ? `${c.left} of ${c.pcs} left` : `${c.left} left`}
+                                      </span>
+                                    </span>
+                                  </label>
+                                  <span class="text-right">
+                                    <input
+                                      class={[inputBase, "w-16 text-right"]}
+                                      aria-label={`Pieces from ${c.serial ?? "this box"}`}
+                                      inputMode="numeric"
+                                      disabled={!pick}
+                                      value={pick?.qty ?? ""}
+                                      onInput$={(_, el) => {
+                                        const p = row.picks.find((x) => x.box_id === id);
+                                        if (p) p.qty = el.value;
+                                      }}
+                                    />
+                                    {over && (
+                                      <span class="block text-xs text-danger">only {Math.max(c.left, 0)}</span>
+                                    )}
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </div>
+                        ) : (
+                          <p class={hint}>No boxes of this item here.</p>
                         )}
                       </div>
                     )}

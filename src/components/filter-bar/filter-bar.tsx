@@ -1,5 +1,6 @@
 import { $, component$, Slot, useSignal } from "@builder.io/qwik";
 import { useLocation, useNavigate } from "@builder.io/qwik-city";
+import { isPageKey } from "~/components/ui/pager";
 import { btnGhost, inputBase } from "~/components/ui/styles";
 
 export interface FilterOption {
@@ -47,6 +48,8 @@ export const FilterBar = component$<{
     const next = new URLSearchParams(loc.url.search);
     if (value) next.set(key, value);
     else next.delete(key);
+    // A new filter starts every list on this screen at its first page.
+    for (const k of [...next.keys()]) if (isPageKey(k)) next.delete(k);
     const qs = next.toString();
     nav(`${loc.url.pathname}${qs ? `?${qs}` : ""}`, {
       replaceState: true,
@@ -121,7 +124,7 @@ export const FilterBar = component$<{
           onClick$={() => {
             // Keeps other params, e.g. a detail page's `?id=…&tab=…`.
             const next = new URLSearchParams(loc.url.search);
-            for (const k of keys) next.delete(k);
+            for (const k of [...keys, ...[...next.keys()].filter(isPageKey)]) next.delete(k);
             const qs = next.toString();
             nav(`${loc.url.pathname}${qs ? `?${qs}` : ""}`, {
               replaceState: true,

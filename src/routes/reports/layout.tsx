@@ -18,7 +18,6 @@ export default component$(() => {
           { href: "/reports/collections/", label: "Collections & checks" },
           { href: "/reports/stock/", label: "Stock" },
           ...(sees(user, "costs") ? [{ href: "/reports/spend/", label: "PO spend" }] : []),
-          { href: "/reports/bd/", label: "BD conversion" },
           ...(sees(user, "costs") && sees(user, "margins")
             ? [{ href: "/reports/margin/", label: "Item margin" }]
             : []),

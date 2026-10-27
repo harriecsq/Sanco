@@ -205,19 +205,6 @@ export const commands = {
 	 */
 	postStockDoc: (doc: StockDocInput) => typedError<string, string>(__TAURI_INVOKE("post_stock_doc", { doc })),
 	voidStockDoc: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_stock_doc", { id, reason })),
-	listBdRequests: () => typedError<BdInfo[], string>(__TAURI_INVOKE("list_bd_requests")),
-	getBdRequest: (id: string) => typedError<{
-	request: BdInfo,
-	lines: BdLine[],
-} | null, string>(__TAURI_INVOKE("get_bd_request", { id })),
-	/**  Creates (with a new shared number) or updates a request. Returns its id. */
-	saveBdRequest: (request: BdInput) => typedError<string, string>(__TAURI_INVOKE("save_bd_request", { request })),
-	deleteBdRequest: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_bd_request", { id })),
-	/**
-	 *  Turns a request into a draft booking for `client_id` (or the request's
-	 *  own client) and marks it won. Returns the booking's id.
-	 */
-	convertBdRequest: (id: string, clientId: string | null) => typedError<string, string>(__TAURI_INVOKE("convert_bd_request", { id, clientId })),
 	listBookings: () => typedError<BookingInfo[], string>(__TAURI_INVOKE("list_bookings")),
 	/**
 	 *  A booking with its lines and DRs. Accounting may read it too (editing
@@ -348,7 +335,7 @@ export const commands = {
 	receivePo: (receipt: ReceiptInput) => typedError<string, string>(__TAURI_INVOKE("receive_po", { receipt })),
 	voidPoReceipt: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_po_receipt", { id, reason })),
 	dashboard: () => typedError<Dashboard, string>(__TAURI_INVOKE("dashboard")),
-	listTodos: (includeDone: boolean) => typedError<TodoInfo[], string>(__TAURI_INVOKE("list_todos", { includeDone })),
+	listTodos: (archived: boolean) => typedError<TodoInfo[], string>(__TAURI_INVOKE("list_todos", { archived })),
 	/**  Creates or edits a to-do. Returns its id. */
 	saveTodo: (todo: TodoInput) => typedError<string, string>(__TAURI_INVOKE("save_todo", { todo })),
 	setTodoDone: (id: string, done: boolean) => typedError<null, string>(__TAURI_INVOKE("set_todo_done", { id, done })),
@@ -356,7 +343,6 @@ export const commands = {
 	reportSales: (range: DateRange, group: SalesGroup) => typedError<SalesRow[], string>(__TAURI_INVOKE("report_sales", { range, group })),
 	reportMargin: (range: DateRange) => typedError<MarginRow[], string>(__TAURI_INVOKE("report_margin", { range })),
 	reportPoSpend: (range: DateRange) => typedError<SpendRow[], string>(__TAURI_INVOKE("report_po_spend", { range })),
-	reportBd: (range: DateRange) => typedError<BdRow[], string>(__TAURI_INVOKE("report_bd", { range })),
 	reportReceivables: () => typedError<ReceivablesReport, string>(__TAURI_INVOKE("report_receivables")),
 	/**  Every payment and check: collections, PDC calendar, bounced checks. */
 	reportPayments: () => typedError<PaymentInfo[], string>(__TAURI_INVOKE("report_payments")),
@@ -517,101 +503,6 @@ export type BankMoveKind =
 /**  A TT payment to a supplier made from here. */
 "tt_out";
 
-export type BdDetail = {
-	request: BdInfo,
-	lines: BdLine[],
-};
-
-export type BdInfo = {
-	id: string,
-	no: string | null,
-	no_confirmed: boolean,
-	client_id: string | null,
-	client_code: string | null,
-	client_name: string | null,
-	prospect_name: string | null,
-	contact: string | null,
-	date: string,
-	status: BdStatus,
-	follow_up: string | null,
-	vat: boolean,
-	notes: string | null,
-	lost_reason: string | null,
-	summary: string,
-	item_ids: string[],
-	line_count: number,
-	/**  Sum of the quoted lines, before VAT. */
-	quoted_net_c: number,
-	/**  The booking it was converted into. */
-	booking_id: string | null,
-	booking_no: string | null,
-	created_at: number,
-	created_by_name: string | null,
-};
-
-export type BdInput = {
-	/**  `None` creates a request. */
-	id: string | null,
-	/**  A client, or `None` with a prospect name. */
-	client_id: string | null,
-	prospect_name: string,
-	contact: string,
-	date: string,
-	/**
-	 *  Open, quoted or lost. Won is set by converting into a booking; a won
-	 *  request may keep it when edited.
-	 */
-	status: BdStatus,
-	follow_up: string | null,
-	vat: boolean,
-	notes: string,
-	lost_reason: string,
-	lines: BdLineInput[],
-};
-
-export type BdLine = {
-	id: string,
-	item_id: string | null,
-	item_code: string | null,
-	item_name: string | null,
-	unit: string | null,
-	description: string | null,
-	qty: number,
-	price_c: number | null,
-	amount_c: number | null,
-};
-
-export type BdLineInput = {
-	/**  The line being edited; `None` for a new line. */
-	id: string | null,
-	/**  A catalog item, or `None` with a description. */
-	item_id: string | null,
-	description: string,
-	qty: number,
-	/**  Quoted net unit price. */
-	price_c: number | null,
-};
-
-export type BdRow = {
-	/**  `YYYY-MM` of the request date. */
-	month: string,
-	total: number,
-	open: number,
-	quoted: number,
-	won: number,
-	lost: number,
-	/**  Won ÷ (won + lost), in basis points. */
-	win_rate_bp: number | null,
-	/**  Quoted prices of won requests, before VAT. */
-	won_net_c: number,
-	/**  Quoted prices of lost requests, before VAT. */
-	lost_net_c: number,
-};
-
-export type BdStatus = "open" | "quoted" | 
-/**  Converted into a booking. */
-"won" | "lost";
-
 /**  A status change. */
 export type BookingAction = 
 /**  draft → confirmed: DRs can be requested. */
@@ -639,8 +530,6 @@ export type BookingInfo = {
 	client_id: string | null,
 	client_code: string | null,
 	client_name: string | null,
-	bd_request_id: string | null,
-	bd_no: string | null,
 	date: string,
 	status: BookingStatus,
 	vat: boolean,
@@ -1310,6 +1199,11 @@ export type LocationInput = {
 export type LocationQty = {
 	location_id: string,
 	qty: number,
+	full_boxes: number,
+	open_boxes: number,
+	open_pcs: number,
+	/**  The earliest expiry of this location's stock. */
+	next_expiry: string | null,
 };
 
 export type MarginRow = {
@@ -1328,7 +1222,7 @@ export type MarginRow = {
 	margin_bp: number | null,
 };
 
-export type Module = "dashboard" | "bd" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
+export type Module = "dashboard" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
 
 export type NewUser = {
 	username: string,
@@ -1485,6 +1379,11 @@ export type Perms = {
 	 *  roles, join codes and restores.
 	 */
 	admin?: boolean,
+	/**
+	 *  Grants for modules this version doesn't know (a removed one, such as
+	 *  Business Development, or one added later) are skipped when read.
+	 *  `parse` skips them; a plain serde read of an unknown one fails.
+	 */
 	modules?: Partial<{ [key in Module]: Action[] }>,
 	fields?: Field[],
 };
@@ -1687,7 +1586,10 @@ export type PriceSource =
 "client_tier" | 
 /**  Landed cost at the item's default margin. */
 "item_default" | 
-/**  The price quoted on the BD request. */
+/**
+ *  The price quoted on a Business Development request (a removed
+ *  module; only older bookings have it).
+ */
 "quoted" | 
 /**  Typed in on the booking. */
 "custom";
@@ -2017,10 +1919,14 @@ export type StockMove = {
 	no: string | null,
 	kind: StockKind,
 	date: string,
+	/**  Where it moved; for a transfer, where it came from. */
 	location_id: string,
 	location_name: string | null,
+	/**  A transfer's destination. */
+	to_location_id: string | null,
+	to_location_name: string | null,
 	expiry: string | null,
-	/**  Positive in, negative out. */
+	/**  Positive in, negative out; a transfer's moved qty is positive. */
 	qty: number,
 	created_at: number,
 	/**  The purchase order of a PO receiving report. */

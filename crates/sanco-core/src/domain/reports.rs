@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::bd::{self, BdStatus};
 use crate::domain::purchasing::{self, PoStatus};
 use crate::domain::{items, pricing};
 use crate::error::Result;
@@ -342,63 +341,4 @@ fn blank_spend(id: &Option<String>, name: &Option<String>) -> SpendRow {
         paid_php_c: 0,
         tt_without_fx: 0,
     }
-}
-
-// BD conversion ---------------------------------------------------------------
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct BdRow {
-    /// `YYYY-MM` of the request date.
-    pub month: String,
-    pub total: i64,
-    pub open: i64,
-    pub quoted: i64,
-    pub won: i64,
-    pub lost: i64,
-    /// Won ÷ (won + lost), in basis points.
-    pub win_rate_bp: Option<i64>,
-    /// Quoted prices of won requests, before VAT.
-    pub won_net_c: i64,
-    /// Quoted prices of lost requests, before VAT.
-    pub lost_net_c: i64,
-}
-
-/// Requests by month of their date.
-pub fn bd_conversion(conn: &Connection, range: &DateRange) -> Result<Vec<BdRow>> {
-    let mut rows: BTreeMap<String, BdRow> = BTreeMap::new();
-    for r in bd::list(conn)? {
-        if !range.contains(&r.date) {
-            continue;
-        }
-        let month = r.date.get(..7).unwrap_or_default().to_string();
-        let row = rows.entry(month.clone()).or_insert_with(|| BdRow {
-            month,
-            ..BdRow::default()
-        });
-        row.total += 1;
-        match r.status {
-            BdStatus::Open => row.open += 1,
-            BdStatus::Quoted => row.quoted += 1,
-            BdStatus::Won => {
-                row.won += 1;
-                row.won_net_c += r.quoted_net_c;
-            }
-            BdStatus::Lost => {
-                row.lost += 1;
-                row.lost_net_c += r.quoted_net_c;
-            }
-        }
-    }
-    Ok(rows
-        .into_values()
-        .map(|mut r| {
-            r.win_rate_bp = win_rate(r.won, r.lost);
-            r
-        })
-        .collect())
-}
-
-pub fn win_rate(won: i64, lost: i64) -> Option<i64> {
-    (won + lost > 0).then(|| (won * 10_000 + (won + lost) / 2) / (won + lost))
 }

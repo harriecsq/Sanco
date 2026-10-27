@@ -11,7 +11,6 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::domain::auth::{Action, Module, Perms};
-use crate::domain::bd::{self, BdStatus};
 use crate::domain::bookings::{self, BookingStatus, DeliveryProgress};
 use crate::domain::delivery::{self, DrStatus, ReceiptKind};
 use crate::domain::payments::{self, CheckStatus, PaymentStatus};
@@ -141,32 +140,6 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
         kpis: Vec::new(),
         issues: Vec::new(),
     };
-
-    if sees(Module::Bd) {
-        let open: Vec<_> = bd::list(conn)?
-            .into_iter()
-            .filter(|r| matches!(r.status, BdStatus::Open | BdStatus::Quoted))
-            .collect();
-        let due = open
-            .iter()
-            .filter(|r| r.follow_up.as_deref().is_some_and(|f| f <= today))
-            .count() as i64;
-        let quoted = open.iter().filter(|r| r.status == BdStatus::Quoted).count() as i64;
-        out.kpi(
-            Module::Bd,
-            "bd_open",
-            "Open requests",
-            open.len() as i64,
-            false,
-            if due > 0 {
-                format!("{} due", plural(due, "follow-up", "follow-ups"))
-            } else {
-                format!("{quoted} quoted")
-            },
-            tone_if(due > 0),
-            if due > 0 { "/bd/?status=due" } else { "/bd/" },
-        );
-    }
 
     if sees(Module::Bookings) {
         let waiting = bookings::list(conn)?

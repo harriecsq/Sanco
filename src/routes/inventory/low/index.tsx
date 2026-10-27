@@ -5,6 +5,7 @@ import { useLiveLoad } from "~/lib/events";
 import { formatQty } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Empty, PageHeader } from "~/components/ui/ui";
 import { card, table, td, th } from "~/components/ui/styles";
 
@@ -37,6 +38,7 @@ export default component$(() => {
         (!f.supplier || s.supplier_id === f.supplier),
     );
   });
+  const pg = usePage(shown);
   const categories = [...new Set(low.value.map((s) => s.category).filter(Boolean))] as string[];
   const supplierName = (id: string | null) =>
     suppliers.value.find((s) => s.id === id)?.label ?? "—";
@@ -79,7 +81,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((s) => (
+              {pg.value.rows.map((s) => (
                 <tr key={s.item_id}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link
@@ -103,6 +105,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

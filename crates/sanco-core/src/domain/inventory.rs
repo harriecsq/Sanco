@@ -186,6 +186,11 @@ pub struct StockLot {
 pub struct LocationQty {
     pub location_id: String,
     pub qty: i64,
+    pub full_boxes: i64,
+    pub open_boxes: i64,
+    pub open_pcs: i64,
+    /// The earliest expiry of this location's stock.
+    pub next_expiry: Option<String>,
 }
 
 /// One item's stock across locations.
@@ -226,10 +231,14 @@ pub struct StockMove {
     pub no: Option<String>,
     pub kind: StockKind,
     pub date: String,
+    /// Where it moved; for a transfer, where it came from.
     pub location_id: String,
     pub location_name: Option<String>,
+    /// A transfer's destination.
+    pub to_location_id: Option<String>,
+    pub to_location_name: Option<String>,
     pub expiry: Option<String>,
-    /// Positive in, negative out.
+    /// Positive in, negative out; a transfer's moved qty is positive.
     pub qty: i64,
     pub created_at: i64,
     /// The purchase order of a PO receiving report.
@@ -690,15 +699,12 @@ pub fn location_in_use(conn: &Connection, id: &str) -> Result<bool> {
     )?)
 }
 
-/// Whether any stock document, BD request, booking, DR or PO (in any
+/// Whether any stock document, booking, DR or PO (in any
 /// status) has a line for the item.
 pub fn item_in_use(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM stock_doc_lines l
                         JOIN stock_docs d ON d.id = l.doc_id AND d._deleted = 0
-                        WHERE l._deleted = 0 AND l.item_id = ?1)
-             OR EXISTS (SELECT 1 FROM bd_lines l
-                        JOIN bd_requests d ON d.id = l.request_id AND d._deleted = 0
                         WHERE l._deleted = 0 AND l.item_id = ?1)
              OR EXISTS (SELECT 1 FROM booking_lines l
                         JOIN bookings d ON d.id = l.booking_id AND d._deleted = 0
@@ -933,21 +939,34 @@ pub fn item_stock(conn: &Connection, today: &str) -> Result<Vec<ItemStock>> {
     for row in rows {
         let mut s = row?;
         let lots = by_item.remove(&s.item_id).unwrap_or_default();
-        let mut per_loc: BTreeMap<String, i64> = BTreeMap::new();
+        // Lots come in location order (sort, name), so each location's
+        // lots are together.
+        let mut by_location: Vec<LocationQty> = Vec::new();
         for lot in &lots {
-            *per_loc.entry(lot.location_id.clone()).or_default() += lot.qty;
+            if by_location.last().is_none_or(|l| l.location_id != lot.location_id) {
+                by_location.push(LocationQty {
+                    location_id: lot.location_id.clone(),
+                    qty: 0,
+                    full_boxes: 0,
+                    open_boxes: 0,
+                    open_pcs: 0,
+                    next_expiry: None,
+                });
+            }
+            let l = by_location.last_mut().expect("pushed above");
+            l.qty += lot.qty;
+            l.full_boxes += lot.full_boxes;
+            l.open_boxes += lot.open_boxes;
+            l.open_pcs += lot.open_pcs;
+            if lot.qty > 0
+                && let Some(e) = &lot.expiry
+                && l.next_expiry.as_ref().is_none_or(|n| e < n)
+            {
+                l.next_expiry = Some(e.clone());
+            }
         }
-        // Keep the lots' location order (sort, name).
-        let mut order: Vec<String> = lots.iter().map(|l| l.location_id.clone()).collect();
-        order.dedup();
-        s.by_location = order
-            .into_iter()
-            .map(|id| LocationQty {
-                qty: per_loc[&id],
-                location_id: id,
-            })
-            .filter(|l| l.qty != 0)
-            .collect();
+        by_location.retain(|l| l.qty != 0);
+        s.by_location = by_location;
         s.on_hand = lots.iter().map(|l| l.qty).sum();
         s.full_boxes = lots.iter().map(|l| l.full_boxes).sum();
         s.open_boxes = lots.iter().map(|l| l.open_boxes).sum();
@@ -993,17 +1012,19 @@ pub fn expiring(conn: &Connection, today: &str, within_days: i64) -> Result<Vec<
 
 /// An item's posted movements, newest first. `doc_id` is a stock
 /// document, a DR for deliveries or a receiving report for PO receipts.
+/// A transfer line is one row, from its source to `to_location_id`.
 pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
     let mut stmt = conn.prepare_cached(
         "SELECT m.doc_id, COALESCE(n.no, rn.no), m.kind, m.date, m.location_id, l.name,
-                m.expiry, m.qty,
+                m.expiry, CASE WHEN m.kind = 'transfer' THEN -m.qty ELSE m.qty END,
                 COALESCE(d.created_at, r.delivered_at, r.created_at, p.created_at, 0) AS at,
-                p.po_id, m.box_id, bn.no, COALESCE(r.vat, 0)
+                p.po_id, m.box_id, bn.no, COALESCE(r.vat, 0), lt.id, lt.name
          FROM v_stock_moves m
          LEFT JOIN doc_numbers bn ON bn.ref_id = m.box_id AND bn.ref_tbl = 'boxes'
                                  AND bn._deleted = 0
          LEFT JOIN stock_docs d ON d.id = m.doc_id
                                AND m.kind NOT IN ('delivery', 'po_receipt')
+         LEFT JOIN stock_doc_lines sl ON sl.id = m.line_id AND d.id IS NOT NULL
          LEFT JOIN delivery_receipts r ON r.id = m.doc_id AND m.kind = 'delivery'
          LEFT JOIN po_receipts p ON p.id = m.doc_id AND m.kind = 'po_receipt'
          LEFT JOIN doc_numbers n ON n.ref_id = m.doc_id
@@ -1011,8 +1032,11 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
                                 AND n._deleted = 0
          LEFT JOIN v_receipt_no rn ON rn.dr_id = r.id
          LEFT JOIN locations l ON l.id = m.location_id
+         LEFT JOIN locations lt ON lt.id = d.to_location_id AND m.kind = 'transfer'
          WHERE m.item_id = ?1
-         ORDER BY m.date DESC, at DESC, m.doc_id DESC, m.qty",
+           AND NOT (m.kind = 'transfer' AND m.location_id = d.to_location_id)
+         ORDER BY m.date DESC, at DESC, m.doc_id DESC, COALESCE(sl.line_no, 0), m.line_id,
+                  m.qty",
     )?;
     let rows = stmt.query_map([item_id], |r| {
         Ok((
@@ -1024,6 +1048,8 @@ pub fn item_moves(conn: &Connection, item_id: &str) -> Result<Vec<StockMove>> {
                 date: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 location_id: r.get(4)?,
                 location_name: r.get(5)?,
+                to_location_id: r.get(13)?,
+                to_location_name: r.get(14)?,
                 expiry: r.get(6)?,
                 qty: r.get(7)?,
                 created_at: r.get(8)?,

@@ -16,6 +16,7 @@ import {
 } from "~/components/accounting/accounting";
 import { RECEIPT, receiptHref } from "~/components/sales/sales";
 import { Alert, Badge, Empty, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { btnGhost, card, hint, table, td, th } from "~/components/ui/styles";
 
 const AGING_KEYS: (keyof Aging)[] = ["not_due_c", "d1_30_c", "d31_60_c", "d61_90_c", "over_90_c"];
@@ -85,6 +86,13 @@ export default component$(() => {
     );
     return { clients, drs };
   });
+  // Three lists on one screen, so each pages on its own key.
+  const clientRows = useComputed$(() => filtered.value.clients);
+  const drRows = useComputed$(() => filtered.value.drs.filter((d) => d.kind === "dr"));
+  const invoiceRows = useComputed$(() => filtered.value.drs.filter((d) => d.kind === "invoice"));
+  const clientPg = usePage(clientRows, undefined, "clients_page");
+  const drPg = usePage(drRows, undefined, "dr_page");
+  const invoicePg = usePage(invoiceRows, undefined, "invoice_page");
 
   if (!can(session.user, "accounting")) return <NoAccess />;
   const r = report.value;
@@ -155,7 +163,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {filtered.value.clients.map((c) => {
+              {clientPg.value.rows.map((c) => {
                 const over = c.credit_limit_c != null && c.balance_c > c.credit_limit_c;
                 return (
                   <tr key={c.client_id}>
@@ -222,15 +230,21 @@ export default component$(() => {
             )}
           </table>
         )}
+        <Pager of={clientPg} />
       </section>
 
-      {(["dr", "invoice"] as const).map((kind) => {
+      {(
+        [
+          ["dr", drPg],
+          ["invoice", invoicePg],
+        ] as const
+      ).map(([kind, pg]) => {
         const k = RECEIPT[kind];
-        const rows = filtered.value.drs.filter((d) => d.kind === kind);
+        const rows = pg.value.rows;
         return (
           <section key={kind} class={[card, "mb-4 overflow-x-auto"]}>
             <h2 class="border-b border-line px-4 py-3 font-semibold">Unpaid {k.plural}</h2>
-            {rows.length === 0 ? (
+            {pg.value.total === 0 ? (
               <Empty>No unpaid {k.plural} match.</Empty>
             ) : (
               <table class={table}>
@@ -276,6 +290,7 @@ export default component$(() => {
                 </tbody>
               </table>
             )}
+            <Pager of={pg} />
           </section>
         );
       })}

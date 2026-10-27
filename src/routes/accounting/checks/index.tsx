@@ -16,6 +16,7 @@ import {
   stepsFor,
 } from "~/components/accounting/accounting";
 import { Alert, Empty, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { btnGhost, card, hint, table, td, th } from "~/components/ui/styles";
 
 const Tile = component$<{ label: string; value: number; note: string; tone?: "danger" | "warning" }>(
@@ -85,6 +86,7 @@ export default component$(() => {
       );
     });
   });
+  const pg = usePage(shown);
 
   if (!can(session.user, "accounting")) return <NoAccess />;
   const canEdit = can(session.user, "accounting", "edit");
@@ -146,7 +148,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((p) => {
+              {pg.value.rows.map((p) => {
                 const c = p.check!;
                 const due = c.status === "on_hand" && (c.check_date ?? "") <= today;
                 return (
@@ -205,6 +207,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <CheckStepModal open={stepOpen} payment={target} step={step} />
     </>

@@ -12,6 +12,7 @@ import { formatAgo } from "~/lib/format";
 import { isAdmin } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, Modal, PageHeader } from "~/components/ui/ui";
 import {
   btnDanger,
@@ -115,6 +116,7 @@ export default component$(() => {
       a.thisPc ? -1 : b.thisPc ? 1 : a.name.localeCompare(b.name),
     );
   });
+  const pg = usePage(rows);
 
   const s = session.status;
   return (
@@ -213,7 +215,7 @@ export default component$(() => {
                 </tr>
               </thead>
               <tbody>
-                {rows.value.map((r) => (
+                {pg.value.rows.map((r) => (
                   <tr key={r.key}>
                     <td class={td}>
                       <p class="font-medium">{r.name}</p>
@@ -288,6 +290,7 @@ export default component$(() => {
               </tbody>
             </table>
           )}
+          <Pager of={pg} />
         </section>
         <p class={hint}>
           A PC that is switched off shows as offline; it catches up when it's

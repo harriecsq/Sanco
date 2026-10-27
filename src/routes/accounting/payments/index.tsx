@@ -28,6 +28,7 @@ import {
 } from "~/components/accounting/accounting";
 import { receiptHref, receiptName } from "~/components/sales/sales";
 import { Alert, Badge, Empty, Field, InfoList, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { btnDanger, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 /** Payment no. with its "given offline" hint. */
@@ -87,6 +88,7 @@ const PaymentList = component$(() => {
                 : p.counts)),
     );
   });
+  const pg = usePage(shown);
 
   const total = shown.value.filter((p) => p.counts).reduce((s, p) => s + p.amount_c, 0);
 
@@ -155,7 +157,7 @@ const PaymentList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((p) => (
+              {pg.value.rows.map((p) => (
                 <tr key={p.id} class={p.counts ? "" : "text-ink-muted"}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.id}`}>
@@ -183,6 +185,7 @@ const PaymentList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <PaymentFormModal
         open={formOpen}

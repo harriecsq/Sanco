@@ -5,6 +5,7 @@ import { useLiveLoad } from "~/lib/events";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
+import { Pager, usePage } from "~/components/ui/pager";
 import {
   Alert,
   Badge,
@@ -55,6 +56,7 @@ export default component$(() => {
       }
     }),
   );
+  const pg = usePage(locations);
 
   const save = $(async () => {
     busy.value = true;
@@ -116,7 +118,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {locations.value.map((l) => (
+              {pg.value.rows.map((l) => (
                 <tr key={l.id} class={l.active ? "" : "text-ink-muted"}>
                   <td class={[td, "font-medium"]}>{l.name}</td>
                   <td class={td}>{l.notes ?? "—"}</td>
@@ -162,6 +164,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
 
       <Modal open={open} title={form.id ? "Edit location" : "New location"}>

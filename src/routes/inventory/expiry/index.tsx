@@ -6,6 +6,7 @@ import { formatDay, formatQty } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { ExpiryBadge, NEAR_EXPIRY_DAYS } from "~/components/inventory/expiry-badge";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Empty, PageHeader } from "~/components/ui/ui";
 import { card, table, td, th } from "~/components/ui/styles";
 
@@ -45,6 +46,7 @@ export default component$(() => {
         (!q || [l.item_code, l.item_name, l.category].some((v) => v?.toLowerCase().includes(q))),
     );
   });
+  const pg = usePage(shown);
 
   return (
     <>
@@ -91,7 +93,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((l) => (
+              {pg.value.rows.map((l) => (
                 <tr key={`${l.item_id}/${l.location_id}/${l.expiry}`}>
                   <td class={[td, "whitespace-nowrap"]}>
                     {formatDay(l.expiry)} <ExpiryBadge days={l.days_left} within={MAX_WINDOW} />
@@ -112,6 +114,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

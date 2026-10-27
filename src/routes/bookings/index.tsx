@@ -17,6 +17,7 @@ import {
   type Choice,
   type PriceQuote,
   type PriceSource,
+  type ReceiptKind,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import {
@@ -50,6 +51,7 @@ import {
   Totals,
 } from "~/components/sales/sales";
 import { CreditWarning } from "~/components/accounting/accounting";
+import { Pager, usePage } from "~/components/ui/pager";
 import {
   Alert,
   Badge,
@@ -473,6 +475,7 @@ const BookingList = component$(() => {
             : b.status === f.status)),
     );
   });
+  const pg = usePage(shown);
 
   return (
     <>
@@ -530,7 +533,7 @@ const BookingList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((b) => (
+              {pg.value.rows.map((b) => (
                 <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
@@ -557,6 +560,7 @@ const BookingList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <BookingFormModal open={open} form={form} saved$={$((id: string) => nav(`/bookings/?id=${id}`))} />
     </>
@@ -728,14 +732,6 @@ const BookingView = component$<{ id: string }>(({ id }) => {
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <StatusBadge s={BOOKING_STATUS[b.status]} />
         {delivering && <span class="text-sm">{PROGRESS_LABEL[b.progress]}</span>}
-        {b.bd_request_id && (
-          <span class="text-sm">
-            From request{" "}
-            <Link class="text-brand-700 hover:underline" href={`/bd/?id=${b.bd_request_id}`}>
-              {b.bd_no ?? "—"}
-            </Link>
-          </span>
-        )}
         {b.client_id && (
           <Link class="text-sm text-brand-700 hover:underline" href={`/clients/?id=${b.client_id}`}>
             Client details
@@ -859,7 +855,7 @@ const BookingView = component$<{ id: string }>(({ id }) => {
       <DrRequestModal
         open={drOpen}
         bookingId={id}
-        saved$={$((dr: string) => nav(`/accounting/?id=${dr}`))}
+        saved$={$((dr: string, kind: ReceiptKind) => nav(receiptHref(kind, dr)))}
       />
       <Confirm
         open={deleteOpen}

@@ -5,10 +5,11 @@ import {
   type ItemStock,
   type LocationInfo,
   type StockKind,
+  type StockLineInput,
   type StockLot,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDay, formatQty, parseCount, parseSigned, todayManila } from "~/lib/format";
+import { formatDay, formatQty, oldestBox, parseCount, parseSigned, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Field, Modal } from "~/components/ui/ui";
 import { btnGhost, btnPrimary, btnSecondary, hint, input, inputBase } from "~/components/ui/styles";
@@ -26,6 +27,8 @@ const NO_EXPIRY = "-";
 const NEW_EXPIRY = "+new";
 /** Box picker value for stock outside boxes. */
 const LOOSE = "-";
+/** Transfers of boxed items: the ticked boxes (`picks`) move. */
+const BOXES = "+boxes";
 
 const REASONS = ["Stock count", "Damaged", "Expired", "Sample", "Found", "Returned"];
 
@@ -38,8 +41,11 @@ export interface DocLine {
   expiry: string;
   /** Pieces. Boxed receipts: the loose pieces on top of the boxes. */
   qty: string;
-  /** Boxed items, not receipts: a box id or LOOSE; blank = the first box. */
+  /** Boxed items, not receipts: a box id or LOOSE; blank = the first box.
+   * Transfers: LOOSE, else the ticked boxes. */
   box_id: string;
+  /** Boxed transfers: the ticked boxes and the pieces moved from each. */
+  picks: { box_id: string; qty: string }[];
   /** Boxed receipts: full boxes and their size (blank = the item's). */
   boxes: string;
   per_box: string;
@@ -65,6 +71,7 @@ const blankLine = (item_id = ""): DocLine => ({
   expiry: "",
   qty: "",
   box_id: "",
+  picks: [],
   boxes: "",
   per_box: "",
 });
@@ -109,6 +116,33 @@ const boxesAt = (d: Data, form: DocForm, item: string) => {
   return d.boxes.filter((b) => b.item_id === item && b.location_id === from);
 };
 
+/**
+ * Boxes the other lines of the same item take, so a box goes on one line
+ * only: their ticked boxes and chosen box, and the box an earlier line
+ * falls back to.
+ */
+const takenElsewhere = (d: Data, form: DocForm, line: DocLine): Set<string> => {
+  const out = new Set<string>();
+  let earlier = true;
+  for (const l of form.lines) {
+    if (l.key === line.key) {
+      earlier = false;
+      continue;
+    }
+    if (l.item_id !== line.item_id) continue;
+    for (const p of l.picks) out.add(p.box_id);
+    const box = earlier ? boxOf(d, form, l) : l.box_id;
+    if (box && box !== LOOSE && box !== BOXES) out.add(box);
+  }
+  return out;
+};
+
+/** Boxes a line can choose: those at its location no other line takes. */
+const boxesFor = (d: Data, form: DocForm, line: DocLine) => {
+  const taken = takenElsewhere(d, form, line);
+  return boxesAt(d, form, line.item_id).filter((b) => !taken.has(b.box_id));
+};
+
 /** Lots a line can take from: in stock (any non-zero lot for adjustments).
  * For boxed items only the pieces outside boxes count. */
 const lotsAt = (d: Data, form: DocForm, item: string) => {
@@ -140,11 +174,13 @@ const lotOf = (d: Data, form: DocForm, line: DocLine) => {
 };
 
 /** The box a non-receipt line of a boxed item points at: its pick, else the
- * first box, else stock outside boxes (LOOSE). Blank when there's neither. */
-const boxOf = (d: Data, form: DocForm, line: DocLine) => {
-  const boxes = boxesAt(d, form, line.item_id);
+ * first free box, else stock outside boxes (LOOSE). Blank when there's
+ * neither. Transfers take the ticked boxes (BOXES) instead of one. */
+const boxOf = (d: Data, form: DocForm, line: DocLine): string => {
+  const boxes = boxesFor(d, form, line);
   const loose = lotsAt(d, form, line.item_id).length > 0;
   if (line.box_id === LOOSE && loose) return LOOSE;
+  if (form.kind === "transfer") return boxes.length ? BOXES : loose ? LOOSE : "";
   if (line.box_id && boxes.some((b) => b.box_id === line.box_id)) return line.box_id;
   if (boxes.length) return boxes[0].box_id;
   return loose ? LOOSE : "";
@@ -162,6 +198,22 @@ const boxLabel = (b: BoxStock) =>
   ]
     .filter(Boolean)
     .join(" · ");
+
+/** Pieces ticked on a boxed transfer line, or 0 while one isn't a count. */
+const pickedTotal = (line: DocLine) => {
+  try {
+    return line.picks.reduce((n, p) => n + (parseCount(p.qty) ?? 0), 0);
+  } catch {
+    return 0;
+  }
+};
+
+/** Tick (with all that's left in it) or untick a box of a transfer line. */
+const tickBox = (line: DocLine, box: BoxStock, on: boolean) => {
+  const i = line.picks.findIndex((p) => p.box_id === box.box_id);
+  if (on && i < 0) line.picks.push({ box_id: box.box_id, qty: String(box.qty) });
+  if (!on && i >= 0) line.picks.splice(i, 1);
+};
 
 /** A boxed receipt line: total pieces and the boxes they make. Null while
  * the input isn't valid or there's no box size. */
@@ -227,8 +279,8 @@ export const StockDocModal = component$<{
       const d = data.value;
       const kind = form.kind;
       const lines = form.lines
-        .filter((l) => l.item_id || l.qty.trim() || l.boxes.trim())
-        .map((l) => {
+        .filter((l) => l.item_id || l.qty.trim() || l.boxes.trim() || l.picks.length)
+        .flatMap((l): StockLineInput[] => {
           const item = d.items.find((i) => i.item_id === l.item_id);
           if (!item) throw new Error("choose an item on every line");
           if (kind === "receipt" && item.serial_code) {
@@ -241,7 +293,22 @@ export const StockDocModal = component$<{
             if (!per) throw new Error(`enter the pcs per box for ${item.code}`);
             const qty = boxes * per + loose;
             if (!qty) throw new Error(`enter the boxes for ${item.code}`);
-            return { item_id: l.item_id, expiry: l.expiry || null, qty, box_id: null, pcs_per_box: per };
+            return [{ item_id: l.item_id, expiry: l.expiry || null, qty, box_id: null, pcs_per_box: per }];
+          }
+          if (kind === "transfer" && item.serial_code && boxOf(d, form, l) === BOXES) {
+            // One document line per ticked box; the backend takes the lot from it.
+            const offered = boxesFor(d, form, l);
+            const moved = l.picks.map((p) => {
+              const b = offered.find((x) => x.box_id === p.box_id);
+              if (!b) throw new Error(`a ticked box of ${item.code} is no longer here`);
+              const what = b.serial ?? `a box of ${item.code}`;
+              const qty = parseCount(p.qty, `pieces from ${what}`);
+              if (!qty) throw new Error(`enter the pieces to move from ${what}, or untick it`);
+              if (qty > b.qty) throw new Error(`${what} holds only ${b.qty}`);
+              return { item_id: l.item_id, expiry: b.expiry, qty, box_id: b.box_id, pcs_per_box: null };
+            });
+            if (!moved.length) throw new Error(`tick the boxes of ${item.code} to move`);
+            return moved;
           }
           const qty =
             kind === "adjustment"
@@ -254,7 +321,7 @@ export const StockDocModal = component$<{
             if (box !== LOOSE) {
               // The backend takes the lot from the box.
               const expiry = d.boxes.find((b) => b.box_id === box)?.expiry ?? null;
-              return { item_id: l.item_id, expiry, qty, box_id: box, pcs_per_box: null };
+              return [{ item_id: l.item_id, expiry, qty, box_id: box, pcs_per_box: null }];
             }
           }
           let expiry: string | null;
@@ -263,7 +330,7 @@ export const StockDocModal = component$<{
             const lot = lotOf(d, form, l);
             expiry = lot === NEW_EXPIRY ? l.expiry || null : lot === NO_EXPIRY ? null : lot;
           }
-          return { item_id: l.item_id, expiry, qty, box_id: null, pcs_per_box: null };
+          return [{ item_id: l.item_id, expiry, qty, box_id: null, pcs_per_box: null }];
         });
       const id = unwrap(
         await commands.postStockDoc({
@@ -321,6 +388,7 @@ export const StockDocModal = component$<{
                 form.lines.forEach((l) => {
                   l.lot = "";
                   l.box_id = "";
+                  l.picks = [];
                 });
               }}
             >
@@ -385,7 +453,7 @@ export const StockDocModal = component$<{
               {kind === "adjustment"
                 ? "Enter the change: +5 adds, −5 removes."
                 : kind === "transfer"
-                  ? "Choose the box or lot (expiry date) to move."
+                  ? "Tick the boxes to move, or choose the lot (expiry date)."
                   : boxedReceipt
                     ? "Boxed items: enter full boxes, their size and any loose pieces."
                     : "Quantities are in each item's base unit."}
@@ -397,10 +465,11 @@ export const StockDocModal = component$<{
               const isBoxed = !!item?.serial_code;
               const boxLine = isBoxed && kind !== "receipt";
               const available = lotsAt(d, form, line.item_id);
-              const boxes = boxLine ? boxesAt(d, form, line.item_id) : [];
+              const boxes = boxLine ? boxesFor(d, form, line) : [];
               const box = boxLine ? boxOf(d, form, line) : "";
               const boxRow = boxes.find((b) => b.box_id === box);
-              const left = boxRow?.qty ?? 0;
+              const ticking = box === BOXES;
+              const oldest = ticking ? oldestBox(boxes) : undefined;
               const lot = lotOf(d, form, line);
               const onHand = boxRow
                 ? boxRow.qty
@@ -411,7 +480,11 @@ export const StockDocModal = component$<{
               let after: number | null = null;
               try {
                 const q =
-                  kind === "adjustment" ? parseSigned(line.qty) : kind === "transfer" ? parseCount(line.qty) : null;
+                  kind === "adjustment"
+                    ? parseSigned(line.qty)
+                    : kind === "transfer" && !ticking
+                      ? parseCount(line.qty)
+                      : null;
                 if (q != null) after = kind === "adjustment" ? onHand + q : onHand - q;
               } catch {
                 after = null;
@@ -467,6 +540,7 @@ export const StockDocModal = component$<{
                       line.lot = "";
                       line.expiry = "";
                       line.box_id = "";
+                      line.picks = [];
                       const size = data.value.items.find((i) => i.item_id === el.value)?.pcs_per_box;
                       line.per_box = size ? String(size) : "";
                     }}
@@ -492,6 +566,32 @@ export const StockDocModal = component$<{
                       ) : (
                         <span class={[hint, "block pt-2"]}>{item ? "No expiry" : ""}</span>
                       )
+                    ) : boxLine && kind === "transfer" ? (
+                      available.length > 0 ? (
+                        <>
+                          <select
+                            class={input}
+                            aria-label="Move"
+                            onChange$={(_, el) => (line.box_id = el.value === LOOSE ? LOOSE : "")}
+                          >
+                            {boxes.length > 0 && (
+                              <option value={BOXES} selected={ticking}>
+                                {`Boxes (${boxes.length} here)`}
+                              </option>
+                            )}
+                            <option value={LOOSE} selected={box === LOOSE}>
+                              Not in a box
+                            </option>
+                          </select>
+                          {box === LOOSE && lotPicker}
+                        </>
+                      ) : (
+                        <span class={[hint, "block pt-2"]}>
+                          {boxes.length
+                            ? `${boxes.length} ${boxes.length === 1 ? "box" : "boxes"} here`
+                            : "No boxes here"}
+                        </span>
+                      )
                     ) : boxLine ? (
                       <>
                         <select class={input} aria-label="Box" onChange$={(_, el) => (line.box_id = el.value)}>
@@ -508,22 +608,17 @@ export const StockDocModal = component$<{
                           {!box && <option value="">No boxes here</option>}
                         </select>
                         {box === LOOSE && lotPicker}
-                        {kind === "transfer" && left > 0 && (
-                          <button
-                            type="button"
-                            class="text-xs text-brand-700 hover:underline"
-                            onClick$={() => (line.qty = String(left))}
-                          >
-                            Whole box ({formatQty(left)})
-                          </button>
-                        )}
                       </>
                     ) : (
                       lotPicker
                     )}
                   </div>
                   <div class="space-y-1">
-                    {kind === "receipt" && isBoxed ? (
+                    {ticking ? (
+                      <span class="block pt-2 text-right text-sm">
+                        {formatQty(pickedTotal(line), item?.unit)}
+                      </span>
+                    ) : kind === "receipt" && isBoxed ? (
                       <input
                         class={[inputBase, "w-full text-right"]}
                         aria-label="Boxes"
@@ -557,6 +652,80 @@ export const StockDocModal = component$<{
                   >
                     ✕
                   </button>
+                  {ticking && (
+                    <div class="col-span-full rounded-md border border-line bg-surface-muted px-3 py-2 text-sm">
+                      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <label class="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            class="accent-brand-500"
+                            aria-label="All boxes of this item"
+                            checked={boxes.every((b) => line.picks.some((p) => p.box_id === b.box_id))}
+                            onChange$={(_, el) => boxes.forEach((b) => tickBox(line, b, el.checked))}
+                          />
+                          <span class="font-medium">All boxes</span>
+                        </label>
+                        <span class={hint}>
+                          {line.picks.length} of {boxes.length} {boxes.length === 1 ? "box" : "boxes"} ticked
+                        </span>
+                      </div>
+                      <div class="grid gap-2 sm:grid-cols-2">
+                        {boxes.map((b) => {
+                          const pick = line.picks.find((p) => p.box_id === b.box_id);
+                          let over = false;
+                          try {
+                            over = (parseCount(pick?.qty ?? "") ?? 0) > b.qty;
+                          } catch {
+                            over = false;
+                          }
+                          return (
+                            <div
+                              key={b.box_id}
+                              class={[
+                                "flex items-center justify-between gap-2 rounded-md border bg-white px-2 py-1",
+                                pick ? "border-brand-500" : "border-line",
+                              ]}
+                            >
+                              <label class="flex min-w-0 items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  class="accent-brand-500"
+                                  checked={!!pick}
+                                  onChange$={(_, el) => tickBox(line, b, el.checked)}
+                                />
+                                <span class="min-w-0">
+                                  <span class="font-mono">{b.serial ?? "no serial"}</span>
+                                  {b.box_id === oldest && boxes.length > 1 && (
+                                    <span class="ml-1.5 rounded bg-brand-50 px-1 text-xs text-brand-700">
+                                      oldest
+                                    </span>
+                                  )}
+                                  <span class={[hint, "block"]}>
+                                    {b.qty === b.pcs ? `full (${formatQty(b.pcs)})` : `${b.qty} of ${b.pcs} left`}
+                                    {b.expiry ? ` · exp. ${formatDay(b.expiry)}` : ""}
+                                  </span>
+                                </span>
+                              </label>
+                              <span class="text-right">
+                                <input
+                                  class={[inputBase, "w-16 text-right"]}
+                                  aria-label={`Pieces from ${b.serial ?? "this box"}`}
+                                  inputMode="numeric"
+                                  disabled={!pick}
+                                  value={pick?.qty ?? ""}
+                                  onInput$={(_, el) => {
+                                    const p = line.picks.find((x) => x.box_id === b.box_id);
+                                    if (p) p.qty = el.value;
+                                  }}
+                                />
+                                {over && <span class="block text-xs text-danger">only {b.qty}</span>}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {kind === "receipt" && isBoxed && item && (
                     <div class="col-span-3 flex flex-wrap items-center justify-end gap-2">
                       <label class="flex items-center gap-1.5">

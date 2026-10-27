@@ -179,14 +179,13 @@ pub fn update(tx: &mut WriteTx, input: &ClientInput, margins: bool) -> Result<()
 }
 
 /// Deletes a client and its rates. Its code is not given out again.
-/// Clients with BD requests, bookings or DRs can't be deleted.
+/// Clients with bookings, DRs or payments can't be deleted.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     if tx.get(CLIENTS, id)?.is_none() {
         return Err(Error::Invalid("that client no longer exists".into()));
     }
     let used: bool = tx.conn().query_row(
-        "SELECT EXISTS (SELECT 1 FROM bd_requests WHERE client_id = ?1 AND _deleted = 0)
-             OR EXISTS (SELECT 1 FROM bookings WHERE client_id = ?1 AND _deleted = 0)
+        "SELECT EXISTS (SELECT 1 FROM bookings WHERE client_id = ?1 AND _deleted = 0)
              OR EXISTS (SELECT 1 FROM delivery_receipts WHERE client_id = ?1 AND _deleted = 0)
              OR EXISTS (SELECT 1 FROM payments WHERE client_id = ?1 AND _deleted = 0)",
         [id],
@@ -194,7 +193,7 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
     )?;
     if used {
         return Err(Error::Invalid(
-            "this client has requests, bookings, DRs, invoices or payments; mark it inactive instead".into(),
+            "this client has bookings, DRs, invoices or payments; mark it inactive instead".into(),
         ));
     }
     let rates: Vec<String> = {

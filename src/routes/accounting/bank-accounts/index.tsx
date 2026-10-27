@@ -11,6 +11,7 @@ import { CHECK_STATUS } from "~/components/accounting/accounting";
 import { bankAccountLabel } from "~/components/accounting/bank-account-select";
 import { CURRENCIES } from "~/components/items/cost-sheet";
 import { Alert, Badge, Confirm, Empty, Field, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
+import { isPageKey, Pager, usePage } from "~/components/ui/pager";
 import {
   btnGhost,
   btnPrimary,
@@ -139,12 +140,15 @@ export default component$(() => {
         (!f.status || m.check_status === f.status),
     );
   });
+  const pg = usePage(shown);
   const selected = useComputed$(() => loc.url.searchParams.get("account") ?? "");
 
   const pick = $((id: string) => {
     const next = new URLSearchParams(loc.url.search);
     if (id && next.get("account") !== id) next.set("account", id);
     else next.delete("account");
+    // Another account's moves start at their first page.
+    for (const k of [...next.keys()]) if (isPageKey(k)) next.delete(k);
     const qs = next.toString();
     nav(`${loc.url.pathname}${qs ? `?${qs}` : ""}`, { replaceState: true, scroll: false });
   });
@@ -336,7 +340,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {list.map((m) => {
+              {pg.value.rows.map((m) => {
                 const out = m.kind === "tt_out";
                 const s = m.check_status ? CHECK_STATUS[m.check_status] : null;
                 return (
@@ -394,6 +398,7 @@ export default component$(() => {
             </tfoot>
           </table>
         )}
+        <Pager of={pg} />
       </section>
 
       <Modal open={formOpen} title={form.id ? "Edit bank account" : "Add bank account"}>

@@ -133,7 +133,7 @@ pub async fn price_quote(
 ) -> Result<PriceQuote, String> {
     let (db, user) = require_view_any(
         &state,
-        &[Module::Items, Module::Clients, Module::Bookings, Module::Bd],
+        &[Module::Items, Module::Clients, Module::Bookings],
     )
     .await?;
     let mut q = blocking(move || db.read(|c| pricing::quote(c, &client_id, &item_id))).await?;

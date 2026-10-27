@@ -1,5 +1,5 @@
-import { $, component$, useSignal, useStore, type Signal } from "@builder.io/qwik";
-import { Link, type DocumentHead } from "@builder.io/qwik-city";
+import { $, component$, useComputed$, useSignal, useStore, type Signal } from "@builder.io/qwik";
+import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
   type Dashboard,
@@ -7,12 +7,13 @@ import {
   type PeerInfo,
   type TodoInfo,
 } from "~/lib/bindings";
-import { useLiveLoad } from "~/lib/events";
+import { useLiveLoad, useLiveLoadUrl } from "~/lib/events";
 import { formatDay, formatPeso, todayManila } from "~/lib/format";
-import { can } from "~/lib/perms";
+import { can, isAdmin } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
-import { Alert, Empty, Field, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
+import { Alert, Confirm, Empty, Field, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
 import {
   btnDanger,
   btnGhost,
@@ -24,7 +25,6 @@ import {
 
 // Tables whose changes can move a KPI or an issue.
 const DASHBOARD_TABLES = [
-  "bd_requests",
   "bookings",
   "booking_lines",
   "delivery_receipts",
@@ -54,7 +54,6 @@ const REF_HREF: Record<string, string> = {
   delivery_receipts: "/accounting/",
   payments: "/accounting/payments/",
   bookings: "/bookings/",
-  bd_requests: "/bd/",
   purchase_orders: "/orders/",
   po_receipts: "/orders/receiving/",
   stock_docs: "/inventory/movements/",
@@ -72,16 +71,25 @@ interface TodoForm {
 
 const blankTodo = (): TodoForm => ({ id: "", title: "", notes: "", due: "", assignee: "" });
 
+/** To-dos per page. */
+const TODO_PAGE = 10;
+/** Query-string key of the to-do list: `archived` shows the ticked-off ones. */
+const TODO_VIEW = "todos";
+
 export default component$(() => {
   const session = useSession();
+  const loc = useLocation();
   const dash = useSignal<Dashboard | null>(null);
   const blocked = useSignal<PeerInfo[]>([]);
   const todos = useSignal<TodoInfo[]>([]);
   const users = useSignal<{ id: string; name: string }[]>([]);
-  const showDone = useSignal(false);
   const error = useSignal("");
   const todoOpen = useSignal(false);
   const form = useStore<TodoForm>(blankTodo());
+  const removing = useSignal<TodoInfo | null>(null);
+  const removeOpen = useSignal(false);
+  const archived = useComputed$(() => loc.url.searchParams.get(TODO_VIEW) === "archived");
+  const todoPage = usePage(todos, TODO_PAGE, "todo_page");
 
   const loadDash = $(async () => {
     if (!can(session.user, "dashboard")) return;
@@ -97,13 +105,13 @@ export default component$(() => {
 
   const loadTodos = $(async () => {
     try {
-      todos.value = unwrap(await commands.listTodos(showDone.value));
+      todos.value = unwrap(await commands.listTodos(archived.value));
       if (users.value.length === 0) users.value = unwrap(await commands.userOptions());
     } catch (e) {
       error.value = errorText(e);
     }
   });
-  useLiveLoad(["todos", "users"], loadTodos);
+  useLiveLoadUrl(["todos", "users"], loadTodos);
 
   const editTodo = $((t: TodoInfo | null) => {
     Object.assign(
@@ -179,39 +187,53 @@ export default component$(() => {
           </div>
         </section>
 
-        <section class={[card, "self-start"]} aria-label="To-dos">
-          <div class="flex items-center justify-between border-b border-line px-4 py-2.5">
+        <section
+          class={[card, "flex flex-col lg:min-h-[calc(100vh-8.5rem)]"]}
+          aria-label="To-dos"
+        >
+          <div class="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
             <h2 class="font-semibold">To-dos</h2>
-            <div class="flex items-center gap-1">
-              <label class="flex items-center gap-1 text-xs text-ink-muted">
-                <input
-                  type="checkbox"
-                  checked={showDone.value}
-                  onChange$={(_, el) => {
-                    showDone.value = el.checked;
-                    loadTodos();
-                  }}
-                />
-                Done
-              </label>
-              <button type="button" class={btnGhost} onClick$={() => editTodo(null)}>
-                + Add
-              </button>
-            </div>
+            <button type="button" class={btnGhost} onClick$={() => editTodo(null)}>
+              + Add
+            </button>
           </div>
+          <nav class="flex gap-1 border-b border-line px-3 text-sm" aria-label="To-do lists">
+            {(
+              [
+                ["Open", false],
+                ["Archived", true],
+              ] as const
+            ).map(([label, isArchive]) => (
+              <Link
+                key={label}
+                href={isArchive ? `/?${TODO_VIEW}=archived` : "/"}
+                aria-current={archived.value === isArchive ? "page" : undefined}
+                class={[
+                  "-mb-px border-b-2 px-2 py-1.5",
+                  archived.value === isArchive
+                    ? "border-brand-500 font-semibold text-brand-700"
+                    : "border-transparent text-ink-muted hover:text-ink",
+                ]}
+              >
+                {label}
+              </Link>
+            ))}
+          </nav>
           {todos.value.length === 0 ? (
-            <Empty>Nothing to do.</Empty>
+            <Empty>{archived.value ? "No archived to-dos." : "Nothing to do."}</Empty>
           ) : (
-            <ul class="divide-y divide-line">
-              {todos.value.map((t) => {
+            <ul class="divide-y divide-line border-b border-line">
+              {todoPage.value.rows.map((t) => {
                 const late = !t.done && !!t.due && t.due < today;
                 const refBase = t.ref_tbl ? REF_HREF[t.ref_tbl] : undefined;
+                const mayDelete = t.created_by === me || t.assignee_id === me || isAdmin(session.user);
                 return (
-                  <li key={t.id} class="flex items-start gap-2.5 px-4 py-2.5 text-sm">
+                  <li key={t.id} class="group flex items-start gap-2.5 px-4 py-2.5 text-sm">
                     <input
                       type="checkbox"
                       class="mt-0.5"
-                      aria-label={`Done: ${t.title}`}
+                      aria-label={t.done ? `Move back to open: ${t.title}` : `Done: ${t.title}`}
+                      title={t.done ? "Untick to move it back to open" : "Done"}
                       checked={t.done}
                       onChange$={async (_, el) => {
                         const res = await commands.setTodoDone(t.id, el.checked);
@@ -250,17 +272,54 @@ export default component$(() => {
                         )}
                       </p>
                     </div>
+                    {mayDelete && (
+                      <button
+                        type="button"
+                        class="rounded p-1 text-ink-muted opacity-60 hover:bg-red-50 hover:text-danger hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
+                        aria-label={`Delete: ${t.title}`}
+                        title="Delete"
+                        onClick$={() => {
+                          removing.value = t;
+                          removeOpen.value = true;
+                        }}
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="size-4"
+                          aria-hidden="true"
+                        >
+                          <path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+                        </svg>
+                      </button>
+                    )}
                   </li>
                 );
               })}
             </ul>
           )}
+          <div class="mt-auto">
+            <Pager of={todoPage} />
+          </div>
         </section>
       </div>
 
       <Modal open={todoOpen} title={form.id ? "Edit to-do" : "New to-do"}>
         <TodoEditor form={form} open={todoOpen} users={users} me={me ?? ""} />
       </Modal>
+      <Confirm
+        open={removeOpen}
+        title="Delete this to-do?"
+        onConfirm$={async () => {
+          if (removing.value) unwrap(await commands.deleteTodo(removing.value.id));
+        }}
+      >
+        <strong>{removing.value?.title}</strong> is removed for everyone. This can't be undone.
+      </Confirm>
     </>
   );
 });

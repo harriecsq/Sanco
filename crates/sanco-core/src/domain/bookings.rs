@@ -69,7 +69,8 @@ pub enum PriceSource {
     ClientTier,
     /// Landed cost at the item's default margin.
     ItemDefault,
-    /// The price quoted on the BD request.
+    /// The price quoted on a Business Development request (a removed
+    /// module; only older bookings have it).
     Quoted,
     /// Typed in on the booking.
     Custom,
@@ -153,8 +154,6 @@ pub struct BookingInfo {
     pub client_id: Option<String>,
     pub client_code: Option<String>,
     pub client_name: Option<String>,
-    pub bd_request_id: Option<String>,
-    pub bd_no: Option<String>,
     pub date: String,
     pub status: BookingStatus,
     pub vat: bool,
@@ -271,13 +270,11 @@ fn live_client(conn: &Connection, id: &str) -> Result<()> {
 
 /// Checks a booking and resolves its prices, without writing.
 /// `existing`: price and rule of the booking's current lines, by id, so an
-/// unchanged price keeps its rule. `quoted[i]`: line i's price is the BD
-/// quote.
+/// unchanged price keeps its rule.
 fn prepare(
     conn: &Connection,
     input: &BookingInput,
     existing: &HashMap<String, (i64, PriceSource)>,
-    quoted: &[bool],
 ) -> Result<(String, Vec<PreparedLine>)> {
     live_client(conn, &input.client_id)?;
     let date = require_date(&input.date, "booking date")?;
@@ -290,7 +287,7 @@ fn prepare(
         )));
     }
     let mut lines = Vec::with_capacity(input.lines.len());
-    for (i, line) in input.lines.iter().enumerate() {
+    for line in &input.lines {
         let code: String = conn
             .query_row(
                 "SELECT COALESCE(code, '') FROM items WHERE id = ?1 AND _deleted = 0",
@@ -310,7 +307,6 @@ fn prepare(
                     "the price of {code} can't be negative"
                 )));
             }
-            Some(p) if quoted.get(i) == Some(&true) => (p, PriceSource::Quoted),
             Some(p) => match kept {
                 Some((old, rule)) if *old == p => (p, *rule),
                 _ if quote.net_c == Some(p) => (p, PriceSource::from_rule(quote.rule)),
@@ -340,7 +336,7 @@ fn prepare(
 /// Checks a new booking as [`create`] would, without writing. Call it before
 /// reserving a number.
 pub fn validate(conn: &Connection, input: &BookingInput) -> Result<()> {
-    prepare(conn, input, &HashMap::new(), &[]).map(drop)
+    prepare(conn, input, &HashMap::new()).map(drop)
 }
 
 fn line_rows(lines: Vec<PreparedLine>) -> Vec<(Option<String>, serde_json::Value)> {
@@ -366,28 +362,16 @@ fn line_rows(lines: Vec<PreparedLine>) -> Vec<(Option<String>, serde_json::Value
 /// Creates a draft booking with the number reserved for it (`res.ref_id` is
 /// its id). Returns the id.
 pub fn create(tx: &mut WriteTx, input: &BookingInput, res: &Reservation) -> Result<String> {
-    insert(tx, input, res, None, &[])
-}
-
-/// Creates a draft booking, optionally from a BD request.
-pub(crate) fn insert(
-    tx: &mut WriteTx,
-    input: &BookingInput,
-    res: &Reservation,
-    bd_request_id: Option<&str>,
-    quoted: &[bool],
-) -> Result<String> {
     if res.series != series::BOOKING {
         return Err(Error::Invalid("wrong number series for a booking".into()));
     }
-    let (date, lines) = prepare(tx.conn(), input, &HashMap::new(), quoted)?;
+    let (date, lines) = prepare(tx.conn(), input, &HashMap::new())?;
     let vat_bp = settings::vat_rate_bp(tx.conn())?;
     let id = tx.insert(
         BOOKINGS,
         json!({
             "id": res.ref_id,
             "client_id": input.client_id,
-            "bd_request_id": bd_request_id,
             "date": date,
             "status": BookingStatus::Draft.as_str(),
             "vat": input.vat,
@@ -431,7 +415,7 @@ pub fn update(tx: &mut WriteTx, input: &BookingInput) -> Result<()> {
         })?;
         rows.collect::<Result<_, _>>()?
     };
-    let (date, lines) = prepare(tx.conn(), input, &existing, &[])?;
+    let (date, lines) = prepare(tx.conn(), input, &existing)?;
     let vat_bp = settings::vat_rate_bp(tx.conn())?;
     tx.update(
         BOOKINGS,
@@ -545,15 +529,13 @@ pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
 
 const SELECT: &str = "
     SELECT b.id, n.no, COALESCE(n.confirmed, 1), b.client_id, cn.no, c.name,
-           b.bd_request_id, bn.no, b.date, b.status, COALESCE(b.vat, 0), COALESCE(b.vat_bp, 0),
+           b.date, b.status, COALESCE(b.vat, 0), COALESCE(b.vat_bp, 0),
            b.client_ref, b.deliver_to, b.notes, b.created_at, uc.display_name,
            b.confirmed_at, uf.display_name, b.closed_at, ul.display_name, b.cancel_reason
     FROM bookings b
     LEFT JOIN doc_numbers n ON n.ref_id = b.id AND n.series = 'BK' AND n._deleted = 0
     LEFT JOIN clients c ON c.id = b.client_id
     LEFT JOIN doc_numbers cn ON cn.ref_id = b.client_id AND cn.series = 'CL' AND cn._deleted = 0
-    LEFT JOIN doc_numbers bn ON bn.ref_id = b.bd_request_id AND bn.series = 'BD'
-                            AND bn._deleted = 0
     LEFT JOIN users uc ON uc.id = b.created_by
     LEFT JOIN users uf ON uf.id = b.confirmed_by
     LEFT JOIN users ul ON ul.id = b.closed_by
@@ -567,22 +549,20 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<BookingInfo> {
         client_id: r.get(3)?,
         client_code: r.get(4)?,
         client_name: r.get(5)?,
-        bd_request_id: r.get(6)?,
-        bd_no: r.get(7)?,
-        date: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
-        status: BookingStatus::parse(r.get::<_, Option<String>>(9)?.as_deref()),
-        vat: r.get::<_, i64>(10)? != 0,
-        vat_bp: r.get(11)?,
-        client_ref: r.get(12)?,
-        deliver_to: r.get(13)?,
-        notes: r.get(14)?,
-        created_at: r.get(15)?,
-        created_by_name: r.get(16)?,
-        confirmed_at: r.get(17)?,
-        confirmed_by_name: r.get(18)?,
-        closed_at: r.get(19)?,
-        closed_by_name: r.get(20)?,
-        cancel_reason: r.get(21)?,
+        date: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        status: BookingStatus::parse(r.get::<_, Option<String>>(7)?.as_deref()),
+        vat: r.get::<_, i64>(8)? != 0,
+        vat_bp: r.get(9)?,
+        client_ref: r.get(10)?,
+        deliver_to: r.get(11)?,
+        notes: r.get(12)?,
+        created_at: r.get(13)?,
+        created_by_name: r.get(14)?,
+        confirmed_at: r.get(15)?,
+        confirmed_by_name: r.get(16)?,
+        closed_at: r.get(17)?,
+        closed_by_name: r.get(18)?,
+        cancel_reason: r.get(19)?,
         totals: pricing::with_vat(0, 0),
         summary: String::new(),
         item_ids: Vec::new(),

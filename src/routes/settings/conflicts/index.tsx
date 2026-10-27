@@ -14,6 +14,7 @@ import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, PageHeader } from "~/components/ui/ui";
 import { btnPrimary, btnSecondary, card, hint } from "~/components/ui/styles";
 
@@ -54,6 +55,8 @@ export default component$(() => {
           )),
     );
   });
+  // Each conflict is a card with its own field table, so fewer per page.
+  const pg = usePage(shown, 20);
   const tables = useComputed$(() =>
     [...new Set(list.value.map((c) => c.tbl))].sort(),
   );
@@ -107,8 +110,8 @@ export default component$(() => {
           </Empty>
         </section>
       ) : (
-        <div class="space-y-3">
-          {shown.value.map((c) => (
+        <section class="space-y-3">
+          {pg.value.rows.map((c) => (
             <section key={c.id} class={[card, "p-4"]}>
               <div class="flex flex-wrap items-start justify-between gap-2">
                 <div>
@@ -185,7 +188,10 @@ export default component$(() => {
               )}
             </section>
           ))}
-        </div>
+          <div class={[card, "[&>div]:border-t-0"]}>
+            <Pager of={pg} />
+          </div>
+        </section>
       )}
     </>
   );

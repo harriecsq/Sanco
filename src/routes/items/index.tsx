@@ -62,6 +62,7 @@ import {
   td,
   th,
 } from "~/components/ui/styles";
+import { Pager, usePage } from "~/components/ui/pager";
 
 /** Qwik's input typings lack `list`; this links an input to a datalist. */
 const datalist = (id: string) => ({ list: id }) as Record<string, string>;
@@ -367,6 +368,7 @@ const ItemList = component$(() => {
           (f.status === "duplicate" ? i.duplicate_code : (f.status === "active") === i.active)),
     );
   });
+  const pg = usePage(shown);
 
   const categories = [...new Set(items.value.map((i) => i.category).filter(Boolean))] as string[];
   const costs = sees(session.user, "costs");
@@ -432,7 +434,7 @@ const ItemList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((i) => (
+              {pg.value.rows.map((i) => (
                 <tr key={i.id} class={i.active ? "" : "text-ink-muted"}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link
@@ -472,6 +474,7 @@ const ItemList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <ItemFormModal
         open={open}

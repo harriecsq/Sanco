@@ -122,6 +122,14 @@ export const serialRange = (serials: (string | null)[]) => {
   return s.length === 1 ? s[0] : `${s[0]} – ${s[s.length - 1]}`;
 };
 
+/** The box to break first: the earliest expiry, then the first listed
+ *  (boxes come lowest serial first). Undefined for an empty list. */
+export const oldestBox = (boxes: { box_id: string; expiry: string | null }[]) =>
+  boxes.reduce<(typeof boxes)[number] | undefined>(
+    (best, b) => (!best || (b.expiry ?? "9999") < (best.expiry ?? "9999") ? b : best),
+    undefined,
+  )?.box_id;
+
 /** Thrown by the parsers below; the message is shown to the user. */
 export class InputError extends Error {}
 

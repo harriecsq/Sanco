@@ -191,11 +191,15 @@ fn receipts_transfers_and_adjustments_move_stock() {
         vec![(office(), 15), (warehouse(), 105)]
     );
 
-    // The item's history: the transfer gives an out and an in row.
+    // The item's history: the transfer is one row, from → to.
     let moves = a.db.read(|c| inventory::item_moves(c, &glv)).unwrap();
-    assert_eq!(moves.len(), 4);
-    assert!(moves.iter().any(|m| m.doc_id == tr && m.qty == -15));
-    assert!(moves.iter().any(|m| m.doc_id == tr && m.qty == 15));
+    assert_eq!(moves.len(), 3);
+    let tr_moves: Vec<_> = moves
+        .iter()
+        .filter(|m| m.doc_id == tr)
+        .map(|m| (m.location_id.clone(), m.to_location_id.clone(), m.qty))
+        .collect();
+    assert_eq!(tr_moves, vec![(warehouse(), Some(office()), 15)]);
 
     // Voiding the transfer moves the stock back.
     void(&a.db, &actor, &tr, "wrong lot").unwrap();

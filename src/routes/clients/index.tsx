@@ -75,6 +75,7 @@ import {
   NoAccess,
   PageHeader,
 } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { TabNav } from "~/components/ui/tabs";
 import {
   btnPrimary,
@@ -324,6 +325,7 @@ const ClientList = component$(() => {
     );
   });
 
+  const pg = usePage(shown);
   const margins = sees(session.user, "margins");
 
   return (
@@ -377,7 +379,7 @@ const ClientList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((c) => (
+              {pg.value.rows.map((c) => (
                 <tr key={c.id} class={c.active ? "" : "text-ink-muted"}>
                   <td class={[td, "whitespace-nowrap"]}>
                     {c.code ?? "—"}
@@ -423,6 +425,7 @@ const ClientList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       <ClientFormModal
         open={open}
@@ -488,28 +491,13 @@ const BalanceList = component$<{ b: ClientBalance; unpaidHref?: string }>(({ b, 
 
 type DetailTab = "bookings" | "drs" | "invoices" | "payments" | "rates";
 
-/** Rows a tab shows before "Show more". */
-const PAGE = 50;
+/** Rows per page in a tab. */
+const PAGE = 30;
 
 const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
 
-/** Footer under a long table: how many are shown, and a button for more. */
-const ShowMore = component$<{ limit: Signal<number>; total: number }>(({ limit, total }) =>
-  total > limit.value ? (
-    <div class="flex items-center justify-between border-t border-line px-4 py-2.5 text-sm">
-      <span class={hint}>
-        Showing {limit.value} of {total}
-      </span>
-      <button type="button" class={btnSecondary} onClick$={() => (limit.value += PAGE)}>
-        Show {Math.min(PAGE, total - limit.value)} more
-      </button>
-    </div>
-  ) : null,
-);
-
 const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
   const loc = useLocation();
-  const limit = useSignal(PAGE);
   const shown = useComputed$(() => {
     const f = filtersOf(loc.url, ["q", "from", "to", "status"]);
     const q = f.q.toLowerCase();
@@ -525,6 +513,7 @@ const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
             : b.status === f.status)),
     );
   });
+  const pg = usePage(shown, PAGE);
   const total = shown.value.reduce((s, b) => s + (b.status === "cancelled" ? 0 : b.totals.gross_c), 0);
   return (
     <>
@@ -565,7 +554,7 @@ const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.slice(0, limit.value).map((b) => (
+              {pg.value.rows.map((b) => (
                 <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
@@ -587,7 +576,7 @@ const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
             </tbody>
           </table>
         )}
-        <ShowMore limit={limit} total={shown.value.length} />
+        <Pager of={pg} />
       </section>
     </>
   );
@@ -597,7 +586,6 @@ const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
 const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
   const k = RECEIPT[props.kind];
   const loc = useLocation();
-  const limit = useSignal(PAGE);
   const shown = useComputed$(() => {
     const f = filtersOf(loc.url, ["q", "from", "to", "status"]);
     const q = f.q.toLowerCase();
@@ -619,6 +607,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
                 : d.status === f.status && !d.voided)),
     );
   });
+  const pg = usePage(shown, PAGE);
   const unpaid = shown.value.reduce((s, d) => s + (d.status === "delivered" ? d.balance_c : 0), 0);
   return (
     <>
@@ -662,7 +651,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.slice(0, limit.value).map((d) => (
+              {pg.value.rows.map((d) => (
                 <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
@@ -684,7 +673,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
             </tbody>
           </table>
         )}
-        <ShowMore limit={limit} total={shown.value.length} />
+        <Pager of={pg} />
       </section>
     </>
   );
@@ -692,7 +681,6 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
 
 const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
   const loc = useLocation();
-  const limit = useSignal(PAGE);
   const shown = useComputed$(() => {
     const f = filtersOf(loc.url, ["q", "from", "to", "method", "status"]);
     const q = f.q.toLowerCase();
@@ -715,6 +703,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
                 : p.counts)),
     );
   });
+  const pg = usePage(shown, PAGE);
   const total = shown.value.filter((p) => p.counts).reduce((s, p) => s + p.amount_c, 0);
   return (
     <>
@@ -759,7 +748,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.slice(0, limit.value).map((p) => (
+              {pg.value.rows.map((p) => (
                 <tr key={p.id} class={p.counts ? "" : "text-ink-muted"}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={`/accounting/payments/?id=${p.id}`}>
@@ -782,7 +771,7 @@ const PaymentsTab = component$<{ rows: PaymentInfo[] }>((props) => {
             </tbody>
           </table>
         )}
-        <ShowMore limit={limit} total={shown.value.length} />
+        <Pager of={pg} />
       </section>
     </>
   );
@@ -1012,6 +1001,7 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
               </div>
               <RatesTable
                 rates={rates.value}
+                size={PAGE}
                 showItem
                 edit$={
                   canEditRates

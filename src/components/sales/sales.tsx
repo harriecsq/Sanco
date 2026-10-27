@@ -1,6 +1,5 @@
 import { component$ } from "@builder.io/qwik";
 import type {
-  BdStatus,
   BookingStatus,
   DeliveryProgress,
   DrInfo,
@@ -13,13 +12,6 @@ import { formatPct, formatPeso } from "~/lib/format";
 import { Badge } from "~/components/ui/ui";
 
 type Tone = "brand" | "muted" | "danger" | "warning";
-
-export const BD_STATUS: Record<BdStatus, { label: string; tone: Tone }> = {
-  open: { label: "Open", tone: "warning" },
-  quoted: { label: "Quoted", tone: "brand" },
-  won: { label: "Won", tone: "brand" },
-  lost: { label: "Lost", tone: "muted" },
-};
 
 export const BOOKING_STATUS: Record<BookingStatus, { label: string; tone: Tone }> = {
   draft: { label: "Draft", tone: "warning" },

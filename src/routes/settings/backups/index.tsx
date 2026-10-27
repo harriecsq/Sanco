@@ -7,6 +7,7 @@ import { can, isAdmin } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, Modal, PageHeader } from "~/components/ui/ui";
 import {
   btnDanger,
@@ -63,6 +64,7 @@ export default component$(() => {
       );
     });
   });
+  const pg = usePage(shown);
 
   const editable = can(session.user, "settings", "edit");
   const admin = isAdmin(session.user);
@@ -128,7 +130,7 @@ export default component$(() => {
                 </tr>
               </thead>
               <tbody>
-                {shown.value.map((b) => (
+                {pg.value.rows.map((b) => (
                   <tr key={b.name}>
                     <td class={td}>{formatDateTime(b.modified_ms)}</td>
                     <td class={td}>
@@ -156,6 +158,7 @@ export default component$(() => {
               </tbody>
             </table>
           )}
+          <Pager of={pg} />
         </section>
         {data.value && <p class={hint}>Folder: {data.value.dir}</p>}
       </div>

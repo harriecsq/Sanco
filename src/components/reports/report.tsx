@@ -1,7 +1,8 @@
-import { component$, Slot, useSignal, type Signal } from "@builder.io/qwik";
+import { component$, Slot, useComputed$, useSignal, type Signal } from "@builder.io/qwik";
 import { commands } from "~/lib/bindings";
 import { formatDay, formatPct, formatPeso } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Empty } from "~/components/ui/ui";
 import { btnGhost, btnSecondary, card, table, td, th } from "~/components/ui/styles";
 
@@ -86,11 +87,14 @@ export function toCsv(r: ReportData): string {
 
 /** On-screen table with a CSV export. Pass the report as a signal (a
  *  `useComputed$`), so it updates with the filters. Extra controls can go
- *  in the default slot (left of the export button). */
+ *  in the default slot (left of the export button). The screen shows a page
+ *  of rows; the total row and the CSV cover all of them. */
 export const ReportTable = component$<{ report: Signal<ReportData>; empty?: string }>(
   ({ report, empty }) => {
     const saved = useSignal("");
     const error = useSignal("");
+    const rows = useComputed$(() => report.value.rows);
+    const pg = usePage(rows);
     const r = report.value;
     return (
       <div class="space-y-2">
@@ -146,8 +150,8 @@ export const ReportTable = component$<{ report: Signal<ReportData>; empty?: stri
                 </tr>
               </thead>
               <tbody>
-                {r.rows.map((row, i) => (
-                  <tr key={i} class="hover:bg-surface-muted">
+                {pg.value.rows.map((row, i) => (
+                  <tr key={pg.value.from + i} class="hover:bg-surface-muted">
                     {row.map((c, j) => (
                       <td
                         key={j}
@@ -176,6 +180,7 @@ export const ReportTable = component$<{ report: Signal<ReportData>; empty?: stri
               )}
             </table>
           )}
+          <Pager of={pg} />
         </div>
       </div>
     );
@@ -194,8 +199,6 @@ export const REPORT_TABLES = [
   "item_cost_charges",
   "stock_docs",
   "stock_doc_lines",
-  "bd_requests",
-  "bd_lines",
   "purchase_orders",
   "po_lines",
   "po_receipts",

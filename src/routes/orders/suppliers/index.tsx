@@ -27,6 +27,7 @@ import {
   td,
   th,
 } from "~/components/ui/styles";
+import { Pager, usePage } from "~/components/ui/pager";
 
 const COUNTRIES = [
   { value: "TW", label: "Taiwan" },
@@ -94,6 +95,7 @@ export default component$(() => {
         (!f.status || (f.status === "active") === s.active),
     );
   });
+  const pg = usePage(shown);
 
   const save = $(async () => {
     busy.value = true;
@@ -174,7 +176,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((s) => (
+              {pg.value.rows.map((s) => (
                 <tr key={s.id} class={s.active ? "" : "text-ink-muted"}>
                   <td class={[td, "whitespace-nowrap"]}>
                     {s.code ?? "—"}
@@ -256,6 +258,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
 
       <Modal open={open} title={form.id ? "Edit supplier" : "New supplier"} wide>

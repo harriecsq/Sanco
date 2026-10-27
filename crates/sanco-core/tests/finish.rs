@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::TestPeer;
 use sanco_core::domain::auth::{Action, Module, Perms};
-use sanco_core::domain::bd::{self, BdInput, BdLineInput, BdStatus};
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
 use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
@@ -341,45 +340,6 @@ fn reports_sales_margin_and_bd() {
     assert_eq!(margin[0].margin_c, Some(17_500));
     assert_eq!(margin[0].margin_bp, Some(2_000));
 
-    // BD: two requests in October, one lost.
-    for status in [BdStatus::Open, BdStatus::Lost] {
-        let input = BdInput {
-            id: None,
-            client_id: None,
-            prospect_name: "St. Luke's".into(),
-            contact: String::new(),
-            date: "2026-10-02".into(),
-            status,
-            follow_up: None,
-            vat: false,
-            notes: String::new(),
-            lost_reason: if status == BdStatus::Lost {
-                "price".into()
-            } else {
-                String::new()
-            },
-            lines: vec![BdLineInput {
-                id: None,
-                item_id: Some(item.clone()),
-                description: String::new(),
-                qty: 2,
-                price_c: Some(12_500),
-            }],
-        };
-        let id = db.new_id().unwrap();
-        let res = numbering::reserve(db, &[], series::BD, &id).unwrap();
-        db.write(ana.clone(), move |tx| bd::create(tx, &input, &res))
-            .unwrap();
-    }
-    let conv = db.read(|c| reports::bd_conversion(c, &any)).unwrap();
-    assert_eq!(conv.len(), 1);
-    assert_eq!(conv[0].month, "2026-10");
-    assert_eq!((conv[0].total, conv[0].open, conv[0].lost), (2, 1, 1));
-    assert_eq!(conv[0].lost_net_c, 25_000);
-    assert_eq!(conv[0].win_rate_bp, Some(0));
-    assert_eq!(reports::win_rate(2, 1), Some(6_667));
-    assert_eq!(reports::win_rate(0, 0), None);
-
     let spend = db.read(|c| reports::po_spend(c, &any)).unwrap();
     assert!(spend.is_empty());
 }
@@ -452,8 +412,11 @@ fn todos_visibility_and_delete() {
     db.write(ben.clone(), move |tx| todos::set_done(tx, &id, true))
         .unwrap();
     assert_eq!(titles(&ben_id), ["Count the warehouse"]);
-    let with_done = db.read(|c| todos::list(c, &ben_id, true)).unwrap();
-    assert!(with_done.iter().any(|t| t.id == for_ben && t.done));
+    let archived = db.read(|c| todos::list(c, &ben_id, true)).unwrap();
+    assert_eq!(
+        archived.iter().map(|t| (t.id.as_str(), t.done)).collect::<Vec<_>>(),
+        [(for_ben.as_str(), true)]
+    );
 
     // Cy can't delete Ana's shared to-do; Ben (assignee) and admins can.
     let id = shared.clone();

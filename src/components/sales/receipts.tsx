@@ -20,6 +20,7 @@ import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { DrRequestModal } from "~/components/sales/dr-request";
 import { DR_STATUS, DrNo, DrStatusBadge, RECEIPT, receiptHref, Totals } from "~/components/sales/sales";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { CHECK_STATUS, METHOD_LABEL } from "~/components/accounting/accounting";
 import {
   btnDanger,
@@ -100,6 +101,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
                 : d.status === f.status && !d.voided)),
     );
   });
+  const pg = usePage(shown);
 
   return (
     <>
@@ -164,7 +166,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((d) => (
+              {pg.value.rows.map((d) => (
                 <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
@@ -207,6 +209,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

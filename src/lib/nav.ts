@@ -10,7 +10,6 @@ export interface NavItem {
 
 export const NAV: NavItem[] = [
   { module: "dashboard", href: "/", label: "Dashboard", icon: "M3 11.5 12 4l9 7.5M5.5 9.5V20h4.5v-6h4v6h4.5V9.5" },
-  { module: "bd", href: "/bd/", label: "Business Dev", icon: "M4 5h16v11H9l-5 4z M8 9.5h8 M8 12.5h5" },
   { module: "bookings", href: "/bookings/", label: "Booking", icon: "M9 3.5h6v3H9z M7 5H5v15.5h14V5h-2 M8.5 11h7 M8.5 15h5" },
   { module: "accounting", href: "/accounting/", label: "Accounting", icon: "M4 6h16v12H4z M4 10h16 M8 14.5h3" },
   { module: "items", href: "/items/", label: "Items", icon: "M3.5 7.5 12 3.5l8.5 4-8.5 4z M3.5 7.5v9l8.5 4 8.5-4v-9 M12 11.5v9" },

@@ -13,6 +13,7 @@ import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { KIND_LABEL } from "~/components/inventory/stock-doc-form";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
@@ -67,6 +68,7 @@ const DocList = component$(() => {
         (!f.status || (f.status === "void") === d.voided),
     );
   });
+  const pg = usePage(shown);
 
   return (
     <>
@@ -119,7 +121,7 @@ const DocList = component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((d) => (
+              {pg.value.rows.map((d) => (
                 <tr key={d.id} class={d.voided ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link
@@ -145,6 +147,7 @@ const DocList = component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

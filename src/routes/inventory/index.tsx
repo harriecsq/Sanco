@@ -1,10 +1,22 @@
-import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
-import { Link, useLocation, useNavigate, type DocumentHead } from "@builder.io/qwik-city";
+import {
+  $,
+  component$,
+  useComputed$,
+  useSignal,
+  useStore,
+} from "@builder.io/qwik";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  type DocumentHead,
+} from "@builder.io/qwik-city";
 import {
   commands,
   type BoxStock,
   type ItemStock,
   type LocationInfo,
+  type LocationQty,
   type StockKind,
   type StockLot,
   type StockMove,
@@ -23,8 +35,17 @@ import {
 } from "~/components/inventory/stock-doc-form";
 import { ExpiryBadge } from "~/components/inventory/expiry-badge";
 import { receiptHref } from "~/components/sales/sales";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, PageHeader } from "~/components/ui/ui";
-import { btnPrimary, btnSecondary, card, hint, table, td, th } from "~/components/ui/styles";
+import {
+  btnPrimary,
+  btnSecondary,
+  card,
+  hint,
+  table,
+  td,
+  th,
+} from "~/components/ui/styles";
 
 /** "Receive", "Adjust" and "Transfer" buttons that open the document form. */
 const NewDocButtons = component$<{ item_id?: string }>(({ item_id }) => {
@@ -57,6 +78,20 @@ const NewDocButtons = component$<{ item_id?: string }>(({ item_id }) => {
   );
 });
 
+/** An item's stock at one location (zero when it has none there). */
+function atLocation(s: ItemStock, location_id: string): LocationQty {
+  return (
+    s.by_location.find((b) => b.location_id === location_id) ?? {
+      location_id,
+      qty: 0,
+      full_boxes: 0,
+      open_boxes: 0,
+      open_pcs: 0,
+      next_expiry: null,
+    }
+  );
+}
+
 const StockList = component$(() => {
   const loc = useLocation();
   const stock = useSignal<ItemStock[]>([]);
@@ -84,36 +119,57 @@ const StockList = component$(() => {
     }),
   );
 
+  // With a location picked, the list shows only what is at that location.
+  const at = useComputed$(() => filtersOf(loc.url, ["location"]).location);
   const shown = useComputed$(() => {
     const f = filtersOf(loc.url, ["q", "location", "category", "status"]);
     const q = f.q.toLowerCase();
-    return stock.value.filter(
-      (s) =>
-        (!q || [s.code, s.name, s.category].some((v) => v?.toLowerCase().includes(q))) &&
+    return stock.value.filter((s) => {
+      const qty = f.location ? atLocation(s, f.location).qty : s.on_hand;
+      const negative = f.location ? qty < 0 : s.negative;
+      return (
+        (!q ||
+          [s.code, s.name, s.category].some((v) =>
+            v?.toLowerCase().includes(q),
+          )) &&
         (!f.category || s.category === f.category) &&
-        (!f.location || s.by_location.some((l) => l.location_id === f.location)) &&
         (f.status === "all"
           ? true
           : f.status === "low"
             ? s.low
             : f.status === "negative"
-              ? s.negative
+              ? negative
               : f.status === "none"
-                ? s.active && s.on_hand === 0
-                : s.on_hand !== 0 || s.negative),
-    );
+                ? s.active && qty === 0
+                : qty !== 0 || negative)
+      );
+    });
+  });
+  const pg = usePage(shown);
+  const subtitle = useComputed$(() => {
+    const l = locations.value.find((l) => l.id === at.value);
+    return l
+      ? `What is at ${l.name}, by item, from posted documents.`
+      : "By item and location, from posted documents.";
   });
 
   // Active locations, plus inactive ones still holding stock.
   const cols = locations.value.filter(
-    (l) => l.active || stock.value.some((s) => s.by_location.some((b) => b.location_id === l.id)),
+    (l) =>
+      l.active ||
+      stock.value.some((s) =>
+        s.by_location.some((b) => b.location_id === l.id),
+      ),
   );
-  const categories = [...new Set(stock.value.map((s) => s.category).filter(Boolean))] as string[];
+  const one = cols.find((l) => l.id === at.value);
+  const categories = [
+    ...new Set(stock.value.map((s) => s.category).filter(Boolean)),
+  ] as string[];
   const negatives = stock.value.filter((s) => s.negative).length;
 
   return (
     <>
-      <PageHeader title="Stock on hand" subtitle="By item and location, from posted documents.">
+      <PageHeader title="Stock on hand" subtitle={subtitle.value}>
         <div q:slot="actions" class="flex flex-wrap gap-2">
           <NewDocButtons />
         </div>
@@ -122,8 +178,9 @@ const StockList = component$(() => {
       {negatives > 0 && (
         <div class="mb-4">
           <Alert tone="warning">
-            {negatives} item(s) show negative stock, usually because two PCs took the same stock
-            while offline. Count them and post an adjustment.
+            {negatives} item(s) show negative stock, usually because two PCs
+            took the same stock while offline. Count them and post an
+            adjustment.
           </Alert>
         </div>
       )}
@@ -166,70 +223,119 @@ const StockList = component$(() => {
               <tr>
                 <th class={th}>Code</th>
                 <th class={th}>Name</th>
-                {cols.map((l) => (
-                  <th key={l.id} class={[th, "text-right"]}>
-                    {l.name}
-                  </th>
-                ))}
-                <th class={[th, "text-right"]}>Total</th>
+                {one ? (
+                  <th class={[th, "text-right"]}>At {one.name}</th>
+                ) : (
+                  cols.map((l) => (
+                    <th key={l.id} class={[th, "text-right"]}>
+                      {l.name}
+                    </th>
+                  ))
+                )}
+                <th class={[th, "text-right"]}>
+                  {one ? "All locations" : "Total"}
+                </th>
                 <th class={[th, "text-right"]}>Reorder at</th>
                 <th class={th}>Next expiry</th>
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((s) => (
-                <tr key={s.item_id} class={s.active ? "" : "text-ink-muted"}>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    <Link
-                      class="font-medium text-brand-700 hover:underline"
-                      href={`/inventory/?item=${s.item_id}`}
-                    >
-                      {s.code}
-                    </Link>
-                  </td>
-                  <td class={td}>
-                    {s.name}
-                    {s.low && (
-                      <span class="ml-2">
-                        <Badge tone="warning">low</Badge>
-                      </span>
-                    )}
-                    {s.negative && (
-                      <span class="ml-2">
-                        <Badge tone="danger">negative</Badge>
-                      </span>
-                    )}
-                  </td>
-                  {cols.map((l) => {
-                    const q = s.by_location.find((b) => b.location_id === l.id)?.qty ?? 0;
-                    return (
-                      <td
-                        key={l.id}
-                        class={[td, "text-right tabular-nums", q < 0 && "text-danger", q === 0 && "text-ink-muted"]}
+              {pg.value.rows.map((s) => {
+                const b = one && atLocation(s, one.id);
+                const expiry = b ? b.next_expiry : s.next_expiry;
+                return (
+                  <tr key={s.item_id} class={s.active ? "" : "text-ink-muted"}>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      <Link
+                        class="font-medium text-brand-700 hover:underline"
+                        href={`/inventory/?item=${s.item_id}`}
                       >
-                        {q === 0 ? "—" : formatQty(q)}
+                        {s.code}
+                      </Link>
+                    </td>
+                    <td class={td}>
+                      {s.name}
+                      {s.low && (
+                        <span class="ml-2">
+                          <Badge tone="warning">low</Badge>
+                        </span>
+                      )}
+                      {s.negative && (
+                        <span class="ml-2">
+                          <Badge tone="danger">negative</Badge>
+                        </span>
+                      )}
+                    </td>
+                    {b ? (
+                      <td
+                        class={[
+                          td,
+                          "text-right font-medium whitespace-nowrap tabular-nums",
+                          b.qty < 0 && "text-danger",
+                          b.qty === 0 && "text-ink-muted",
+                        ]}
+                      >
+                        {b.qty === 0 ? "—" : formatQty(b.qty, s.unit)}
+                        {s.serial_code &&
+                          (b.full_boxes > 0 || b.open_boxes > 0) && (
+                            <span class={[hint, "block font-normal"]}>
+                              {boxSummary(
+                                b.full_boxes,
+                                b.open_boxes,
+                                b.open_pcs,
+                              )}
+                            </span>
+                          )}
                       </td>
-                    );
-                  })}
-                  <td class={[td, "text-right font-medium whitespace-nowrap tabular-nums"]}>
-                    {formatQty(s.on_hand, s.unit)}
-                    {s.serial_code && (s.full_boxes > 0 || s.open_boxes > 0) && (
-                      <span class={[hint, "block font-normal"]}>
-                        {boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)}
-                      </span>
+                    ) : (
+                      cols.map((l) => {
+                        const q = atLocation(s, l.id).qty;
+                        return (
+                          <td
+                            key={l.id}
+                            class={[
+                              td,
+                              "text-right tabular-nums",
+                              q < 0 && "text-danger",
+                              q === 0 && "text-ink-muted",
+                            ]}
+                          >
+                            {q === 0 ? "—" : formatQty(q)}
+                          </td>
+                        );
+                      })
                     )}
-                  </td>
-                  <td class={[td, "text-right tabular-nums"]}>
-                    {s.reorder_level == null ? "—" : formatQty(s.reorder_level)}
-                  </td>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    {s.next_expiry ? formatDay(s.next_expiry) : "—"}
-                  </td>
-                </tr>
-              ))}
+                    <td
+                      class={[
+                        td,
+                        "text-right whitespace-nowrap tabular-nums",
+                        one ? "text-ink-muted" : "font-medium",
+                      ]}
+                    >
+                      {formatQty(s.on_hand, s.unit)}
+                      {!one &&
+                        s.serial_code &&
+                        (s.full_boxes > 0 || s.open_boxes > 0) && (
+                          <span class={[hint, "block font-normal"]}>
+                            {boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)}
+                          </span>
+                        )}
+                    </td>
+                    <td class={[td, "text-right tabular-nums"]}>
+                      {s.reorder_level == null
+                        ? "—"
+                        : formatQty(s.reorder_level)}
+                    </td>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      {expiry ? formatDay(expiry) : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );
@@ -242,6 +348,18 @@ const MOVE_LABEL: Record<StockKind, string> = {
   delivery: "Delivered",
   po_receipt: "Received on PO",
 };
+
+/** One location's lots of an item, with its total. */
+interface LocationLots {
+  location_id: string;
+  location_name: string | null;
+  unit: string | null;
+  qty: number;
+  full_boxes: number;
+  open_boxes: number;
+  open_pcs: number;
+  lots: StockLot[];
+}
 
 const ItemStockDetail = component$<{ id: string }>(({ id }) => {
   const session = useSession();
@@ -271,12 +389,45 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
         missing.value = !item.value;
         lots.value = unwrap(await commands.stockLots(id));
         moves.value = unwrap(await commands.itemStockMoves(id));
-        boxes.value = item.value?.serial_code ? unwrap(await commands.boxStock(id)) : [];
+        boxes.value = item.value?.serial_code
+          ? unwrap(await commands.boxStock(id))
+          : [];
       } catch (e) {
         error.value = errorText(e);
       }
     }),
   );
+  // Lots arrive in location order (sort, name), so each location's lots
+  // are already together.
+  const byLocation = useComputed$(() => {
+    const out: LocationLots[] = [];
+    for (const l of lots.value) {
+      let g = out.at(-1);
+      if (!g || g.location_id !== l.location_id) {
+        g = {
+          location_id: l.location_id,
+          location_name: l.location_name,
+          unit: l.unit,
+          qty: 0,
+          full_boxes: 0,
+          open_boxes: 0,
+          open_pcs: 0,
+          lots: [],
+        };
+        out.push(g);
+      }
+      g.qty += l.qty;
+      g.full_boxes += l.full_boxes;
+      g.open_boxes += l.open_boxes;
+      g.open_pcs += l.open_pcs;
+      g.lots.push(l);
+    }
+    return out;
+  });
+  // Three paged tables on one screen, so each has its own page key.
+  const lotsPg = usePage(byLocation, undefined, "lots_page");
+  const boxesPg = usePage(boxes, undefined, "boxes_page");
+  const movesPg = usePage(moves, undefined, "moves_page");
 
   if (missing.value) {
     return (
@@ -318,53 +469,90 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
       <div class="mb-4 space-y-2">
         {s.negative && (
           <Alert tone="warning">
-            Some stock is negative, usually because two PCs took the same stock while offline.
-            Count it and post an adjustment.
+            Some stock is negative, usually because two PCs took the same stock
+            while offline. Count it and post an adjustment.
           </Alert>
         )}
-        {s.low && <Alert tone="warning">This item is at or below its reorder level.</Alert>}
+        {s.low && (
+          <Alert tone="warning">
+            This item is at or below its reorder level.
+          </Alert>
+        )}
       </div>
       <div class="grid gap-4 xl:grid-cols-[26rem_minmax(0,1fr)]">
         <div class="space-y-4 self-start">
-          <section class={card}>
-            <h2 class="border-b border-line px-4 py-3 font-semibold">On hand</h2>
+          <section class={[card, "overflow-x-auto"]}>
+            <h2 class="border-b border-line px-4 py-3 font-semibold">
+              On hand
+            </h2>
             {lots.value.length === 0 ? (
               <Empty>None in stock.</Empty>
             ) : (
               <table class={table}>
                 <thead>
                   <tr>
-                    <th class={th}>Location</th>
-                    <th class={th}>Expiry</th>
+                    <th class={th}>Location / expiry</th>
                     <th class={[th, "text-right"]}>Qty</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {lots.value.map((l) => (
-                    <tr key={`${l.location_id}/${l.expiry}`}>
-                      <td class={td}>{l.location_name ?? "Deleted location"}</td>
-                      <td class={[td, "whitespace-nowrap"]}>
-                        {l.expiry ? (
-                          <>
-                            {formatDay(l.expiry)} <ExpiryBadge days={l.days_left} />
-                          </>
-                        ) : (
-                          <span class="text-ink-muted">No expiry</span>
-                        )}
+                {lotsPg.value.rows.map((g) => (
+                  <tbody key={g.location_id}>
+                    <tr class="bg-brand-50">
+                      <td class={[td, "font-semibold"]}>
+                        {g.location_name ?? "Deleted location"} total
                       </td>
-                      <td class={[td, "text-right whitespace-nowrap tabular-nums", l.qty < 0 && "text-danger"]}>
-                        {formatQty(l.qty, l.unit)}
-                        {(l.full_boxes > 0 || l.open_boxes > 0) && (
-                          <span class={[hint, "block"]}>
-                            {boxSummary(l.full_boxes, l.open_boxes, l.open_pcs)}
+                      <td
+                        class={[
+                          td,
+                          "text-right font-semibold whitespace-nowrap tabular-nums",
+                          g.qty < 0 && "text-danger",
+                        ]}
+                      >
+                        {formatQty(g.qty, g.unit)}
+                        {(g.full_boxes > 0 || g.open_boxes > 0) && (
+                          <span class={[hint, "block font-normal"]}>
+                            {boxSummary(g.full_boxes, g.open_boxes, g.open_pcs)}
                           </span>
                         )}
                       </td>
                     </tr>
-                  ))}
-                </tbody>
+                    {g.lots.map((l) => (
+                      <tr key={`${l.location_id}/${l.expiry}`}>
+                        <td class={[td, "pl-8 whitespace-nowrap"]}>
+                          {l.expiry ? (
+                            <>
+                              {formatDay(l.expiry)}{" "}
+                              <ExpiryBadge days={l.days_left} />
+                            </>
+                          ) : (
+                            <span class="text-ink-muted">No expiry</span>
+                          )}
+                        </td>
+                        <td
+                          class={[
+                            td,
+                            "text-right whitespace-nowrap tabular-nums",
+                            l.qty < 0 && "text-danger",
+                          ]}
+                        >
+                          {formatQty(l.qty, l.unit)}
+                          {(l.full_boxes > 0 || l.open_boxes > 0) && (
+                            <span class={[hint, "block"]}>
+                              {boxSummary(
+                                l.full_boxes,
+                                l.open_boxes,
+                                l.open_pcs,
+                              )}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                ))}
               </table>
             )}
+            <Pager of={lotsPg} />
           </section>
           {s.serial_code && (
             <section class={[card, "overflow-x-auto"]}>
@@ -386,7 +574,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {boxes.value.map((b) => (
+                    {boxesPg.value.rows.map((b) => (
                       <tr key={b.box_id}>
                         <td class={[td, "whitespace-nowrap font-medium"]}>
                           {b.serial ?? "—"}
@@ -396,14 +584,23 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                             </span>
                           )}
                         </td>
-                        <td class={td}>{b.location_name ?? "Deleted location"}</td>
-                        <td class={[td, "text-right whitespace-nowrap tabular-nums", b.qty < 0 && "text-danger"]}>
+                        <td class={td}>
+                          {b.location_name ?? "Deleted location"}
+                        </td>
+                        <td
+                          class={[
+                            td,
+                            "text-right whitespace-nowrap tabular-nums",
+                            b.qty < 0 && "text-danger",
+                          ]}
+                        >
                           {formatQty(b.qty)} / {formatQty(b.pcs)}
                         </td>
                         <td class={[td, "whitespace-nowrap"]}>
                           {b.expiry ? (
                             <>
-                              {formatDay(b.expiry)} <ExpiryBadge days={b.days_left} />
+                              {formatDay(b.expiry)}{" "}
+                              <ExpiryBadge days={b.days_left} />
                             </>
                           ) : (
                             <span class="text-ink-muted">—</span>
@@ -411,7 +608,10 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                         </td>
                         <td class={[td, "whitespace-nowrap"]}>
                           {b.po_id ? (
-                            <Link class="text-brand-700 hover:underline" href={`/orders/?id=${b.po_id}`}>
+                            <Link
+                              class="text-brand-700 hover:underline"
+                              href={`/orders/?id=${b.po_id}`}
+                            >
                               {b.po_no ?? "PO"}
                             </Link>
                           ) : (
@@ -423,13 +623,16 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                   </tbody>
                 </table>
               )}
+              <Pager of={boxesPg} />
             </section>
           )}
         </div>
-        <section class={card}>
+        <section class={[card, "min-w-0 overflow-x-auto"]}>
           <div class="border-b border-line px-4 py-3">
             <h2 class="font-semibold">Movements</h2>
-            <p class={hint}>Posted documents only; voided ones no longer count.</p>
+            <p class={hint}>
+              Posted documents only; voided ones no longer count.
+            </p>
           </div>
           {moves.value.length === 0 ? (
             <Empty>No movements yet.</Empty>
@@ -446,37 +649,61 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                 </tr>
               </thead>
               <tbody>
-                {moves.value.map((m, i) => (
+                {movesPg.value.rows.map((m, i) => (
                   <tr key={`${m.doc_id}/${i}`}>
-                    <td class={[td, "whitespace-nowrap"]}>{formatDay(m.date)}</td>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      {formatDay(m.date)}
+                    </td>
                     <td class={[td, "whitespace-nowrap"]}>
                       <Link
                         class="text-brand-700 hover:underline"
                         href={
                           m.kind === "delivery"
-                            ? receiptHref(m.invoice ? "invoice" : "dr", m.doc_id)
+                            ? receiptHref(
+                                m.invoice ? "invoice" : "dr",
+                                m.doc_id,
+                              )
                             : m.kind === "po_receipt"
                               ? `/orders/receiving/?id=${m.doc_id}`
                               : `/inventory/movements/?id=${m.doc_id}`
                         }
                       >
                         {m.no ?? KIND_LABEL[m.kind]}
-                      </Link>{" "}
-                      <span class={hint}>
-                        {m.kind === "delivery" ? (m.invoice ? "Delivered invoice" : "Delivered DR") : MOVE_LABEL[m.kind]}
+                      </Link>
+                      <span class={[hint, "block"]}>
+                        {m.kind === "delivery"
+                          ? m.invoice
+                            ? "Delivered invoice"
+                            : "Delivered DR"
+                          : MOVE_LABEL[m.kind]}
                       </span>
                     </td>
-                    <td class={td}>{m.location_name ?? "Deleted location"}</td>
-                    <td class={[td, "whitespace-nowrap"]}>{m.expiry ? formatDay(m.expiry) : "—"}</td>
-                    {s.serial_code && <td class={[td, "whitespace-nowrap"]}>{m.serial ?? "—"}</td>}
+                    <td class={td}>
+                      {m.location_name ?? "Deleted location"}
+                      {m.kind === "transfer" && (
+                        <> → {m.to_location_name ?? "Deleted location"}</>
+                      )}
+                    </td>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      {m.expiry ? formatDay(m.expiry) : "—"}
+                    </td>
+                    {s.serial_code && (
+                      <td class={[td, "whitespace-nowrap"]}>
+                        {m.serial ?? "—"}
+                      </td>
+                    )}
                     <td
                       class={[
                         td,
                         "text-right whitespace-nowrap tabular-nums",
-                        m.qty < 0 ? "text-danger" : "text-brand-700",
+                        m.kind === "transfer"
+                          ? ""
+                          : m.qty < 0
+                            ? "text-danger"
+                            : "text-brand-700",
                       ]}
                     >
-                      {m.qty > 0 ? "+" : "−"}
+                      {m.kind === "transfer" ? "" : m.qty > 0 ? "+" : "−"}
                       {formatQty(Math.abs(m.qty), s.unit)}
                     </td>
                   </tr>
@@ -484,6 +711,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
               </tbody>
             </table>
           )}
+          <Pager of={movesPg} />
         </section>
       </div>
     </>

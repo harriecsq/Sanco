@@ -89,6 +89,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - **Typed numbers:** DR and invoice numbers (series `DR`, `SI`) are typed from their BIR booklets unless Settings sets `number_mode.DR` / `number_mode.SI = auto`. They are claimed exactly (`numbering::reserve_exact`, `doc_numbers.manual = 1`) and are **never renumbered**: an offline clash gets to-dos for both users and a "used twice" badge until someone corrects one (`assign_or_change`).
 
 ## Business rules
+- **No Business Development module** (removed by the user, 2026-10-27). Its tables `bd_requests`/`bd_lines` and `bookings.bd_request_id` stay in the schema and registry (additive migrations, older peers still sync them) but nothing reads or writes them. Old booking lines may still have price rule `quoted`. Saved roles may hold a `"bd"` grant: `Perms` skips unknown module keys when read.
 - **Margin is margin on price:** `price = cost ÷ (1 − margin%)`. ₱100 at 20% → ₱125.
 - **Price resolution for a client and item:**
   1. The manual client-item rate.
@@ -100,8 +101,8 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **DR or Invoice** (M12): what the client gets is a DR (no VAT) or an Invoice (VAT). Both are rows of `delivery_receipts`; the type **is** its `vat` flag (`ReceiptKind`), defaulting from the booking's VAT. It changes only until delivery (then void and re-enter). Every screen that lists DRs lists DRs and invoices separately.
 - **Landed cost** = supplier price × FX + the cost-sheet charge lines. Charge types are an editable list (Freight, Customs duty, Brokerage, Bank fees, Import VAT, …), each per-unit, percentage of base, or per-shipment (a PHP total ÷ the cost sheet's `shipment_qty`; a sheet with a per-shipment charge but no qty has no landed cost). The PO "copy to cost sheets" button sets `shipment_qty` to the item's ordered qty.
 - **DR number = BIR booklet number** (invoices: the invoice booklet, series `SI`). There is no separate manual reference. It may be typed at approval and is required to mark it delivered. A receipt's number is its live `DR` or `SI` row (`v_receipt_no`; `delivery::number_series`): invoices from before M12 keep their DR-series number. Switching the type frees the number (`numbering::release` clears `seq`/`no`; the derived-id row is never deleted).
-- **Sales flow:** BD request (open → quoted → won/lost; won only by converting into a booking) → booking (draft → confirmed → closed/cancelled) → DR or invoice (requested → approved → delivered, or cancelled; a delivered one is voided, which returns its stock). Its lines name their lot.
-- **Don't add edit locks** (user decision, 2026-10-22): BD requests (also won), bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
+- **Sales flow:** booking (draft → confirmed → closed/cancelled) → DR or invoice (requested → approved → delivered, or cancelled; a delivered one is voided, which returns its stock). Its lines name their lot.
+- **Don't add edit locks** (user decision, 2026-10-22): bookings (any status but cancelled) and DRs (header and lines, also after delivery) stay editable. Keep only integrity checks: stock can't go below zero (an edited delivered DR moves the difference), DR qty can't exceed what's left on the booking, a booking line on a DR can't be removed. Posted stock documents (M6) are still void-and-re-enter.
 - **Checks** are only checks received from clients (PDC if the check date is in the future). Supplier payments are TT entries on the PO.
 - **Bank accounts** are the company's own accounts (Accounting → Bank accounts). Check deposits, bank transfers received and TT payments pick one (`bank_account_id`); the check's own "bank" is the client's bank and stays free text. No running balance is kept, only what the app moved. Used accounts are made inactive, not deleted.
 - **Payments** (cash, check, bank transfer) get automatic `PAY` numbers plus an optional OR/CR no. A check is a payment with check fields; it counts as paid from receipt until it bounces or is replaced (a posted payment with `replaces_id`; "replaced" is never stored). Allocations go only to the client's delivered DRs (derived ids, cleared not deleted); the unapplied rest is credit. A DR with payments applied can't be voided or edited below what's paid.
@@ -114,7 +115,6 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Writes that make boxes: read-only `serials_for_*` first, then reserve the serials in one batch per series (`numbering::reserve_batch`, `NumberClaim.count`), then write with the `Serials` pool. Box serials are never renumbered after an offline clash (`numbering::keeps_clashes`; user decision: it won't happen).
 
 ## Glossary
-- **BD:** Business Development. Client and prospect requests and inquiries (open → quoted → won/lost).
 - **Booking:** a confirmed client order.
 - **DR:** Delivery Receipt, without VAT. Delivering one takes stock out and creates a receivable.
 - **Invoice:** a sales invoice: the same document as a DR but with VAT, numbered from its own booklet (`SI`).
@@ -124,7 +124,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Margin tier:** a client's default margin %.
 
 ## Modules
-Dashboard · Business Development · Booking · Accounting (DR, receivables, checks, payments, bank accounts) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
+Dashboard · Booking · Accounting (DR, receivables, checks, payments, bank accounts) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
 
 ## UI
 - **Theme:** white surfaces. Brand teal-green `brand-500 #13876F` for primary actions, active nav, links and focus. `brand-50 #E8F5F1` for subtle fills. Text is `ink #1F2937`.

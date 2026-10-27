@@ -22,10 +22,10 @@ pub async fn dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> 
 #[specta::specta]
 pub async fn list_todos(
     state: State<'_, AppState>,
-    include_done: bool,
+    archived: bool,
 ) -> Result<Vec<TodoInfo>, String> {
     let (db, user) = signed_in(&state).await?;
-    blocking(move || db.read(|c| todos::list(c, &user.id, include_done))).await
+    blocking(move || db.read(|c| todos::list(c, &user.id, archived))).await
 }
 
 /// Creates or edits a to-do. Returns its id.

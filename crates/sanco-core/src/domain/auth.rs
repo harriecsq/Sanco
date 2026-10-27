@@ -25,7 +25,6 @@ pub const MIN_PASSWORD_LEN: usize = 6;
 #[serde(rename_all = "snake_case")]
 pub enum Module {
     Dashboard,
-    Bd,
     Bookings,
     Accounting,
     Items,
@@ -37,9 +36,8 @@ pub enum Module {
 }
 
 impl Module {
-    pub const ALL: [Module; 10] = [
+    pub const ALL: [Module; 9] = [
         Module::Dashboard,
-        Module::Bd,
         Module::Bookings,
         Module::Accounting,
         Module::Items,
@@ -53,7 +51,6 @@ impl Module {
     pub fn label(self) -> &'static str {
         match self {
             Module::Dashboard => "Dashboard",
-            Module::Bd => "Business Development",
             Module::Bookings => "Booking",
             Module::Accounting => "Accounting",
             Module::Items => "Items",
@@ -127,6 +124,9 @@ pub struct Perms {
     /// roles, join codes and restores.
     #[serde(default)]
     pub admin: bool,
+    /// Grants for modules this version doesn't know (a removed one, such as
+    /// Business Development, or one added later) are skipped when read.
+    /// `parse` skips them; a plain serde read of an unknown one fails.
     #[serde(default)]
     pub modules: BTreeMap<Module, BTreeSet<Action>>,
     #[serde(default)]
@@ -189,8 +189,14 @@ impl Perms {
 
     /// Parses `perms_json`; anything unreadable grants nothing.
     pub fn parse(json: Option<&str>) -> Self {
-        json.and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default()
+        let Some(mut v) = json.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        else {
+            return Self::default();
+        };
+        if let Some(modules) = v.get_mut("modules").and_then(|m| m.as_object_mut()) {
+            modules.retain(|k, _| serde_json::from_value::<Module>(json!(k)).is_ok());
+        }
+        serde_json::from_value(v).unwrap_or_default()
     }
 }
 
@@ -380,6 +386,16 @@ mod tests {
         assert_eq!(Perms::parse(Some(&json)), p);
         assert_eq!(Perms::parse(Some("garbage")), Perms::default());
         assert_eq!(Perms::parse(Some("{}")), Perms::default());
+    }
+
+    #[test]
+    fn perms_skip_unknown_modules() {
+        // Roles saved while Business Development existed.
+        let p = Perms::parse(Some(
+            r#"{"admin":false,"modules":{"bd":["view","create"],"clients":["view"]},"fields":[]}"#,
+        ));
+        assert!(p.can(Module::Clients, Action::View));
+        assert_eq!(p.modules.len(), 1);
     }
 
     #[test]

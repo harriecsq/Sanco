@@ -1,4 +1,4 @@
-import { $, component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
+import { $, component$, useComputed$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 import { useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import { listen } from "@tauri-apps/api/event";
 import { commands, type AuditEntry, type UserOption } from "~/lib/bindings";
@@ -6,6 +6,7 @@ import { formatDateTime } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
+import { isPageKey, Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, PageHeader } from "~/components/ui/ui";
 import { card, hint, table, td, th } from "~/components/ui/styles";
 
@@ -45,6 +46,14 @@ export default component$(() => {
   const tables = useSignal<string[]>([]);
   const error = useSignal("");
   const loading = useSignal(true);
+  // The newest LIMIT entries are fetched once per filter and paged here.
+  const pg = usePage(entries);
+  // The query string without the page, so turning a page doesn't refetch.
+  const filterKey = useComputed$(() => {
+    const p = new URLSearchParams(loc.url.search);
+    for (const k of [...p.keys()]) if (isPageKey(k)) p.delete(k);
+    return p.toString();
+  });
 
   const load = $(async (url: URL) => {
     const f = filtersOf(url, ["q", "user", "table", "from", "to"]);
@@ -84,7 +93,7 @@ export default component$(() => {
   // eslint-disable-next-line qwik/no-use-visible-task
   useVisibleTask$(
     ({ track, cleanup }) => {
-      track(() => loc.url.search);
+      track(() => filterKey.value);
       track(() => session.user?.id);
       if (!session.user) return;
       load(loc.url);
@@ -134,7 +143,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {entries.value.map((e) => {
+              {pg.value.rows.map((e) => {
                 const lines = describe(e);
                 return (
                   <tr key={e.id}>
@@ -173,6 +182,7 @@ export default component$(() => {
             </tbody>
           </table>
         )}
+        <Pager of={pg} />
       </section>
       {entries.value.length >= LIMIT && (
         <p class={["mt-2", hint]}>

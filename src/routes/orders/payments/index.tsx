@@ -9,6 +9,7 @@ import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { CURRENCIES, ORDER_TABLES } from "~/components/orders/orders";
 import { Alert, Empty, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Pager, usePage } from "~/components/ui/pager";
 import { card, hint, table, td, th } from "~/components/ui/styles";
 
 export default component$(() => {
@@ -43,6 +44,7 @@ export default component$(() => {
         (!f.currency || t.currency === f.currency),
     );
   });
+  const pg = usePage(shown);
 
   if (!sees(session.user, "costs")) return <NoAccess />;
   const totalPhp = shown.value.reduce((s, t) => s + (t.php_c ?? 0), 0);
@@ -85,7 +87,7 @@ export default component$(() => {
               </tr>
             </thead>
             <tbody>
-              {shown.value.map((t) => (
+              {pg.value.rows.map((t) => (
                 <tr key={t.id}>
                   <td class={[td, "whitespace-nowrap"]}>{formatDay(t.date)}</td>
                   <td class={[td, "whitespace-nowrap"]}>
@@ -116,6 +118,7 @@ export default component$(() => {
             </tfoot>
           </table>
         )}
+        <Pager of={pg} />
       </section>
     </>
   );

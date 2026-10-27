@@ -1,6 +1,7 @@
 import {
   $,
   component$,
+  useComputed$,
   useSignal,
   useVisibleTask$,
   type QRL,
@@ -23,6 +24,7 @@ import {
   parseMoney,
 } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
+import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, Field, Modal } from "~/components/ui/ui";
 import {
   btnGhost,
@@ -71,13 +73,19 @@ export const rateForm = (r: RateInfo): RateForm => ({
   existing: true,
 });
 
-/** One rate per row; `edit$` opens it when the user may edit. */
+/** One rate per row, a page at a time; `edit$` opens it when the user may edit. */
 export const RatesTable = component$<{
   rates: RateInfo[];
   showClient?: boolean;
   showItem?: boolean;
   edit$?: QRL<(r: RateInfo) => void>;
-}>(({ rates, showClient, showItem, edit$ }) => {
+  /** Rows per page. */
+  size?: number;
+}>((props) => {
+  const { showClient, showItem, edit$ } = props;
+  const all = useComputed$(() => props.rates);
+  const pg = usePage(all, props.size);
+  const rates = all.value;
   if (rates.length === 0) return <Empty>No client rates yet.</Empty>;
   const costs = rates.some((r) => r.cost_c != null);
   const margins = rates.some((r) => r.margin_bp != null);
@@ -99,7 +107,7 @@ export const RatesTable = component$<{
           </tr>
         </thead>
         <tbody>
-          {rates.map((r) => (
+          {pg.value.rows.map((r) => (
             <tr key={r.id}>
               {showClient && (
                 <td class={td}>
@@ -167,6 +175,7 @@ export const RatesTable = component$<{
           ))}
         </tbody>
       </table>
+      <Pager of={pg} />
     </div>
   );
 });
