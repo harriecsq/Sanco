@@ -89,7 +89,8 @@ async fn guard(
 
 async fn hello(State(node): State<Arc<Inner>>) -> Result<Response, ApiError> {
     let (name, version) = (node.cfg.name.clone(), node.cfg.app_version.clone());
-    let hello = node.blocking(move |db| db.hello(&name, &version)).await?;
+    let mut hello = node.blocking(move |db| db.hello(&name, &version)).await?;
+    hello.os.clone_from(&node.cfg.os);
     Ok(Json(hello).into_response())
 }
 
@@ -179,7 +180,9 @@ async fn installer(node: &Inner) -> Result<Option<(update::UpdateInfo, Vec<u8>)>
     };
     let version = node.cfg.app_version.clone();
     let read = tokio::task::spawn_blocking(move || {
-        path.is_file().then(|| update::describe(&path, &version)).transpose()
+        path.is_file()
+            .then(|| update::describe(&path, &version))
+            .transpose()
     })
     .await
     .map_err(|e| Error::Task(e.to_string()))?;
@@ -195,7 +198,10 @@ async fn update_info(State(node): State<Arc<Inner>>) -> Result<Response, ApiErro
 
 async fn update_installer(State(node): State<Arc<Inner>>) -> Result<Response, ApiError> {
     let Some((info, bytes)) = installer(&node).await? else {
-        return Ok(reject(StatusCode::NOT_FOUND, "this PC has no installer to share"));
+        return Ok(reject(
+            StatusCode::NOT_FOUND,
+            "this PC has no installer to share",
+        ));
     };
     tracing::info!(version = %info.version, size = info.size, "sent the installer to a peer");
     let mut res = bytes.into_response();

@@ -6,6 +6,7 @@ pub mod db;
 pub mod domain;
 pub mod error;
 pub mod ids;
+pub mod machine;
 pub mod repo;
 pub mod rng;
 pub mod sync;

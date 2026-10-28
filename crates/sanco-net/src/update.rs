@@ -6,6 +6,10 @@
 //! newer `app_version` (from `/hello`, also when the schemas differ and sync
 //! is refused) downloads `GET /update/installer`, checks size and SHA-256
 //! against `GET /update`, and the shell runs it.
+//!
+//! Installers are per OS, so a PC only takes updates from peers on its own
+//! OS (`Hello::os`). On macOS the installer is a disk image (`.dmg`); nothing
+//! puts one next to the app yet, so a Mac shares only with `--installer`.
 
 use std::cmp::Ordering;
 use std::path::Path;
@@ -16,7 +20,30 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 
 /// File name of the installer copy next to the app.
+#[cfg(not(target_os = "macos"))]
 pub const INSTALLER_NAME: &str = "sanco-setup.exe";
+#[cfg(target_os = "macos")]
+pub const INSTALLER_NAME: &str = "sanco-setup.dmg";
+
+/// File name for a downloaded installer of `version`.
+pub fn download_name(version: &str) -> String {
+    let v = version.replace(['/', '\\', ':'], "_");
+    if cfg!(target_os = "macos") {
+        format!("Sanco_{v}.dmg")
+    } else {
+        format!("Sanco_{v}_x64-setup.exe")
+    }
+}
+
+/// Whether `bytes` look like an installer for this OS: a Windows program
+/// (`MZ`), or a macOS disk image (`koly` trailer 512 bytes from the end).
+fn is_installer(bytes: &[u8]) -> bool {
+    if cfg!(target_os = "macos") {
+        bytes.len() >= 512 && bytes[bytes.len() - 512..].starts_with(b"koly")
+    } else {
+        bytes.starts_with(b"MZ")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateInfo {
@@ -89,18 +116,47 @@ pub fn verify(addr: &str, info: &UpdateInfo, bytes: &[u8]) -> Result<()> {
             reason: "the installer download is damaged (size or checksum differs)".into(),
         });
     }
-    if !bytes.starts_with(b"MZ") {
+    if !is_installer(bytes) {
         return Err(Error::Protocol {
             addr: addr.into(),
-            reason: "the download is not a Windows program".into(),
+            reason: format!("the download is not a Sanco installer for {}", os_label()),
         });
     }
     Ok(())
 }
 
+fn os_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "Windows"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Smallest bytes that pass [`is_installer`] on this OS.
+    fn fake_installer() -> Vec<u8> {
+        if cfg!(target_os = "macos") {
+            let mut b = vec![0; 512];
+            b[..4].copy_from_slice(b"koly");
+            b
+        } else {
+            b"MZ fake installer".to_vec()
+        }
+    }
+
+    #[test]
+    fn hello_from_older_versions_means_windows() {
+        let old = serde_json::json!({
+            "site": "s", "epoch": "e", "schema": 1, "app_version": "0.1.0",
+            "name": "PC", "now_ms": 0, "head": 0,
+        });
+        let hello: sanco_core::sync::peer::Hello = serde_json::from_value(old).unwrap();
+        assert_eq!(hello.os, "windows");
+    }
 
     #[test]
     fn versions_compare_numerically() {
@@ -115,7 +171,7 @@ mod tests {
 
     #[test]
     fn verify_checks_size_hash_and_kind() {
-        let exe = b"MZ fake installer".to_vec();
+        let exe = fake_installer();
         let info = UpdateInfo {
             version: "1.0.0".into(),
             size: exe.len() as u64,

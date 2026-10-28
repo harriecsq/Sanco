@@ -7,9 +7,7 @@ use sanco_core::domain::auth::{Action, Field, Module};
 use sanco_core::domain::inventory::{self, StockLot};
 use sanco_core::domain::payments::{self, PaymentInfo};
 use sanco_core::domain::receivables::{self, ReceivablesReport};
-use sanco_core::domain::reports::{
-    self, DateRange, MarginRow, SalesGroup, SalesRow, SpendRow,
-};
+use sanco_core::domain::reports::{self, DateRange, MarginRow, SalesGroup, SalesRow, SpendRow};
 use sanco_core::time::{manila_date_string, manila_stamp};
 use tauri::{Manager, State};
 
@@ -91,7 +89,13 @@ pub async fn save_csv(
     let (db, _) = require(&state, Module::Reports, Action::View).await?;
     let stem: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .take(60)
         .collect();
     let dir = state
@@ -107,13 +111,21 @@ pub async fn save_csv(
     Ok(path.display().to_string())
 }
 
-/// Opens Explorer with the file selected.
+/// Opens Explorer (Finder on macOS) with the file selected.
 #[tauri::command]
 #[specta::specta]
 pub async fn show_in_folder(path: String) -> Result<(), String> {
-    std::process::Command::new("explorer.exe")
-        .arg(format!("/select,{path}"))
-        .spawn()
-        .map(drop)
-        .map_err(|e| e.to_string())
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-R").arg(&path);
+        cmd
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(format!("/select,{path}"));
+        cmd
+    };
+    cmd.spawn().map(drop).map_err(|e| e.to_string())
 }
