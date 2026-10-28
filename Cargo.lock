@@ -3404,7 +3404,7 @@ dependencies = [
 
 [[package]]
 name = "sanco"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "log",
  "sanco-core",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "sanco-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "argon2",
  "rusqlite",
@@ -3443,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "sanco-net"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "axum",
  "hkdf",
