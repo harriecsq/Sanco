@@ -13,7 +13,7 @@ pub mod update;
 
 pub use error::{Error, Result};
 pub use joincode::JoinCode;
-pub use update::{UpdateInfo, UpdateOffer};
 pub use node::{
     DEFAULT_PORT, EventFn, LocalChanges, Node, NodeConfig, NodeEvent, PeerState, PeerStatus, join,
 };
+pub use update::{UpdateInfo, UpdateOffer};

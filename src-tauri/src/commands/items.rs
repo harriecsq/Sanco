@@ -83,7 +83,10 @@ pub async fn get_cost_sheet(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn save_cost_sheet(state: State<'_, AppState>, sheet: CostSheetInput) -> Result<(), String> {
+pub async fn save_cost_sheet(
+    state: State<'_, AppState>,
+    sheet: CostSheetInput,
+) -> Result<(), String> {
     let (db, user) = require(&state, Module::Items, Action::Edit).await?;
     require_costs(&user)?;
     blocking(move || db.write(user.actor(), move |tx| items::save_cost_sheet(tx, &sheet))).await
@@ -100,7 +103,9 @@ pub async fn apply_supplier_price(
     let (db, user) = require(&state, Module::Items, Action::Edit).await?;
     require_costs(&user)?;
     blocking(move || {
-        db.write(user.actor(), move |tx| purchasing::apply_latest_price(tx, &item_id))
+        db.write(user.actor(), move |tx| {
+            purchasing::apply_latest_price(tx, &item_id)
+        })
     })
     .await
 }
@@ -108,7 +113,10 @@ pub async fn apply_supplier_price(
 /// Client rates, by client and/or item. Clients screens show them too.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_rates(state: State<'_, AppState>, filter: RateFilter) -> Result<Vec<RateInfo>, String> {
+pub async fn list_rates(
+    state: State<'_, AppState>,
+    filter: RateFilter,
+) -> Result<Vec<RateInfo>, String> {
     let (db, user) = require_view_any(&state, &[Module::Items, Module::Clients]).await?;
     let mut list = blocking(move || db.read(|c| pricing::list_rates(c, &filter))).await?;
     list.iter_mut().for_each(|r| r.strip(&user.perms));
@@ -131,11 +139,8 @@ pub async fn price_quote(
     client_id: String,
     item_id: String,
 ) -> Result<PriceQuote, String> {
-    let (db, user) = require_view_any(
-        &state,
-        &[Module::Items, Module::Clients, Module::Bookings],
-    )
-    .await?;
+    let (db, user) =
+        require_view_any(&state, &[Module::Items, Module::Clients, Module::Bookings]).await?;
     let mut q = blocking(move || db.read(|c| pricing::quote(c, &client_id, &item_id))).await?;
     q.strip(&user.perms);
     Ok(q)

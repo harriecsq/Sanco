@@ -298,9 +298,12 @@ async fn ensure_not_set_up(state: &AppState) -> Result<(), String> {
     if path.exists() {
         let changes = LocalChanges::new();
         let opts = state.open_options(&changes);
-        let has_workspace =
-            blocking(move || Db::open(opts).and_then(|db| db.workspace()).map(|w| w.is_some()))
-                .await?;
+        let has_workspace = blocking(move || {
+            Db::open(opts)
+                .and_then(|db| db.workspace())
+                .map(|w| w.is_some())
+        })
+        .await?;
         if has_workspace {
             return Err(format!(
                 "{} already holds a workspace, but sync did not start: {}",
