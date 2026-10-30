@@ -4,7 +4,7 @@ Desktop app for Sanco Medical Supply, a Philippine wholesaler of medical equipme
 
 Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows only for now.
 
-The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hopper.md`.
+The full plan is in `docs/PLAN.md` (the M11 and M12 plans are in `docs/plans/`).
 - Read its **Progress** section at the start of each session to see which milestone is next.
 - **When a milestone is finished, update the plan before ending the session:**
   - Set the milestone's status and date in the Progress table, and mark the next one as next.
