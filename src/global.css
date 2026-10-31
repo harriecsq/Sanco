@@ -146,3 +146,22 @@
 input[type="date"] {
   padding-right: 2rem;
 }
+
+/*
+ * HR printouts (components/hr/print.tsx): the payroll on landscape Letter,
+ * payslips on portrait Letter, two to a sheet.
+ */
+@page payroll {
+  size: letter landscape;
+  margin: 0.4in;
+}
+@page payslip {
+  size: letter portrait;
+  margin: 0.3in;
+}
+.print-payroll {
+  page: payroll;
+}
+.print-payslips {
+  page: payslip;
+}

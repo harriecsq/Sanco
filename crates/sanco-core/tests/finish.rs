@@ -414,10 +414,7 @@ fn todos_visibility_and_delete() {
     assert_eq!(titles(&ben_id), ["Count the warehouse"]);
     let archived = db.read(|c| todos::list(c, &ben_id, true)).unwrap();
     assert_eq!(
-        archived
-            .iter()
-            .map(|t| (t.id.as_str(), t.done))
-            .collect::<Vec<_>>(),
+        archived.iter().map(|t| (t.id.as_str(), t.done)).collect::<Vec<_>>(),
         [(for_ben.as_str(), true)]
     );
 

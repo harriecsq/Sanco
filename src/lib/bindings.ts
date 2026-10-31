@@ -355,6 +355,45 @@ export const commands = {
 	saveCsv: (name: string, content: string) => typedError<string, string>(__TAURI_INVOKE("save_csv", { name, content })),
 	/**  Opens Explorer with the file selected. */
 	showInFolder: (path: string) => typedError<null, string>(__TAURI_INVOKE("show_in_folder", { path })),
+	listEmployees: () => typedError<Employee[], string>(__TAURI_INVOKE("list_employees")),
+	/**  An employee with their debts, this year's attendance and payslips. */
+	employeeProfile: (id: string) => typedError<{
+	employee: Employee,
+	/**  Every debt, newest last; paid ones included. */
+	debts: DebtInfo[],
+	year: number,
+	/**  This year's days present, absences and holidays. */
+	present: number,
+	absent: number,
+	holidays: number,
+	/**  Posted payrolls, newest first. */
+	payslips: PayslipSummary[],
+} | null, string>(__TAURI_INVOKE("employee_profile", { id })),
+	/**  Adds or saves an employee. Returns their id. */
+	saveEmployee: (employee: EmployeeInput) => typedError<string, string>(__TAURI_INVOKE("save_employee", { employee })),
+	deleteEmployee: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_employee", { id })),
+	/**  Monday to Saturday of a week (given by its Saturday). */
+	attendanceWeek: (week: string) => typedError<AttendanceWeek, string>(__TAURI_INVOKE("attendance_week", { week })),
+	/**  Sets one attendance box. `status` null = not marked. */
+	setAttendance: (employeeId: string, date: string, status: "present" | "absent" | "holiday" | null, note: string) => typedError<null, string>(__TAURI_INVOKE("set_attendance", { employeeId, date, status, note })),
+	/**  Marks a day for every active employee (or only the boxes not marked). */
+	markAttendanceDay: (date: string, status: AttendanceStatus, note: string, onlyUnmarked: boolean) => typedError<null, string>(__TAURI_INVOKE("mark_attendance_day", { date, status, note, onlyUnmarked })),
+	/**  Debts of one employee, or everyone's. */
+	listDebts: (employeeId: string | null) => typedError<DebtInfo[], string>(__TAURI_INVOKE("list_debts", { employeeId })),
+	/**  What a debt's amount and weeks (or weekly amount) work out to. */
+	debtPlan: (plan: DebtPlanInput) => typedError<DebtPlan, string>(__TAURI_INVOKE("debt_plan", { plan })),
+	/**  Adds or saves a debt. Returns its id. */
+	saveDebt: (debt: DebtInput) => typedError<string, string>(__TAURI_INVOKE("save_debt", { debt })),
+	deleteDebt: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_debt", { id })),
+	/**
+	 *  Changes a debt's charge on a draft payroll; `amount_c` null = back to
+	 *  the schedule.
+	 */
+	setDebtCharge: (debtId: string, week: string, amountC: number | null) => typedError<null, string>(__TAURI_INVOKE("set_debt_charge", { debtId, week, amountC })),
+	/**  A week's payroll: posted, or computed live. `week` empty = this week. */
+	payrollWeek: (week: string) => typedError<PayrollWeek, string>(__TAURI_INVOKE("payroll_week", { week })),
+	postPayroll: (week: string) => typedError<null, string>(__TAURI_INVOKE("post_payroll", { week })),
+	voidPayroll: (week: string) => typedError<null, string>(__TAURI_INVOKE("void_payroll", { week })),
 	updateStatus: () => typedError<UpdateStatus, string>(__TAURI_INVOKE("update_status")),
 	/**  Downloads the installer from the PC at `addr`, starts it and quits. */
 	installUpdate: (addr: string) => typedError<null, string>(__TAURI_INVOKE("install_update", { addr })),
@@ -390,6 +429,30 @@ export type AllocationInfo = {
 export type AllocationInput = {
 	dr_id: string,
 	amount_c: number,
+};
+
+export type AttendanceCell = {
+	date: string,
+	status: AttendanceStatus | null,
+	note: string | null,
+};
+
+export type AttendanceRow = {
+	employee_id: string,
+	name: string,
+	active: boolean,
+	/**  Monday to Saturday. */
+	cells: AttendanceCell[],
+};
+
+export type AttendanceStatus = "present" | "absent" | "holiday";
+
+export type AttendanceWeek = {
+	week: string,
+	days: string[],
+	/**  The week's payroll is posted: attendance is locked. */
+	posted: boolean,
+	rows: AttendanceRow[],
 };
 
 export type AuditEntry = {
@@ -889,6 +952,81 @@ export type DateRange = {
 	to: string | null,
 };
 
+export type DebtInfo = {
+	id: string,
+	employee_id: string,
+	employee_name: string,
+	kind: DebtKind,
+	amount_c: number,
+	paid_c: number,
+	balance_c: number,
+	start_date: string,
+	weeks: number,
+	/**  The weekly amount (typed or computed). */
+	weekly_c: number,
+	/**  The weekly amount was typed. */
+	weekly_typed: boolean,
+	last_c: number,
+	first_week: string,
+	last_week: string,
+	remit_date: string | null,
+	/**  The last week falls after the remit date. */
+	remit_warning: boolean,
+	status: DebtStatus,
+	/**
+	 *  This week's charge: posted, or what the draft payroll would take if
+	 *  the employee works.
+	 */
+	this_week_c: number,
+	notes: string | null,
+};
+
+export type DebtInput = {
+	/**  `None` adds a debt. */
+	id: string | null,
+	employee_id: string,
+	kind: DebtKind,
+	amount_c: number,
+	start_date: string,
+	weeks: number | null,
+	weekly_c: number | null,
+	remit_date: string | null,
+	notes: string,
+};
+
+/**  Each kind is its own payroll column. */
+export type DebtKind = "pi_loan" | "pi_stl" | "sss_el" | "sss_sl" | "vale";
+
+export type DebtPlan = {
+	weeks: number,
+	/**  Charged each week but the last. */
+	weekly_c: number,
+	/**  The last week's charge (the rest). */
+	last_c: number,
+	/**  Saturday of the first and last charge. */
+	first_week: string,
+	last_week: string,
+	/**  The last week falls after the remit date. */
+	remit_warning: boolean,
+};
+
+/**  What a debt's amount, start and weeks (or typed weekly amount) work out to. */
+export type DebtPlanInput = {
+	amount_c: number,
+	start_date: string,
+	/**  Number of weeks, when the weekly amount isn't typed. */
+	weeks: number | null,
+	/**  A typed weekly amount; the number of weeks follows from it. */
+	weekly_c: number | null,
+	remit_date: string | null,
+};
+
+export type DebtStatus = "active" | "paid" | 
+/**  Balance left after its last week. */
+"overdue_schedule" | 
+/**  Balance left after the remit date. */
+"past_remit";
+
 export type DeliverInput = {
 	/**  When the goods were delivered (not in the future). */
 	date: string,
@@ -1036,6 +1174,49 @@ export type DrRequestInput = {
 };
 
 export type DrStatus = "requested" | "approved" | "delivered" | "cancelled";
+
+export type Employee = {
+	id: string,
+	name: string,
+	position: string | null,
+	daily_rate_c: number,
+	/**  Weekly contributions. */
+	sss_c: number,
+	philhealth_c: number,
+	pagibig_c: number,
+	start_date: string | null,
+	active: boolean,
+	notes: string | null,
+	/**  Balance left on all their debts. */
+	debt_balance_c: number,
+};
+
+export type EmployeeInput = {
+	/**  `None` adds an employee. */
+	id: string | null,
+	name: string,
+	position: string,
+	daily_rate_c: number,
+	sss_c: number,
+	philhealth_c: number,
+	pagibig_c: number,
+	start_date: string | null,
+	active: boolean,
+	notes: string,
+};
+
+export type EmployeeProfile = {
+	employee: Employee,
+	/**  Every debt, newest last; paid ones included. */
+	debts: DebtInfo[],
+	year: number,
+	/**  This year's days present, absences and holidays. */
+	present: number,
+	absent: number,
+	holidays: number,
+	/**  Posted payrolls, newest first. */
+	payslips: PayslipSummary[],
+};
 
 /**  Values only some roles may see. */
 export type Field = 
@@ -1222,7 +1403,7 @@ export type MarginRow = {
 	margin_bp: number | null,
 };
 
-export type Module = "dashboard" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "settings";
+export type Module = "dashboard" | "bookings" | "accounting" | "items" | "inventory" | "orders" | "clients" | "reports" | "hr" | "settings";
 
 export type NewUser = {
 	username: string,
@@ -1344,6 +1525,78 @@ export type PaymentInput = {
 };
 
 export type PaymentStatus = "posted" | "void";
+
+/**  One debt's charge on a payroll. */
+export type PayrollDebt = {
+	debt_id: string,
+	kind: DebtKind,
+	/**  Charged. */
+	amount_c: number,
+	/**  What the schedule asks (drafts). */
+	scheduled_c: number,
+	/**  The charge was changed by hand (drafts). */
+	changed: boolean,
+	/**  Balance before this week. */
+	balance_c: number,
+	notes: string | null,
+};
+
+export type PayrollRow = {
+	employee_id: string,
+	name: string,
+	daily_rate_c: number,
+	/**  Days present. */
+	days: number,
+	absent: number,
+	holidays: number,
+	/**  Boxes not marked. */
+	unmarked: number,
+	/**  At least one day present. Rows without are paid nothing. */
+	worked: boolean,
+	gross_c: number,
+	sss_c: number,
+	philhealth_c: number,
+	pagibig_c: number,
+	contrib_c: number,
+	debts: PayrollDebt[],
+	pi_loan_c: number,
+	pi_stl_c: number,
+	sss_el_c: number,
+	sss_sl_c: number,
+	vale_c: number,
+	deductions_c: number,
+	net_c: number,
+};
+
+export type PayrollStatus = "draft" | "posted" | "voided";
+
+export type PayrollWeek = {
+	/**  Saturday (payday). */
+	week: string,
+	monday: string,
+	status: PayrollStatus,
+	posted_at: number | null,
+	posted_by: string | null,
+	rows: PayrollRow[],
+	total_gross_c: number,
+	/**  Cash needed for payday. */
+	total_net_c: number,
+	/**  Boxes not marked, across everyone. */
+	unmarked: number,
+	/**  Employees whose deductions exceed their pay. */
+	over: string[],
+	/**  A week after this one: it can't be posted yet. */
+	future: boolean,
+	can_post: boolean,
+};
+
+export type PayslipSummary = {
+	week: string,
+	days: number,
+	gross_c: number,
+	deductions_c: number,
+	net_c: number,
+};
 
 export type PcSettings = {
 	/**  Start Sanco (hidden in the tray) when someone signs in to Windows. */

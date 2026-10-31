@@ -845,9 +845,7 @@ fn as_kind(db: &Db, id: &str, kind: ReceiptKind) -> DrRequestInput {
 
 fn switch(db: &Db, actor: &Actor, id: &str, kind: ReceiptKind) -> Result<()> {
     let (id, input) = (id.to_string(), as_kind(db, id, kind));
-    db.write(actor.clone(), move |tx| {
-        delivery::update(tx, &id, &input, None)
-    })
+    db.write(actor.clone(), move |tx| delivery::update(tx, &id, &input, None))
 }
 
 fn typed(db: &Db, actor: &Actor, id: &str, no: &str) -> Result<()> {
@@ -876,27 +874,19 @@ fn receipts_are_drs_or_invoices() {
     // The booking has VAT: an invoice by default. 2 × ₱125 + 12%.
     let inv = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 2)]).unwrap();
     let d = dr(&a.db, &inv);
-    assert_eq!(
-        (d.kind, d.vat, d.no_series.as_str()),
-        (ReceiptKind::Invoice, true, "SI")
-    );
+    assert_eq!((d.kind, d.vat, d.no_series.as_str()), (ReceiptKind::Invoice, true, "SI"));
     assert_eq!((d.totals.net_c, d.totals.gross_c), (25_000, 28_000));
     // Picked as a DR: no VAT.
     let mut input = as_kind(&a.db, &inv, ReceiptKind::Dr);
     input.lines[0].id = None;
-    let drid =
-        a.db.write(actor.clone(), move |tx| delivery::request(tx, &input))
-            .unwrap();
+    let drid = a
+        .db
+        .write(actor.clone(), move |tx| delivery::request(tx, &input))
+        .unwrap();
     let d = dr(&a.db, &drid);
-    assert_eq!(
-        (d.kind, d.vat, d.no_series.as_str()),
-        (ReceiptKind::Dr, false, "DR")
-    );
+    assert_eq!((d.kind, d.vat, d.no_series.as_str()), (ReceiptKind::Dr, false, "DR"));
     assert_eq!(d.totals.gross_c, 25_000);
-    assert!(
-        a.db.read(|c| numbering::is_manual(c, series::INVOICE))
-            .unwrap()
-    );
+    assert!(a.db.read(|c| numbering::is_manual(c, series::INVOICE)).unwrap());
 
     // Each booklet has its own numbers: DR 700 and invoice 700 don't clash.
     approve(&a.db, &actor, &[], &inv, None).unwrap();
@@ -921,10 +911,7 @@ fn receipts_are_drs_or_invoices() {
     // Switching type before delivery frees the number.
     switch(&a.db, &actor, &inv, ReceiptKind::Dr).unwrap();
     let d = dr(&a.db, &inv);
-    assert_eq!(
-        (d.kind, d.no.as_deref(), d.totals.gross_c),
-        (ReceiptKind::Dr, None, 25_000)
-    );
+    assert_eq!((d.kind, d.no.as_deref(), d.totals.gross_c), (ReceiptKind::Dr, None, 25_000));
     assert_eq!(d.status, DrStatus::Approved);
     // Invoice 700 can go on another invoice now.
     let other = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 1)]).unwrap();
@@ -947,17 +934,19 @@ fn receipts_are_drs_or_invoices() {
     deliver(&a.db, &actor, &drid, TODAY).unwrap();
 
     // Receivables tell them apart.
-    let cb =
-        a.db.read(|c| sanco_core::domain::receivables::client_balance(c, &client, TODAY))
-            .unwrap();
+    let cb = a
+        .db
+        .read(|c| sanco_core::domain::receivables::client_balance(c, &client, TODAY))
+        .unwrap();
     assert_eq!((cb.open_drs, cb.open_invoices), (1, 1));
     assert_eq!(cb.outstanding_c, 28_000 + 25_000);
-    let mut kinds: Vec<_> =
-        a.db.read(|c| sanco_core::domain::receivables::client_drs(c, &client, TODAY))
-            .unwrap()
-            .into_iter()
-            .map(|d| (d.kind, d.no))
-            .collect();
+    let mut kinds: Vec<_> = a
+        .db
+        .read(|c| sanco_core::domain::receivables::client_drs(c, &client, TODAY))
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.kind, d.no))
+        .collect();
     kinds.sort_by_key(|k| k.0 == ReceiptKind::Invoice);
     assert_eq!(
         kinds,

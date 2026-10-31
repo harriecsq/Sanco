@@ -71,7 +71,7 @@ export const Sidebar = component$(() => {
   const canSeeSync = can(user, "settings");
 
   return (
-    <aside class="flex w-60 shrink-0 flex-col border-r border-line bg-white">
+    <aside class="flex w-60 shrink-0 flex-col border-r border-line bg-white print:hidden">
       <div class="px-4 py-4">
         <Logo />
       </div>

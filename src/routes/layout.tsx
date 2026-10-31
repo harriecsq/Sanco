@@ -73,11 +73,13 @@ export default component$(() => {
   if (!store.user) return <Login onDone$={refresh} />;
 
   return (
-    <div class="flex h-screen">
+    <div class="flex h-screen print:block print:h-auto">
       <Sidebar />
-      <main class="min-w-0 flex-1 overflow-y-auto bg-surface-muted">
-        <UpdateBanner />
-        <div class="mx-auto max-w-6xl px-6 py-6">
+      <main class="min-w-0 flex-1 overflow-y-auto bg-surface-muted print:overflow-visible print:bg-white">
+        <div class="print:hidden">
+          <UpdateBanner />
+        </div>
+        <div class="mx-auto max-w-6xl px-6 py-6 print:max-w-none print:p-0">
           <Slot />
         </div>
       </main>

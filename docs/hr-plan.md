@@ -1,6 +1,6 @@
 # HR module: plan
 
-Status: agreed with the user on 2026-10-31. Not built yet.
+Status: agreed with the user on 2026-10-31. **Built 2026-10-31** (see "Build notes" at the end).
 
 The HR module covers employees and salary only for now.
 
@@ -9,7 +9,7 @@ The HR module covers employees and salary only for now.
 | Screen | Route | Purpose |
 |---|---|---|
 | Employees | `/hr/employees/` (profile: `?id=`) | List and profile |
-| Attendance | `/hr/attendance/?week=` | Weekly grid of click-to-toggle boxes |
+| Attendance | `/hr/?week=` (the module's first tab) | Weekly grid of click-to-toggle boxes |
 | Debts | `/hr/debts/` | Loans and vale, with balance and schedule |
 | Payroll | `/hr/payroll/?week=` | Saturday salary table, post, print |
 
@@ -212,3 +212,27 @@ Employees who leave are set inactive, never deleted. Rate changes affect unposte
 - **Registry and schema agree.**
 
 Build order: schema and core with tests → Employees → Attendance → Debts → Payroll → printing.
+
+## Build notes
+
+- **Routes:** Attendance is the HR index (`/hr/`); Payroll, Debts and Employees are tabs next to it.
+- **Last charge:** a computed weekly amount (₱1,000 over 3 weeks) gives ₱333.30, ₱333.30 and a last week of ₱333.40. This comes from the charge rule: on schedule it charges the weekly amount; behind schedule it charges the weekly amount plus the shortfall ÷ weeks left. It doesn't re-divide the balance every week, which would give ₱333.35 in week 2.
+- **Typed weekly amount:** it is a minimum. After a skip, the catch-up is added on top.
+- **Remit date:** optional, since a vale may have none.
+- **Holidays and inactive employees:**
+  - "Mark holiday for everyone" overwrites every active employee's box for that day.
+  - "All ✓" only fills boxes that aren't marked yet.
+  - Inactive employees still appear in a week where they have a mark.
+- **Voiding and re-posting:**
+  - Voiding only changes the payroll's status.
+  - A re-post reuses the derived-id rows. Lines it leaves out get `included = 0`, and debt lines it leaves out get `amount_c = 0`.
+  - Balances count only posted payrolls (`v_debt_paid`).
+- **Dashboard:**
+  - "Payroll this week" KPI.
+  - Issues: payrolls not posted (past weeks with days present), debts past their remit date, debts behind schedule.
+- **Printing:**
+  - `window.print()` with named `@page` rules in `global.css`: `payroll` is Letter landscape, `payslip` is Letter portrait.
+  - The app shell is hidden in print (`print:hidden`).
+  - Checked as PDFs in headless Chromium against the Oct 19–24 sheet: same amounts.
+- **Schema version:** this adds migration 13. PCs on a build without HR can't sync with PCs on one with it, so install the same build everywhere.
+

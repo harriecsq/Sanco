@@ -330,15 +330,13 @@ impl Sim {
         }
         let id = self.todo_ids[self.rng.below(self.todo_ids.len() as u64) as usize].clone();
         let db = self.peers[p].db();
-        let Some(old) = SERIES.into_iter().find(|s| {
-            db.read(|c| numbering::number_of(c, s, &id))
-                .unwrap()
-                .is_some()
-        }) else {
+        let Some(old) = SERIES
+            .into_iter()
+            .find(|s| db.read(|c| numbering::number_of(c, s, &id)).unwrap().is_some())
+        else {
             return;
         };
-        let new =
-            (self.rng.below(4) > 0).then(|| SERIES[self.rng.below(SERIES.len() as u64) as usize]);
+        let new = (self.rng.below(4) > 0).then(|| SERIES[self.rng.below(SERIES.len() as u64) as usize]);
         let res = new.map(|series| {
             let links = self.links(p);
             let peers: Vec<&dyn NumberPeer> = links.iter().map(|l| l as &dyn NumberPeer).collect();
@@ -482,12 +480,8 @@ impl Sim {
         let str_of = |r: &Row, c: &str| r[c].as_str().unwrap().to_string();
         // A freed number can meet a concurrent renumbering; nothing else may.
         assert!(
-            dump["conflicts"]
-                .iter()
-                .all(|c| c["tbl"] != json!("doc_numbers")
-                    || self
-                        .released
-                        .contains(c["row_id"].as_str().unwrap_or_default())),
+            dump["conflicts"].iter().all(|c| c["tbl"] != json!("doc_numbers")
+                || self.released.contains(c["row_id"].as_str().unwrap_or_default())),
             "seed {}: renumbering produced a concurrent edit",
             self.seed
         );
