@@ -103,7 +103,10 @@ pub fn perm_catalog() -> PermCatalog {
     PermCatalog {
         modules: Module::ALL
             .into_iter()
-            .map(|id| Labeled { id, label: id.label().into() })
+            .map(|id| Labeled {
+                id,
+                label: id.label().into(),
+            })
             .collect(),
         actions: Action::ALL
             .into_iter()
@@ -114,7 +117,10 @@ pub fn perm_catalog() -> PermCatalog {
             .collect(),
         fields: Field::ALL
             .into_iter()
-            .map(|id| Labeled { id, label: id.label().into() })
+            .map(|id| Labeled {
+                id,
+                label: id.label().into(),
+            })
             .collect(),
     }
 }

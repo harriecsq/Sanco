@@ -2,9 +2,9 @@
 
 Desktop app for Sanco Medical Supply, a Philippine wholesaler of medical equipment. It imports from suppliers in Taiwan and China and sells to retailers. The app covers the whole workflow: client inquiry → booking → delivery → collection, and supplier PO → TT payment → receiving into stock.
 
-Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows only for now.
+Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows, plus macOS (being tested, M13).
 
-The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hopper.md`.
+The full plan is in `docs/PLAN.md` (the M11 and M12 plans are in `docs/plans/`).
 - Read its **Progress** section at the start of each session to see which milestone is next.
 - **When a milestone is finished, update the plan before ending the session:**
   - Set the milestone's status and date in the Progress table, and mark the next one as next.
@@ -31,6 +31,7 @@ The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hoppe
   - Driving the UI from a script: start an instance with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9301` and its own `WEBVIEW2_USER_DATA_FOLDER`, then use the Chrome DevTools Protocol on that port (Node 24 has `WebSocket` built in).
 - `cargo clippy --workspace`: needs to stay clean.
 - `npx tauri build`: NSIS installer.
+- Releases: push a tag `v1.2.3` (after bumping the version) and `.github/workflows/release.yml` builds the NSIS installer and a universal macOS DMG (`src-tauri/tauri.macos.conf.json` sets targets `app`, `dmg`) on GitHub Actions into a draft Release. Unsigned.
 
 ## Layout
 ```

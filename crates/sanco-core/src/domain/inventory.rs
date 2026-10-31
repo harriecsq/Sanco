@@ -943,7 +943,10 @@ pub fn item_stock(conn: &Connection, today: &str) -> Result<Vec<ItemStock>> {
         // lots are together.
         let mut by_location: Vec<LocationQty> = Vec::new();
         for lot in &lots {
-            if by_location.last().is_none_or(|l| l.location_id != lot.location_id) {
+            if by_location
+                .last()
+                .is_none_or(|l| l.location_id != lot.location_id)
+            {
                 by_location.push(LocationQty {
                     location_id: lot.location_id.clone(),
                     qty: 0,

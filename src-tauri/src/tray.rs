@@ -7,7 +7,13 @@ use tauri::{AppHandle, Manager};
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Sanco", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Sanco (stops syncing)", true, None::<&str>)?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        "Quit Sanco (stops syncing)",
+        true,
+        None::<&str>,
+    )?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Sanco")

@@ -98,9 +98,7 @@ impl PeerClient {
 
     /// Downloads the peer's installer and checks it against `info`.
     pub async fn installer(&self, addr: &str, info: &UpdateInfo) -> Result<Vec<u8>> {
-        let mut res = self
-            .send(addr, self.get(addr, "/update/installer"))
-            .await?;
+        let mut res = self.send(addr, self.get(addr, "/update/installer")).await?;
         let mut bytes = Vec::with_capacity(info.size as usize);
         while let Some(chunk) = res.chunk().await.map_err(|e| unreachable(addr, e))? {
             bytes.extend_from_slice(&chunk);
