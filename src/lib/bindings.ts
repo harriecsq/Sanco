@@ -353,7 +353,7 @@ export const commands = {
 	 *  and returns its path. `name` is like "sales-by-client".
 	 */
 	saveCsv: (name: string, content: string) => typedError<string, string>(__TAURI_INVOKE("save_csv", { name, content })),
-	/**  Opens Explorer with the file selected. */
+	/**  Opens Explorer (Finder on macOS) with the file selected. */
 	showInFolder: (path: string) => typedError<null, string>(__TAURI_INVOKE("show_in_folder", { path })),
 	listEmployees: () => typedError<Employee[], string>(__TAURI_INVOKE("list_employees")),
 	/**  An employee with their debts, this year's attendance and payslips. */
