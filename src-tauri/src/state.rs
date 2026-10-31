@@ -108,8 +108,8 @@ impl AppState {
             app,
             extra_instance: args.is_extra_instance(),
             data_dir: args.data_dir.unwrap_or(default_dir),
-            machine_id: machine_id(),
-            name: args.name.unwrap_or_else(computer_name),
+            machine_id: sanco_core::machine::id(),
+            name: args.name.unwrap_or_else(sanco_core::machine::name),
             port: args.port.unwrap_or(sanco_net::DEFAULT_PORT),
             host: args.host,
             app_version: args
@@ -405,38 +405,6 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Stable id of this Windows install (`MachineGuid`). Changes when the
-/// database is copied to another PC, which then takes a new site id.
-fn machine_id() -> String {
-    let mut cmd = std::process::Command::new("reg");
-    cmd.args([
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Cryptography",
-        "/v",
-        "MachineGuid",
-    ]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd.output()
-        .ok()
-        .and_then(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .find(|l| l.contains("MachineGuid"))
-                .and_then(|l| l.split_whitespace().last())
-                .map(String::from)
-        })
-        .unwrap_or_else(computer_name)
-}
-
-fn computer_name() -> String {
-    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into())
-}
-
 /// Timeout for downloading a join snapshot's first bytes.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -444,6 +412,9 @@ pub const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 fn installer_path() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join(sanco_net::update::INSTALLER_NAME)))
+        .and_then(|exe| {
+            exe.parent()
+                .map(|d| d.join(sanco_net::update::INSTALLER_NAME))
+        })
         .unwrap_or_else(|| sanco_net::update::INSTALLER_NAME.into())
 }

@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sanco_core::db::migrations::SCHEMA_VERSION;
-use sanco_core::domain::boxes::{SerialNeed, Serials};
 use sanco_core::db::registry::DOC_NUMBERS;
+use sanco_core::domain::boxes::{SerialNeed, Serials};
 use sanco_core::repo::Listener;
 use sanco_core::sync::hlc::MAX_SKEW_MS;
 use sanco_core::sync::numbering::{
@@ -66,6 +66,8 @@ pub struct NodeConfig {
     /// This version's installer, shared with peers that run an older
     /// version (`GET /update`). `None` when there is none (dev builds).
     pub installer: Option<std::path::PathBuf>,
+    /// OS this PC reports in `/hello` (tests pretend another one).
+    pub os: String,
 }
 
 impl NodeConfig {
@@ -82,6 +84,7 @@ impl NodeConfig {
             claim_timeout: Duration::from_secs(2),
             batch_limit: 500,
             installer: None,
+            os: std::env::consts::OS.into(),
         }
     }
 }
@@ -104,6 +107,7 @@ pub struct PeerStatus {
     pub site: Option<String>,
     pub name: Option<String>,
     pub app_version: Option<String>,
+    pub os: Option<String>,
     pub state: PeerState,
     pub error: Option<String>,
     /// Last successful pull (UTC ms).
@@ -120,6 +124,7 @@ impl PeerStatus {
             site: None,
             name: None,
             app_version: None,
+            os: None,
             state: PeerState::Unknown,
             error: None,
             last_pull_ms: None,
@@ -339,12 +344,14 @@ impl Node {
             .await
     }
 
-    /// The newest version a known peer runs, if newer than ours. Peers seen
-    /// recently (online or blocked) come before offline ones.
+    /// The newest version a known peer on the same OS runs, if newer than
+    /// ours (another OS has the wrong installer). Peers seen recently
+    /// (online or blocked) come before offline ones.
     pub fn update_offer(&self) -> Option<UpdateOffer> {
         let ours = &self.inner.cfg.app_version;
         self.peers()
             .into_iter()
+            .filter(|p| p.os.as_ref() == Some(&self.inner.cfg.os))
             .filter_map(|p| {
                 let v = p.app_version.clone()?;
                 update::is_newer(&v, ours).then_some((p, v))
@@ -364,7 +371,11 @@ impl Node {
 
     /// Downloads the installer of a newer version from `addr` into `dir`
     /// and returns its path. Refuses anything not newer than this app.
-    pub async fn download_update(&self, addr: &str, dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    pub async fn download_update(
+        &self,
+        addr: &str,
+        dir: &std::path::Path,
+    ) -> Result<std::path::PathBuf> {
         let client = PeerClient::new(self.inner.token.clone(), Duration::from_secs(30));
         let info = client.update_info(addr).await?.ok_or_else(|| Error::Status {
             addr: addr.into(),
@@ -379,8 +390,7 @@ impl Node {
         }
         let bytes = client.installer(addr, &info).await?;
         tokio::fs::create_dir_all(dir).await?;
-        let name = format!("Sanco_{}_x64-setup.exe", info.version.replace(['/', '\\', ':'], "_"));
-        let path = dir.join(name);
+        let path = dir.join(update::download_name(&info.version));
         let tmp = path.with_extension("partial");
         tokio::fs::write(&tmp, &bytes).await?;
         tokio::fs::rename(&tmp, &path).await?;
@@ -673,6 +683,7 @@ impl Inner {
         p.site = Some(hello.site.clone());
         p.name = Some(hello.name.clone());
         p.app_version = Some(hello.app_version.clone());
+        p.os = Some(hello.os.clone());
     }
 
     fn record_ok(&self, addr: &str, hello: &Hello, report: ApplyReport) {
@@ -684,6 +695,7 @@ impl Inner {
         p.site = Some(hello.site.clone());
         p.name = Some(hello.name.clone());
         p.app_version = Some(hello.app_version.clone());
+        p.os = Some(hello.os.clone());
         p.state = PeerState::Online;
         p.error = None;
         p.last_pull_ms = Some(now);

@@ -31,8 +31,12 @@ pub async fn save_supplier(
     }
     let id = db.new_id().map_err(|e| e.to_string())?;
     let res = reserve_number(&state, series::SUPPLIER, &id).await?;
-    blocking(move || db.write(user.actor(), move |tx| suppliers::create(tx, &supplier, &res)))
-        .await
+    blocking(move || {
+        db.write(user.actor(), move |tx| {
+            suppliers::create(tx, &supplier, &res)
+        })
+    })
+    .await
 }
 
 #[tauri::command]

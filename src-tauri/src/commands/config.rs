@@ -45,7 +45,12 @@ pub async fn pricing_settings(state: State<'_, AppState>) -> Result<PricingSetti
 #[specta::specta]
 pub async fn set_vat_rate(state: State<'_, AppState>, vat_bp: i64) -> Result<(), String> {
     let (db, user) = require(&state, Module::Settings, Action::Edit).await?;
-    blocking(move || db.write(user.actor(), move |tx| settings::set_vat_rate_bp(tx, vat_bp))).await
+    blocking(move || {
+        db.write(user.actor(), move |tx| {
+            settings::set_vat_rate_bp(tx, vat_bp)
+        })
+    })
+    .await
 }
 
 #[tauri::command]
