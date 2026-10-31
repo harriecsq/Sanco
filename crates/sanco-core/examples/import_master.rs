@@ -46,7 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: File = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
 
     std::fs::create_dir_all(&dir)?;
-    let db = Db::open(OpenOptions::new(dir.join("sanco.db"), machine_id()))?;
+    let db = Db::open(OpenOptions::new(
+        dir.join("sanco.db"),
+        sanco_core::machine::id(),
+    ))?;
     if let Some(name) = workspace
         && db.workspace()?.is_none()
     {
@@ -100,25 +103,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("suppliers: {added} added, {skipped} already there");
     Ok(())
-}
-
-/// Same id the app opens the database with (`MachineGuid`), so the app keeps
-/// this database's site id instead of taking a new one.
-fn machine_id() -> String {
-    std::process::Command::new("reg")
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Cryptography",
-            "/v",
-            "MachineGuid",
-        ])
-        .output()
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .last()
-                .map(String::from)
-        })
-        .unwrap_or_else(|| "unknown".into())
 }

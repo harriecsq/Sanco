@@ -90,14 +90,9 @@ impl Pc {
     }
 
     async fn restart_with(&mut self, cfg: NodeConfig) {
-        let node = Node::start(
-            self.db.clone(),
-            self.changes.clone(),
-            cfg,
-            Arc::new(|_| {}),
-        )
-        .await
-        .unwrap();
+        let node = Node::start(self.db.clone(), self.changes.clone(), cfg, Arc::new(|_| {}))
+            .await
+            .unwrap();
         self.node = Some(node);
     }
 
@@ -380,7 +375,7 @@ async fn newer_peer_shares_its_installer() {
         .download_update(&offer.addr, &dir.path().join("updates"))
         .await
         .unwrap();
-    assert!(path.ends_with("Sanco_0.2.0_x64-setup.exe"));
+    assert!(path.ends_with(sanco_net::update::download_name("0.2.0")));
     assert_eq!(std::fs::read(&path).unwrap(), exe);
     // B can't take an "update" from a PC with the same or an older version.
     let b_addr = b.node().addr().unwrap();
@@ -394,5 +389,16 @@ async fn newer_peer_shares_its_installer() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no installer"), "{err}");
+
+    // A newer version on another OS has the wrong kind of installer for B.
+    let port = a.node().port();
+    a.stop().await;
+    let mut cfg = config("a");
+    cfg.port = port;
+    cfg.app_version = "0.3.0".into();
+    cfg.os = "other-os".into();
+    a.restart_with(cfg).await;
+    b.node().sync_now().await;
+    assert_eq!(b.node().update_offer(), None);
     b.stop().await;
 }

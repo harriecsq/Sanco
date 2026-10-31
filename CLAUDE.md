@@ -2,9 +2,9 @@
 
 Desktop app for Sanco Medical Supply, a Philippine wholesaler of medical equipment. It imports from suppliers in Taiwan and China and sells to retailers. The app covers the whole workflow: client inquiry → booking → delivery → collection, and supplier PO → TT payment → receiving into stock.
 
-Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows only for now.
+Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows, plus macOS (being tested, M13).
 
-The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hopper.md`.
+The full plan is in `docs/PLAN.md` (the M11 and M12 plans are in `docs/plans/`).
 - Read its **Progress** section at the start of each session to see which milestone is next.
 - **When a milestone is finished, update the plan before ending the session:**
   - Set the milestone's status and date in the Progress table, and mark the next one as next.
@@ -31,6 +31,7 @@ The full plan is in `C:\Users\Harrie\.claude\plans\i-want-to-make-parallel-hoppe
   - Driving the UI from a script: start an instance with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9301` and its own `WEBVIEW2_USER_DATA_FOLDER`, then use the Chrome DevTools Protocol on that port (Node 24 has `WebSocket` built in).
 - `cargo clippy --workspace`: needs to stay clean.
 - `npx tauri build`: NSIS installer.
+- Releases: push a tag `v1.2.3` (after bumping the version) and `.github/workflows/release.yml` builds the NSIS installer and a universal macOS DMG (`src-tauri/tauri.macos.conf.json` sets targets `app`, `dmg`) on GitHub Actions into a draft Release. Unsigned.
 
 ## Layout
 ```
@@ -113,6 +114,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - A PO gets its boxes when marked ordered, in the PO's `serial_year` (chosen on the PO, any year; fixed while it has boxes). Qty changes resize/add boxes or remove trailing unreceived ones; back to draft or cancel removes the unreceived ones. Received boxes never change.
   - Receiving is one line per box (`po_receipt_lines.box_id`, expiry per box). A stock receipt without a box makes boxes; adjustments and transfers name the box. DR lines record pieces per box (`dr_line_boxes`, derived ids, cleared not deleted); no draws = picked automatically (started boxes, then earliest expiry, then lowest serial). What is left in a box comes from `v_stock` (per item, location, expiry, box). Bookings and DRs stay in pieces and show the box equivalent.
   - Writes that make boxes: read-only `serials_for_*` first, then reserve the serials in one batch per series (`numbering::reserve_batch`, `NumberClaim.count`), then write with the `Serials` pool. Box serials are never renumbered after an offline clash (`numbering::keeps_clashes`; user decision: it won't happen).
+- **HR** (`domain/hr.rs`, plan in `docs/hr-plan.md`): employees, Mon–Sat attendance (present/absent/unpaid holiday/paid holiday; an unpaid holiday is like an absence and a paid holiday like a day present, but neither is counted as an absence), debts (PI Loan, PI STL, SSS EL, SSS SL, Vale) and the Saturday payroll. A payroll week is keyed by its Saturday. No paid day (present or paid holiday) = no pay, no contributions, no deductions that week. Debt money is in ₱0.05 steps; a week's charge comes from the balance (`scheduled_charge`), so a skipped or reduced week is spread over the weeks left. The payroll is computed live until posted; posting stores a snapshot (`payrolls`, `payroll_lines`, `payroll_debt_lines`, derived ids) and locks that week's attendance; it is voided to change. Posting is blocked while deductions exceed anyone's pay. HR is admin-only by default (`Perms::staff` leaves it out).
 
 ## Glossary
 - **Booking:** a confirmed client order.
@@ -124,7 +126,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Margin tier:** a client's default margin %.
 
 ## Modules
-Dashboard · Booking · Accounting (DR, receivables, checks, payments, bank accounts) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
+Dashboard · Booking · Accounting (DR, receivables, checks, payments, bank accounts) · Items (catalog, cost sheet, rates) · Inventory · Order (suppliers, POs, TT, receiving) · Clients · Reports · HR (attendance, payroll, debts, employees) · Settings (users, roles, devices/sync, conflicts, backups, company, number formats, charge types, VAT).
 
 ## UI
 - **Theme:** white surfaces. Brand teal-green `brand-500 #13876F` for primary actions, active nav, links and focus. `brand-50 #E8F5F1` for subtle fills. Text is `ink #1F2937`.

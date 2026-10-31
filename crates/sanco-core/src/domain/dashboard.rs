@@ -15,7 +15,7 @@ use crate::domain::bookings::{self, BookingStatus, DeliveryProgress};
 use crate::domain::delivery::{self, DrStatus, ReceiptKind};
 use crate::domain::payments::{self, CheckStatus, PaymentStatus};
 use crate::domain::purchasing::{self, PoStatus};
-use crate::domain::{inventory, peso, receivables};
+use crate::domain::{hr, inventory, peso, receivables};
 use crate::error::Result;
 use crate::time::add_days;
 
@@ -465,6 +465,51 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             "Client names used twice",
             dupes,
             "/clients/?status=duplicate",
+        );
+    }
+    if sees(Module::Hr) {
+        let this_week = hr::week_of(today).unwrap_or_default();
+        let pay = hr::payroll_week(conn, &this_week, today)?;
+        out.kpi(
+            Module::Hr,
+            "payroll_week",
+            "Payroll this week",
+            pay.total_net_c,
+            true,
+            match pay.status {
+                hr::PayrollStatus::Posted => "Posted".to_string(),
+                _ => "Not posted yet".to_string(),
+            },
+            Tone::Normal,
+            &format!("/hr/payroll/?week={this_week}"),
+        );
+        let weeks = hr::unposted_weeks(conn, today)?;
+        let first = weeks.first().cloned().unwrap_or_default();
+        out.issue(
+            "payroll_unposted",
+            "Payrolls not posted",
+            weeks,
+            &format!("/hr/payroll/?week={first}"),
+        );
+        let debts = hr::list_debts(conn, None, today)?;
+        let named = |status: hr::DebtStatus| -> Vec<String> {
+            debts
+                .iter()
+                .filter(|d| d.status == status)
+                .map(|d| format!("{} ({})", d.employee_name, d.kind.label()))
+                .collect()
+        };
+        out.issue(
+            "debt_past_remit",
+            "Debts past their remit date",
+            named(hr::DebtStatus::PastRemit),
+            "/hr/debts/?status=past_remit",
+        );
+        out.issue(
+            "debt_overdue",
+            "Debts behind schedule",
+            named(hr::DebtStatus::OverdueSchedule),
+            "/hr/debts/?status=overdue_schedule",
         );
     }
     if sees(Module::Settings) {

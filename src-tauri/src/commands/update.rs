@@ -1,7 +1,8 @@
 //! App updates handed from PC to PC (see `sanco_net::update`): a banner
-//! offers the newest version a peer runs; installing downloads that peer's
-//! installer, starts it (Windows asks for admin rights) and quits, and the
-//! installer starts Sanco again when it's done.
+//! offers the newest version a peer on the same OS runs; installing
+//! downloads that peer's installer, starts it (Windows asks for admin
+//! rights) and quits, and the installer starts Sanco again when it's done.
+//! On macOS it opens the disk image instead.
 
 use serde::Serialize;
 use specta::Type;
@@ -81,18 +82,39 @@ pub async fn install_update(state: State<'_, AppState>, addr: String) -> Result<
     };
     let path = std::path::absolute(&path).unwrap_or(path);
     log::info!("starting installer {}", path.display());
-    // `start` goes through ShellExecute, so Windows shows the admin prompt
-    // the per-machine installer needs. /P = passive, /R = start Sanco after.
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/C", "start", ""]).arg(&path).args(["/P", "/R"]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd.spawn()
-        .map_err(|e| format!("could not start the installer: {e}"))?;
+    start_installer(&path).map_err(|e| format!("could not start the installer: {e}"))?;
     state.app.exit(0);
     Ok(())
+}
+
+/// `start` goes through ShellExecute, so Windows shows the admin prompt the
+/// per-machine installer needs. /P = passive, /R = start Sanco after.
+#[cfg(windows)]
+fn start_installer(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(path)
+        .args(["/P", "/R"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(drop)
+}
+
+/// Opens the disk image in Finder; the user drags Sanco to Applications and
+/// starts it again.
+#[cfg(target_os = "macos")]
+fn start_installer(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(drop)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn start_installer(_: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "updates are not supported on this system",
+    ))
 }

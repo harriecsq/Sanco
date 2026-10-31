@@ -23,7 +23,19 @@ pub fn is_allowed_peer(ip: IpAddr) -> bool {
 /// This PC's Tailscale IPv4 address, from the `tailscale` CLI. `None` if
 /// Tailscale isn't installed, running or logged in. Blocks briefly.
 pub fn detect_ip() -> Option<String> {
+    #[cfg(windows)]
     const CANDIDATES: &[&str] = &["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"];
+    // Apps started from Finder don't see the shell's PATH. The App Store and
+    // standalone apps keep the CLI inside the bundle; Homebrew in its prefix.
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[&str] = &[
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+    ];
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const CANDIDATES: &[&str] = &["tailscale"];
     for exe in CANDIDATES {
         let mut cmd = Command::new(exe);
         cmd.args(["ip", "-4"]);

@@ -48,10 +48,9 @@ pub async fn save_po(state: State<'_, AppState>, po: PoInput) -> Result<String, 
     if let Some(id) = po.id.clone() {
         // Check first, so a refused edit doesn't use up box serials.
         let (read, input, now) = (db.clone(), po.clone(), db.now_ms());
-        let needs = blocking(move || {
-            read.read(|c| purchasing::serials_for_update(c, &input, costs, now))
-        })
-        .await?;
+        let needs =
+            blocking(move || read.read(|c| purchasing::serials_for_update(c, &input, costs, now)))
+                .await?;
         let mut serials = reserve_serials(&state, needs, &id).await?;
         blocking(move || {
             db.write(user.actor(), move |tx| {
@@ -88,10 +87,9 @@ pub async fn set_po_status(
     let (db, user) = require(&state, Module::Orders, needed).await?;
     // Marking it ordered gives its boxes their serials.
     let (read, rid, input, now) = (db.clone(), id.clone(), change.clone(), db.now_ms());
-    let needs = blocking(move || {
-        read.read(|c| purchasing::serials_for_status(c, &rid, &input, now))
-    })
-    .await?;
+    let needs =
+        blocking(move || read.read(|c| purchasing::serials_for_status(c, &rid, &input, now)))
+            .await?;
     let mut serials = if needs.is_empty() {
         Serials::none()
     } else {

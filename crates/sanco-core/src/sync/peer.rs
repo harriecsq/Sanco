@@ -38,12 +38,20 @@ pub struct Hello {
     pub epoch: String,
     pub schema: u32,
     pub app_version: String,
+    /// The peer's OS (`std::env::consts::OS`), so updates only come from a
+    /// PC with the same kind of installer. Older versions ran on Windows only.
+    #[serde(default = "windows")]
+    pub os: String,
     /// The peer's PC name.
     pub name: String,
     /// The peer's wall clock when it answered.
     pub now_ms: i64,
     /// The peer's latest version number.
     pub head: i64,
+}
+
+fn windows() -> String {
+    "windows".into()
 }
 
 /// Where a join snapshot came from, so the new PC can skip pulling it again.
@@ -153,6 +161,7 @@ impl Db {
             epoch: self.epoch().to_string(),
             schema: SCHEMA_VERSION,
             app_version: app_version.to_string(),
+            os: std::env::consts::OS.to_string(),
             name: name.to_string(),
             now_ms: self.now_ms(),
             head: self.head()?,

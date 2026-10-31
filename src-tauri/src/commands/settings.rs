@@ -165,5 +165,10 @@ pub async fn set_autostart(state: State<'_, AppState>, enabled: bool) -> Result<
         return Err("test instances can't change autostart".into());
     }
     let launch = state.app.autolaunch();
-    if enabled { launch.enable() } else { launch.disable() }.map_err(|e| e.to_string())
+    if enabled {
+        launch.enable()
+    } else {
+        launch.disable()
+    }
+    .map_err(|e| e.to_string())
 }

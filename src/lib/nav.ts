@@ -17,6 +17,7 @@ export const NAV: NavItem[] = [
   { module: "orders", href: "/orders/", label: "Order", icon: "M2.5 6h11.5v10H2.5z M14 9.5h4l3.5 3.5v3H14 M6.5 19.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M17 19.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" },
   { module: "clients", href: "/clients/", label: "Clients", icon: "M15.5 19.5v-1.5a3.5 3.5 0 0 0-3.5-3.5H6a3.5 3.5 0 0 0-3.5 3.5v1.5 M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M21.5 19.5v-1.5a3.5 3.5 0 0 0-2.5-3.4 M15.5 4.2a3.5 3.5 0 0 1 0 6.6" },
   { module: "reports", href: "/reports/", label: "Reports", icon: "M3.5 20.5h17 M6.5 16.5v-5 M11 16.5v-10 M15.5 16.5v-7 M20 16.5v-3" },
+  { module: "hr", href: "/hr/", label: "HR", icon: "M4 5h16v14H4z M9 11a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M6 16c.6-1.8 1.8-2.7 3-2.7s2.4.9 3 2.7 M14 9h4 M14 13h4" },
   { module: "settings", href: "/settings/", label: "Settings", icon: "M4 6.5h9 M17 6.5h3 M4 12h3 M11 12h9 M4 17.5h11 M19 17.5h1 M15 4.5v4 M9 10v4 M17 15.5v4" },
 ];
 

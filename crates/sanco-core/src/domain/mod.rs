@@ -11,6 +11,7 @@ pub mod clients;
 pub mod conflicts;
 pub mod dashboard;
 pub mod delivery;
+pub mod hr;
 pub mod inventory;
 pub mod items;
 pub mod locations;

@@ -492,6 +492,81 @@ pub static TABLES: &[TableDef] = &[
             int("active"),
         ],
     },
+    TableDef {
+        name: "employees",
+        cols: &[
+            text("name"),
+            text("position"),
+            int("daily_rate_c"),
+            int("sss_c"),
+            int("philhealth_c"),
+            int("pagibig_c"),
+            text("start_date"),
+            int("active"),
+            text("notes"),
+        ],
+    },
+    TableDef {
+        name: "attendance",
+        cols: &[
+            text("employee_id"),
+            text("date"),
+            text("status"),
+            text("note"),
+        ],
+    },
+    TableDef {
+        name: "employee_debts",
+        cols: &[
+            text("employee_id"),
+            text("kind"),
+            int("amount_c"),
+            text("start_date"),
+            int("weeks"),
+            int("weekly_c"),
+            text("remit_date"),
+            text("notes"),
+        ],
+    },
+    TableDef {
+        name: "debt_overrides",
+        cols: &[text("debt_id"), text("week"), int("amount_c")],
+    },
+    TableDef {
+        name: "payrolls",
+        cols: &[
+            text("week"),
+            text("status"),
+            int("posted_at"),
+            text("posted_by"),
+        ],
+    },
+    TableDef {
+        name: "payroll_lines",
+        cols: &[
+            text("payroll_id"),
+            text("employee_id"),
+            text("name"),
+            int("daily_rate_c"),
+            int("days"),
+            int("gross_c"),
+            int("sss_c"),
+            int("philhealth_c"),
+            int("pagibig_c"),
+            int("net_c"),
+            int("included"),
+        ],
+    },
+    TableDef {
+        name: "payroll_debt_lines",
+        cols: &[
+            text("payroll_id"),
+            text("payroll_line_id"),
+            text("debt_id"),
+            text("kind"),
+            int("amount_c"),
+        ],
+    },
 ];
 
 pub fn table(name: &str) -> Result<&'static TableDef> {
