@@ -1,6 +1,6 @@
 # HR module: plan
 
-Status: agreed with the user on 2026-10-31. Not built yet. One question is still open (section 11).
+Status: agreed with the user on 2026-10-31. Not built yet.
 
 The HR module covers employees and salary only for now.
 
@@ -119,6 +119,7 @@ Employees who leave are set inactive, never deleted. Rate changes affect unposte
 - SSS/PI/PH = the three contributions added together. Hovering shows the split.
 - Each loan column = the charges for that employee's debts of that type.
 - Amount = Total − all deductions.
+- A **week total** (the sum of every Amount, i.e. cash needed for payday) is shown on screen above the table. It is **not** printed.
 
 **Employees who didn't work** (no green day) get no pay, no contributions and no deductions. They appear as a grey "No work this week" row and are left off the printouts.
 
@@ -150,7 +151,7 @@ Employees who leave are set inactive, never deleted. Rate changes affect unposte
 - Title **PAYROLL** and the period.
 - Columns as in section 6, plus a **Signature** column.
 - Rows are tall enough to sign, and empty cells are left blank.
-- This matches the current Excel sheet.
+- This matches the current Excel sheet. There is no totals row.
 
 **Payslip (per employee):** this matches the current payslip.
 - Company name, **PAYSLIP**, the period and the employee's name.
@@ -211,7 +212,3 @@ Employees who leave are set inactive, never deleted. Rate changes affect unposte
 - **Registry and schema agree.**
 
 Build order: schema and core with tests → Employees → Attendance → Debts → Payroll → printing.
-
-## 11. Open
-
-- **Totals row on the printed payroll:** a final row summing every employee's Amount. For the Oct 26–31 sheet that would be ₱21,846.00, the total cash to withdraw. This is separate from each person's net pay. Add it or leave it off?
