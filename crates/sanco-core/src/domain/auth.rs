@@ -32,11 +32,12 @@ pub enum Module {
     Orders,
     Clients,
     Reports,
+    Hr,
     Settings,
 }
 
 impl Module {
-    pub const ALL: [Module; 9] = [
+    pub const ALL: [Module; 10] = [
         Module::Dashboard,
         Module::Bookings,
         Module::Accounting,
@@ -45,6 +46,7 @@ impl Module {
         Module::Orders,
         Module::Clients,
         Module::Reports,
+        Module::Hr,
         Module::Settings,
     ];
 
@@ -58,6 +60,7 @@ impl Module {
             Module::Orders => "Order",
             Module::Clients => "Clients",
             Module::Reports => "Reports",
+            Module::Hr => "HR",
             Module::Settings => "Settings",
         }
     }
@@ -141,11 +144,12 @@ impl Perms {
         }
     }
 
-    /// Every action on every module except Settings, no sensitive fields.
+    /// Every action on every module except Settings and HR (salaries), no
+    /// sensitive fields.
     pub fn staff() -> Self {
         let modules = Module::ALL
             .into_iter()
-            .filter(|m| *m != Module::Settings)
+            .filter(|m| !matches!(m, Module::Settings | Module::Hr))
             .map(|m| (m, Action::ALL.into_iter().collect()))
             .collect();
         Self {
@@ -354,6 +358,7 @@ mod tests {
         p.merge(&Perms::staff());
         assert!(p.can(Module::Clients, Action::Delete));
         assert!(!p.can(Module::Settings, Action::View));
+        assert!(!p.can(Module::Hr, Action::View));
         assert!(!p.sees(Field::Costs));
         p.merge(&Perms {
             fields: [Field::Costs].into(),
