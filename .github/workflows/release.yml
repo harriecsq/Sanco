@@ -1,0 +1,86 @@
+# Release builds: push a tag like v1.3.0 and this builds the Windows installer
+# (NSIS, same as `npx tauri build`, incl. windows/hooks.nsh) and a universal
+# macOS DMG (Apple Silicon + Intel), then attaches both to a draft GitHub
+# Release. Check the draft and publish it by hand.
+#
+# Unsigned: Windows shows SmartScreen ("More info" → "Run anyway"); on the Mac,
+# right-click Sanco → Open once (or System Settings → Privacy & Security →
+# "Open Anyway").
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.result }}
+    steps:
+      - id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace("refs/tags/", "");
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Sanco ${tag}`,
+              body: [
+                "**Windows:** run `Sanco_*_x64-setup.exe`. Installed PCs can also update each other from the app.",
+                "",
+                "**Mac:** open `Sanco_*_universal.dmg`, drag Sanco to Applications, then right-click Sanco → Open the first time (the app is not signed).",
+                "",
+                "Every PC must run the same version to sync.",
+              ].join("\n"),
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            rust_targets: ""
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
+    # env:
+    #   CARGO_BUILD_JOBS: 2   # lower this if a runner runs out of memory
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ${{ matrix.platform }}
+
+      - run: npm ci
+
+      # beforeBuildCommand (npm run build) builds, typechecks and lints the frontend.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: ${{ matrix.args }}

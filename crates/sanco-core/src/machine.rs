@@ -1,6 +1,7 @@
 //! Which computer this is: a stable id (so a database copied to another PC
 //! takes a new site id) and a display name. Windows and macOS.
 
+#[cfg(any(windows, target_os = "macos"))]
 use std::process::Command;
 
 /// Stable id of this OS install: `MachineGuid` on Windows, the hardware
@@ -65,6 +66,7 @@ fn mac_computer_name() -> Option<String> {
 }
 
 /// Runs a small system tool without a console window and returns stdout.
+#[cfg(any(windows, target_os = "macos"))]
 fn run(exe: &str, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(exe);
     cmd.args(args);

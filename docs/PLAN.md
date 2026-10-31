@@ -197,7 +197,8 @@ _Update this section when each milestone is finished: set its status, the date, 
 | M11 Boxes + serials | ✅ Done | 2026-10-27 | See M11 notes below. Commit `f6400c2` on main (not pushed); version not bumped yet (still 1.1.0). Plan was `m11-boxes-serials.md`. Schema **v11** (0010 shipment charges committed first as `e2e29bb`): every PC must update together. |
 | M12 DR or Invoice | 🟡 Code done, UI click-through pending | 2026-10-27 | See M12 notes below. Plan was `m12-dr-invoice.md`. Commit `d305311` on main (not pushed; `7956423` before it is cargo fmt only); version not bumped (still 1.1.0). Schema **v12**: every PC must update together. |
 | BD removal | ✅ Code done | 2026-10-27 | See BD removal notes below. Commit `aea9cdf` on main. No schema change (still v12). |
-| M13 macOS support | 🟡 **Next.** Code on branch, Mac build + test pending | 2026-10-31 | See M13 notes below. Branch `macos-support` (pushed; `f52a909`, on top of `8334eb6` version 1.2.0 and `c5b90d9` cargo fmt). **Not merged to main.** Never compiled on a Mac yet. No schema change (still v12). |
+| M13 macOS support | 🟡 **Next.** Merged with HR, Mac build via GitHub Actions pending | 2026-10-31 | See M13 notes below. Branch `macos-support` (`a0bb228` and earlier; `3538159` "mac" left out: it committed `target/` and churned `package-lock.json`) merged into the HR branch as `claude/wonderful-edison-avq5gb`. Release builds (NSIS + universal DMG) run on GitHub Actions from a `v*` tag. Never run on a Mac yet. |
+| HR | ✅ Code done | 2026-10-31 | See `docs/hr-plan.md` (plan + build notes). Commits `27557b0`, `9207142`. Released together with M13 as **1.3.0**. Schema **v13** (migration `0013_hr`): every PC must update together. |
 
 **M0 notes**
 - **Toolchain:** VS Build Tools 2022 (C++) and rustc 1.99.1 (MSVC) installed via winget. Node 24, Tailscale 1.102 were already present.
@@ -455,8 +456,8 @@ _Update this section when each milestone is finished: set its status, the date, 
 - **Not done:**
   1. **Mac build.** A friend's Mac is compiling it (`npm run app`, then `npx tauri build --bundles app,dmg`; `tauri.conf.json` targets only `nsis`, so the flag is needed). Can't cross-compile from Windows. Fix any Mac errors on the branch.
   2. **Mac test:** Tailscale, join with a code, a booking both ways, tray, autostart, "Show in folder", CSS/date formatting in WebKit. If it used the real workspace: remove the Mac from Settings → Devices, delete Sanco and `~/Library/Application Support/ph.sanco.desktop`.
-  3. **Bundle config:** add a `tauri.macos.conf.json` with targets `app`, `dmg`; decide on Intel + Apple Silicon (`--target universal-apple-darwin`).
-  4. **Distribution:** decide GitHub Actions (`tauri-apps/tauri-action`) vs building on a Mac. Unsigned is the current assumption: each user clicks System Settings → Privacy & Security → "Open Anyway" once. Signing + notarization needs the $99/year Apple account.
+  3. ~~**Bundle config:**~~ done 2026-10-31: `src-tauri/tauri.macos.conf.json` sets targets `app`, `dmg` (Tauri merges it over `tauri.conf.json` on macOS; arrays are replaced, so Windows keeps `nsis` only). The DMG is universal (`--target universal-apple-darwin`), so Intel and Apple Silicon Macs take the same file.
+  4. ~~**Distribution:**~~ done 2026-10-31: `.github/workflows/release.yml`. Pushing a tag `v*` builds on `windows-latest` (same as `npx tauri build`: NSIS with `hooks.nsh`) and `macos-latest` (universal DMG) and attaches both to a **draft** GitHub Release; publish it by hand. Unsigned: on the Mac, right-click → Open (or System Settings → Privacy & Security → "Open Anyway") once. Signing + notarization needs the $99/year Apple account.
   5. **Mac-to-Mac updates:** nothing puts a dmg next to the app, so a Mac only shares one with `--installer`. Decide how the dmg gets there. Until then Macs update by hand.
   6. **Finish:** merge to main; change "Windows only for now" in `CLAUDE.md`, and the `Commands`/`Sync` update notes there.
 - **Gotchas:**
