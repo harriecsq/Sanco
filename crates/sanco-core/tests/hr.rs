@@ -90,6 +90,7 @@ fn mark(db: &Db, actor: &Actor, e: &str, week: &str, statuses: [Option<Attendanc
 const P: Option<AttendanceStatus> = Some(AttendanceStatus::Present);
 const A: Option<AttendanceStatus> = Some(AttendanceStatus::Absent);
 const H: Option<AttendanceStatus> = Some(AttendanceStatus::Holiday);
+const PH: Option<AttendanceStatus> = Some(AttendanceStatus::PaidHoliday);
 
 fn full_week(db: &Db, actor: &Actor, e: &str, week: &str) {
     mark(db, actor, e, week, [P; 6]);
@@ -261,6 +262,41 @@ fn holidays_are_unpaid_but_not_absences() {
     assert_eq!(
         (profile.present, profile.absent, profile.holidays),
         (1, 1, 2)
+    );
+}
+
+#[test]
+fn paid_holidays_are_paid_days() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(tmp.path(), "a", 1);
+    let actor = setup(&a.db);
+    let e = add_employee(&a.db, &actor, "Gerard Abron");
+
+    // Five days present and a paid holiday: paid for six.
+    mark(&a.db, &actor, &e, W1, [P, P, P, P, PH, P]);
+    let r = payroll(&a.db, W1).rows.remove(0);
+    assert_eq!((r.days, r.paid_holidays, r.holidays), (6, 1, 0));
+    assert_eq!(r.gross_c, 6 * 76_000);
+
+    // A week of only paid holidays still counts as a paid week.
+    mark(&a.db, &actor, &e, W2, [PH, PH, None, None, None, None]);
+    let r = payroll(&a.db, W2).rows.remove(0);
+    assert!(r.worked);
+    assert_eq!((r.days, r.gross_c, r.contrib_c), (2, 152_000, 31_075));
+
+    // Neither kind of holiday is an absence.
+    let profile =
+        a.db.read(|c| hr::employee_profile(c, &e, W1))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        (
+            profile.present,
+            profile.absent,
+            profile.holidays,
+            profile.paid_holidays
+        ),
+        (5, 0, 0, 3)
     );
 }
 

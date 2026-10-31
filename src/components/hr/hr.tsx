@@ -68,22 +68,28 @@ export const MARK: Record<"none" | AttendanceStatus, { label: string; box: strin
   none: { label: "Not marked", box: "bg-white border-line" },
   present: { label: "Present", box: "bg-emerald-500 border-emerald-600" },
   absent: { label: "Absent", box: "bg-red-500 border-red-600" },
-  holiday: { label: "Holiday", box: "bg-yellow-300 border-yellow-500" },
+  holiday: { label: "Unpaid holiday", box: "bg-yellow-300 border-yellow-500" },
+  paid_holiday: { label: "Paid holiday", box: "bg-blue-500 border-blue-600" },
 };
 
-/** Click order: white → green → red → yellow → white. */
+const ORDER: (AttendanceStatus | null)[] = [null, "present", "absent", "holiday", "paid_holiday"];
+
+/** Click order: white → green → red → yellow → blue → white. */
 export const nextMark = (s: AttendanceStatus | null): AttendanceStatus | null =>
-  s === null ? "present" : s === "present" ? "absent" : s === "absent" ? "holiday" : null;
+  ORDER[(ORDER.indexOf(s) + 1) % ORDER.length];
+
+/** Days paid at the daily rate. */
+export const isPaidDay = (s: AttendanceStatus | null) => s === "present" || s === "paid_holiday";
 
 export const Legend = component$(() => (
   <div class="flex flex-wrap items-center gap-4 text-sm text-ink-muted" aria-label="Legend">
-    {(["present", "absent", "holiday", "none"] as const).map((k) => (
+    {(["present", "absent", "holiday", "paid_holiday", "none"] as const).map((k) => (
       <span key={k} class="flex items-center gap-1.5">
         <span class={["inline-block size-4 rounded border", MARK[k].box]} />
         {MARK[k].label}
       </span>
     ))}
-    <span class="text-xs">Click a box to change it. Holidays are unpaid but aren't counted as absences.</span>
+    <span class="text-xs">Click a box to change it. Pay counts green and blue. Holidays aren't counted as absences.</span>
   </div>
 ));
 

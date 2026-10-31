@@ -362,10 +362,11 @@ export const commands = {
 	/**  Every debt, newest last; paid ones included. */
 	debts: DebtInfo[],
 	year: number,
-	/**  This year's days present, absences and holidays. */
+	/**  This year's days present, absences, unpaid and paid holidays. */
 	present: number,
 	absent: number,
 	holidays: number,
+	paid_holidays: number,
 	/**  Posted payrolls, newest first. */
 	payslips: PayslipSummary[],
 } | null, string>(__TAURI_INVOKE("employee_profile", { id })),
@@ -375,7 +376,11 @@ export const commands = {
 	/**  Monday to Saturday of a week (given by its Saturday). */
 	attendanceWeek: (week: string) => typedError<AttendanceWeek, string>(__TAURI_INVOKE("attendance_week", { week })),
 	/**  Sets one attendance box. `status` null = not marked. */
-	setAttendance: (employeeId: string, date: string, status: "present" | "absent" | "holiday" | null, note: string) => typedError<null, string>(__TAURI_INVOKE("set_attendance", { employeeId, date, status, note })),
+	setAttendance: (employeeId: string, date: string, status: "present" | "absent" | 
+/**  An unpaid holiday. */
+"holiday" | 
+/**  A holiday paid at the daily rate, like a day present. */
+"paid_holiday" | null, note: string) => typedError<null, string>(__TAURI_INVOKE("set_attendance", { employeeId, date, status, note })),
 	/**  Marks a day for every active employee (or only the boxes not marked). */
 	markAttendanceDay: (date: string, status: AttendanceStatus, note: string, onlyUnmarked: boolean) => typedError<null, string>(__TAURI_INVOKE("mark_attendance_day", { date, status, note, onlyUnmarked })),
 	/**  Debts of one employee, or everyone's. */
@@ -445,7 +450,11 @@ export type AttendanceRow = {
 	cells: AttendanceCell[],
 };
 
-export type AttendanceStatus = "present" | "absent" | "holiday";
+export type AttendanceStatus = "present" | "absent" | 
+/**  An unpaid holiday. */
+"holiday" | 
+/**  A holiday paid at the daily rate, like a day present. */
+"paid_holiday";
 
 export type AttendanceWeek = {
 	week: string,
@@ -1210,10 +1219,11 @@ export type EmployeeProfile = {
 	/**  Every debt, newest last; paid ones included. */
 	debts: DebtInfo[],
 	year: number,
-	/**  This year's days present, absences and holidays. */
+	/**  This year's days present, absences, unpaid and paid holidays. */
 	present: number,
 	absent: number,
 	holidays: number,
+	paid_holidays: number,
 	/**  Posted payrolls, newest first. */
 	payslips: PayslipSummary[],
 };
@@ -1545,13 +1555,15 @@ export type PayrollRow = {
 	employee_id: string,
 	name: string,
 	daily_rate_c: number,
-	/**  Days present. */
+	/**  Paid days: present plus paid holidays. */
 	days: number,
 	absent: number,
+	/**  Unpaid holidays. */
 	holidays: number,
+	paid_holidays: number,
 	/**  Boxes not marked. */
 	unmarked: number,
-	/**  At least one day present. Rows without are paid nothing. */
+	/**  At least one paid day. Rows without are paid nothing. */
 	worked: boolean,
 	gross_c: number,
 	sss_c: number,

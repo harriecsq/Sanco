@@ -350,8 +350,11 @@ export default component$(() => {
                   <div class={hint}>Days present</div>
                 </div>
                 <div>
-                  <div class="text-2xl font-semibold tabular-nums">{pr.holidays}</div>
+                  <div class="text-2xl font-semibold tabular-nums">{pr.holidays + pr.paid_holidays}</div>
                   <div class={hint}>Holidays</div>
+                  <div class={hint}>
+                    {pr.paid_holidays} paid · {pr.holidays} unpaid
+                  </div>
                 </div>
               </div>
               <div class="mt-3 border-t border-line pt-3 text-sm">

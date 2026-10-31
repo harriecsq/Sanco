@@ -6,7 +6,7 @@ import { formatDay } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
-import { dayHeader, Legend, MARK, nextMark, useWeek, WeekNav } from "~/components/hr/hr";
+import { dayHeader, isPaidDay, Legend, MARK, nextMark, useWeek, WeekNav } from "~/components/hr/hr";
 import { Alert, Empty, Field, Modal, PageHeader } from "~/components/ui/ui";
 import { btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
@@ -28,7 +28,7 @@ export default component$(() => {
   const noteOpen = useSignal(false);
   const note = useStore<NoteForm>({ employee_id: "", name: "", date: "", status: "absent", note: "" });
   const holidayOpen = useSignal(false);
-  const holiday = useStore({ date: "", name: "" });
+  const holiday = useStore<{ date: string; name: string; paid: boolean }>({ date: "", name: "", paid: false });
   const busy = useSignal(false);
 
   const load = $(async () => {
@@ -79,7 +79,7 @@ export default component$(() => {
 
   return (
     <>
-      <PageHeader title="Attendance" subtitle="Monday to Saturday. Pay counts the green days.">
+      <PageHeader title="Attendance" subtitle="Monday to Saturday. Pay counts green (present) and blue (paid holiday) days.">
         <div q:slot="actions">
           <WeekNav week={week.value} />
         </div>
@@ -141,6 +141,7 @@ export default component$(() => {
                             onClick$={() => {
                               holiday.date = date;
                               holiday.name = "";
+                              holiday.paid = false;
                               holidayOpen.value = true;
                             }}
                           >
@@ -157,7 +158,7 @@ export default component$(() => {
             </thead>
             <tbody>
               {d.rows.map((r) => {
-                const present = r.cells.filter((c) => c.status === "present").length;
+                const present = r.cells.filter((c) => isPaidDay(c.status)).length;
                 const absent = r.cells.filter((c) => c.status === "absent").length;
                 return (
                   <tr key={r.employee_id}>
@@ -169,7 +170,8 @@ export default component$(() => {
                     </td>
                     {r.cells.map((c) => {
                       const m = MARK[c.status ?? "none"];
-                      const canNote = editable && (c.status === "absent" || c.status === "holiday");
+                      const canNote =
+                        editable && (c.status === "absent" || c.status === "holiday" || c.status === "paid_holiday");
                       return (
                         <td key={c.date} class={[td, "text-center"]}>
                           <div class="inline-flex flex-col items-center gap-0.5">
@@ -251,11 +253,23 @@ export default component$(() => {
           class="space-y-3"
           preventdefault:submit
           onSubmit$={async () => {
-            await markDay(holiday.date, "holiday", holiday.name.trim(), false);
+            await markDay(holiday.date, holiday.paid ? "paid_holiday" : "holiday", holiday.name.trim(), false);
             holidayOpen.value = false;
           }}
         >
-          <p class="text-sm">Marks this day yellow for every active employee, replacing what's there. Holidays are unpaid.</p>
+          <p class="text-sm">Marks this day for every active employee, replacing what's there.</p>
+          <fieldset class="flex gap-4 text-sm">
+            <label class="flex items-center gap-1.5">
+              <input type="radio" name="holiday-paid" checked={!holiday.paid} onChange$={() => (holiday.paid = false)} />
+              <span class={["inline-block size-4 rounded border", MARK.holiday.box]} />
+              Unpaid
+            </label>
+            <label class="flex items-center gap-1.5">
+              <input type="radio" name="holiday-paid" checked={holiday.paid} onChange$={() => (holiday.paid = true)} />
+              <span class={["inline-block size-4 rounded border", MARK.paid_holiday.box]} />
+              Paid (counts as a day worked)
+            </label>
+          </fieldset>
           <Field label="Holiday name" hint="Optional.">
             <input
               class={input}

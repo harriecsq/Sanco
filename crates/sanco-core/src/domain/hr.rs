@@ -3,9 +3,10 @@
 //!
 //! A payroll week runs Sunday to Saturday and is keyed by its Saturday (the
 //! payday); attendance is kept Monday to Saturday. Pay is the daily rate ×
-//! days present. An employee with no day present gets nothing that week: no
-//! pay, no contributions, no debt charges. A holiday is unpaid, like an
-//! absence, but isn't counted as one.
+//! paid days: days present plus paid holidays. An employee with no paid day
+//! gets nothing that week: no pay, no contributions, no debt charges. An
+//! unpaid holiday is like an absence, but neither kind of holiday is counted
+//! as one.
 //!
 //! Debts are paid in weekly charges from the first Saturday on or after the
 //! start date. The weekly amount is typed, or the amount ÷ weeks rounded
@@ -96,7 +97,10 @@ fn check_step(c: i64, what: &str) -> Result<()> {
 pub enum AttendanceStatus {
     Present,
     Absent,
+    /// An unpaid holiday.
     Holiday,
+    /// A holiday paid at the daily rate, like a day present.
+    PaidHoliday,
 }
 
 impl AttendanceStatus {
@@ -105,6 +109,7 @@ impl AttendanceStatus {
             Self::Present => "present",
             Self::Absent => "absent",
             Self::Holiday => "holiday",
+            Self::PaidHoliday => "paid_holiday",
         }
     }
 
@@ -113,6 +118,7 @@ impl AttendanceStatus {
             "present" => Some(Self::Present),
             "absent" => Some(Self::Absent),
             "holiday" => Some(Self::Holiday),
+            "paid_holiday" => Some(Self::PaidHoliday),
             _ => None,
         }
     }
@@ -919,7 +925,11 @@ fn put_mark(
     let note = note.filter(|_| {
         matches!(
             status,
-            Some(AttendanceStatus::Absent | AttendanceStatus::Holiday)
+            Some(
+                AttendanceStatus::Absent
+                    | AttendanceStatus::Holiday
+                    | AttendanceStatus::PaidHoliday
+            )
         )
     });
     tx.upsert(
@@ -1011,13 +1021,15 @@ pub struct PayrollRow {
     pub employee_id: String,
     pub name: String,
     pub daily_rate_c: i64,
-    /// Days present.
+    /// Paid days: present plus paid holidays.
     pub days: i64,
     pub absent: i64,
+    /// Unpaid holidays.
     pub holidays: i64,
+    pub paid_holidays: i64,
     /// Boxes not marked.
     pub unmarked: i64,
-    /// At least one day present. Rows without are paid nothing.
+    /// At least one paid day. Rows without are paid nothing.
     pub worked: bool,
     pub gross_c: i64,
     pub sss_c: i64,
@@ -1125,6 +1137,7 @@ pub fn payroll_week(conn: &Connection, week: &str, today: &str) -> Result<Payrol
         for r in &mut rows {
             r.absent = count(&r.employee_id, Some(AttendanceStatus::Absent));
             r.holidays = count(&r.employee_id, Some(AttendanceStatus::Holiday));
+            r.paid_holidays = count(&r.employee_id, Some(AttendanceStatus::PaidHoliday));
             r.unmarked = count(&r.employee_id, None);
         }
     } else {
@@ -1135,13 +1148,15 @@ pub fn payroll_week(conn: &Connection, week: &str, today: &str) -> Result<Payrol
             debts.entry(d.employee_id.clone()).or_default().push(d);
         }
         for e in week_employees(conn, &marks)? {
-            let present = count(&e.id, Some(AttendanceStatus::Present));
+            let paid_holidays = count(&e.id, Some(AttendanceStatus::PaidHoliday));
+            let present = count(&e.id, Some(AttendanceStatus::Present)) + paid_holidays;
             let worked = present > 0;
             let mut row = PayrollRow {
                 daily_rate_c: e.daily_rate_c,
                 days: present,
                 absent: count(&e.id, Some(AttendanceStatus::Absent)),
                 holidays: count(&e.id, Some(AttendanceStatus::Holiday)),
+                paid_holidays,
                 unmarked: count(&e.id, None),
                 worked,
                 gross_c: e.daily_rate_c * present,
@@ -1261,6 +1276,7 @@ fn posted_rows(conn: &Connection, week: &str) -> Result<Vec<PayrollRow>> {
             days: r.get(4)?,
             absent: 0,
             holidays: 0,
+            paid_holidays: 0,
             unmarked: 0,
             worked: true,
             gross_c: r.get(5)?,
@@ -1396,10 +1412,11 @@ pub struct EmployeeProfile {
     /// Every debt, newest last; paid ones included.
     pub debts: Vec<DebtInfo>,
     pub year: i32,
-    /// This year's days present, absences and holidays.
+    /// This year's days present, absences, unpaid and paid holidays.
     pub present: i64,
     pub absent: i64,
     pub holidays: i64,
+    pub paid_holidays: i64,
     /// Posted payrolls, newest first.
     pub payslips: Vec<PayslipSummary>,
 }
@@ -1413,13 +1430,13 @@ pub fn employee_profile(
         return Ok(None);
     };
     let year: i32 = today.get(..4).and_then(|y| y.parse().ok()).unwrap_or(0);
-    let (present, absent, holidays): (i64, i64, i64) = conn.query_row(
+    let (present, absent, holidays, paid_holidays): (i64, i64, i64, i64) = conn.query_row(
         "SELECT COALESCE(SUM(status = 'present'), 0), COALESCE(SUM(status = 'absent'), 0),
-                COALESCE(SUM(status = 'holiday'), 0)
+                COALESCE(SUM(status = 'holiday'), 0), COALESCE(SUM(status = 'paid_holiday'), 0)
          FROM attendance
          WHERE employee_id = ?1 AND _deleted = 0 AND substr(date, 1, 4) = ?2",
         (id, format!("{year:04}")),
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     let mut stmt = conn.prepare(
         "SELECT p.week, COALESCE(l.days, 0), COALESCE(l.gross_c, 0), COALESCE(l.net_c, 0)
@@ -1448,17 +1465,18 @@ pub fn employee_profile(
         present,
         absent,
         holidays,
+        paid_holidays,
         payslips,
     }))
 }
 
 // Dashboard ------------------------------------------------------------------
 
-/// Past weeks with days present but no posted payroll, oldest first.
+/// Past weeks with paid days but no posted payroll, oldest first.
 pub fn unposted_weeks(conn: &Connection, today: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT date FROM attendance
-         WHERE _deleted = 0 AND status = 'present' AND date < ?1",
+         WHERE _deleted = 0 AND status IN ('present', 'paid_holiday') AND date < ?1",
     )?;
     let dates: Vec<String> = stmt
         .query_map([today], |r| r.get(0))?

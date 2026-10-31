@@ -26,7 +26,7 @@ The HR module covers employees and salary only for now.
 ## 3. Attendance
 
 - One box per active employee per day.
-- Clicking cycles **white → green → red → yellow → white**.
+- Clicking cycles **white → green → red → yellow → blue → white**.
 - A legend is always shown above the grid:
 
   | Color | Meaning |
@@ -34,12 +34,13 @@ The HR module covers employees and salary only for now.
   | White | Not marked |
   | Green | Present |
   | Red | Absent (optional reason) |
-  | Yellow | Holiday (optional name) |
+  | Yellow | Unpaid holiday (optional name) |
+  | Blue | Paid holiday (optional name) |
 
-- Each day's header has a "Mark holiday for everyone" button.
-- **A holiday is treated exactly like an absence:** not paid, and it doesn't count as working. The only difference is that it doesn't count toward the employee's **absences** total.
-- **# of Days = green boxes only.**
-- Row id `derived_id(employee, date)`, with `status` = present / absent / holiday / NULL (white).
+- Each day's header has a "Mark holiday for everyone" button, which asks paid or unpaid.
+- **An unpaid holiday is treated like an absence** (not paid, doesn't count as working), and **a paid holiday like a day present** (paid, counts in # of Days). Neither counts toward the employee's **absences** total.
+- **# of Days = green + blue boxes.**
+- Row id `derived_id(employee, date)`, with `status` = present / absent / holiday (unpaid) / paid_holiday / NULL (white).
   - Going back to white clears the status; the row is never deleted.
   - Two PCs clicking the same box merge, and the last click wins.
 - Once the week's payroll is posted, its attendance is **locked**. Void the payroll to change it.
@@ -235,4 +236,4 @@ Build order: schema and core with tests → Employees → Attendance → Debts �
   - The app shell is hidden in print (`print:hidden`).
   - Checked as PDFs in headless Chromium against the Oct 19–24 sheet: same amounts.
 - **Schema version:** this adds migration 13. PCs on a build without HR can't sync with PCs on one with it, so install the same build everywhere.
-
+- **Paid holidays** (user request, 2026-10-31): attendance has a fifth state, blue = paid holiday (`paid_holiday`); yellow is now the unpaid holiday (`holiday`, existing marks stay unpaid). The click order is white → green → red → yellow → blue → white. A paid holiday counts in # of D and makes the week a paid week (contributions and deductions apply). Neither kind is counted as an absence. "Holiday" on a day's header asks paid or unpaid.

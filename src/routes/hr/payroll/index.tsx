@@ -230,7 +230,7 @@ export default component$(() => {
                       <td class={td} colSpan={p.status === "posted" ? 10 : 9}>
                         No work this week
                         {r.absent + r.holidays > 0 &&
-                          ` (${[r.absent && `${r.absent} absent`, r.holidays && `${r.holidays} holiday`]
+                          ` (${[r.absent && `${r.absent} absent`, r.holidays && `${r.holidays} unpaid holiday`]
                             .filter(Boolean)
                             .join(", ")})`}
                       </td>
