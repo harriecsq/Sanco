@@ -473,7 +473,7 @@ _Update this section when each milestone is finished: set its status, the date, 
 - `npm run app` on this PC would migrate the real database. Test with `--data-dir .dev/x`.
 - Checked: 0014 on copies of the real database (also with box rows added), and through a test instance: lots list, stock receipt form, two-lot DR with oldest-first dropdown, PO receiving with a serial range.
 - Not clicked through: adjustment and transfer posting from the forms (covered by tests in `tests/inventory.rs`), DR edit after delivery, void flows.
-- **Next:** inventory import from `Sanco inventory - cleaned.xlsx` (`docs/plans/m14-lots.md` step 6).
+- **Next:** inventory import. Plan: `docs/plans/m14-inventory-import.md`.
 
 ## Milestones
 - **M0 — Setup.**
