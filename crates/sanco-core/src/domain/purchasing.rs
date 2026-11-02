@@ -6,7 +6,8 @@
 //! was received.
 //!
 //! Goods come in through receiving reports (series RR), each into one
-//! location, with an expiry per line for items that track one. A report is
+//! location. Its date picks each item's lot, and each line can give that
+//! lot's expiry and serial range. A report is
 //! posted when saved and never edited: a mistake is voided and entered
 //! again, like a stock document. How much of a PO was received is computed
 //! from the posted reports (`v_po_received`), never stored.
@@ -25,9 +26,9 @@ use serde_json::json;
 
 use crate::domain::auth::{Field, Perms};
 use crate::domain::bank_accounts;
-use crate::domain::boxes::{self, LineSpec, PoBox, SerialNeed, Serials};
 use crate::domain::inventory::{self, Effect};
 use crate::domain::items::{self, ITEM_COSTS};
+use crate::domain::lots::{self, LotDetails};
 use crate::domain::pricing::{self, check_currency};
 use crate::domain::{
     MAX_LINES, date_opt, line_amount, line_summary, replace_lines, require_date, text_opt,
@@ -35,7 +36,7 @@ use crate::domain::{
 use crate::error::{Error, Result};
 use crate::repo::WriteTx;
 use crate::sync::numbering::{self, Reservation, series};
-use crate::time::{manila_date_string, parse_date};
+use crate::time::manila_date_string;
 
 pub const PURCHASE_ORDERS: &str = "purchase_orders";
 pub const PO_LINES: &str = "po_lines";
@@ -129,8 +130,6 @@ pub struct PoLineInput {
     /// yet. Ignored for users who can't see costs.
     pub price_minor: Option<i64>,
     pub notes: String,
-    /// Pieces per box, for items that come in boxes; `None` = the item's.
-    pub pcs_per_box: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,9 +149,6 @@ pub struct PoInput {
     /// The supplier's proforma invoice or order number.
     pub supplier_ref: String,
     pub notes: String,
-    /// Year printed in the box serials (`YYYY`); blank = this year. Fixed
-    /// once the PO has boxes.
-    pub serial_year: String,
     pub lines: Vec<PoLineInput>,
 }
 
@@ -188,10 +184,12 @@ pub struct TtInput {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ReceiptLineInput {
     pub po_line_id: String,
-    /// The box received, for lines that have boxes (one input per box).
-    pub box_id: Option<String>,
-    /// Required for items that track expiry; ignored for others.
+    /// Required for items that track expiry, unless their lot has one;
+    /// ignored for others.
     pub expiry: Option<String>,
+    /// The lot's serial range, free text.
+    pub serial_from: Option<String>,
+    pub serial_to: Option<String>,
     pub qty: i64,
 }
 
@@ -243,9 +241,6 @@ pub struct PoInfo {
     pub over_received: bool,
     /// Posted receiving reports.
     pub receipt_count: i64,
-    /// Year of the box serials.
-    pub serial_year: Option<String>,
-    pub box_count: i64,
     pub created_at: i64,
     pub created_by_name: Option<String>,
     pub ordered_at: Option<i64>,
@@ -287,13 +282,6 @@ pub struct PoLine {
     pub received: i64,
     /// Still to come (negative if receipts from offline PCs overshoot).
     pub remaining: i64,
-    /// Box size set on the line.
-    pub pcs_per_box: Option<i64>,
-    /// The item's box serial code and default box size.
-    pub serial_code: Option<String>,
-    pub item_pcs_per_box: Option<i64>,
-    /// Lowest serial first. Empty for drafts and items without boxes.
-    pub boxes: Vec<PoBox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -353,10 +341,13 @@ pub struct ReceiptLine {
     pub item_code: Option<String>,
     pub item_name: Option<String>,
     pub unit: Option<String>,
+    pub lot_id: Option<String>,
+    /// The lot's arrival month, `YYYY-MM`.
+    pub month: Option<String>,
     pub expiry: Option<String>,
+    pub serial_from: Option<String>,
+    pub serial_to: Option<String>,
     pub qty: i64,
-    pub box_id: Option<String>,
-    pub serial: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -396,16 +387,14 @@ struct Existing {
     status: PoStatus,
     currency: String,
     fx_rate: Option<String>,
-    serial_year: Option<String>,
-    has_boxes: bool,
     /// Per line: item, price and qty received.
     lines: HashMap<String, (String, Option<i64>, i64)>,
 }
 
 fn existing(conn: &Connection, id: &str) -> Result<Existing> {
-    let (status, currency, fx_rate, serial_year) = conn
+    let (status, currency, fx_rate) = conn
         .query_row(
-            "SELECT status, currency, fx_rate, serial_year FROM purchase_orders
+            "SELECT status, currency, fx_rate FROM purchase_orders
              WHERE id = ?1 AND _deleted = 0",
             [id],
             |r| {
@@ -414,7 +403,6 @@ fn existing(conn: &Connection, id: &str) -> Result<Existing> {
                     r.get::<_, Option<String>>(1)?
                         .unwrap_or_else(|| "PHP".into()),
                     r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
                 ))
             },
         )
@@ -432,8 +420,6 @@ fn existing(conn: &Connection, id: &str) -> Result<Existing> {
         status,
         currency,
         fx_rate,
-        serial_year,
-        has_boxes: boxes::po_has_boxes(conn, id)?,
         lines: rows.collect::<Result<_, _>>()?,
     })
 }
@@ -443,11 +429,8 @@ struct Prepared {
     currency: String,
     fx_rate: Option<String>,
     expected: Option<String>,
-    serial_year: Option<String>,
     /// (existing id, data) per line.
     lines: Vec<(Option<String>, serde_json::Value)>,
-    /// The same lines, for planning boxes.
-    specs: Vec<LineSpec>,
 }
 
 fn item_code(conn: &Connection, id: &str) -> Result<Option<(String, bool)>> {
@@ -492,16 +475,6 @@ fn prepare(
             None => (supplier_currency.unwrap_or_else(|| "PHP".into()), None),
         }
     };
-    let serial_year = match (boxes::check_year(&input.serial_year)?, old) {
-        (Some(y), Some(o)) if o.has_boxes && o.serial_year.as_deref() != Some(y.as_str()) => {
-            return Err(Error::Invalid(format!(
-                "the boxes of this PO already have {} serials; put it back to draft to change the year",
-                o.serial_year.as_deref().unwrap_or("other")
-            )));
-        }
-        (Some(y), _) => Some(y),
-        (None, o) => o.and_then(|o| o.serial_year.clone()),
-    };
     if input.lines.is_empty() {
         return Err(Error::Invalid("add at least one item".into()));
     }
@@ -511,7 +484,6 @@ fn prepare(
         )));
     }
     let mut lines = Vec::with_capacity(input.lines.len());
-    let mut specs = Vec::with_capacity(input.lines.len());
     for (i, line) in input.lines.iter().enumerate() {
         let (code, _) = item_code(conn, &line.item_id)?
             .ok_or_else(|| Error::Invalid("choose an item on every line".into()))?;
@@ -544,13 +516,6 @@ fn prepare(
         } else {
             kept.and_then(|(_, price, _)| *price)
         };
-        let per_box = boxes::check_size(line.pcs_per_box, &code)?;
-        specs.push(LineSpec {
-            id: kept.and(line.id.clone()),
-            item_id: line.item_id.clone(),
-            qty: line.qty,
-            per_box,
-        });
         lines.push((
             kept.and(line.id.clone()),
             json!({
@@ -559,7 +524,6 @@ fn prepare(
                 "qty": line.qty,
                 "price_minor": price,
                 "notes": text_opt(&line.notes),
-                "pcs_per_box": per_box,
             }),
         ));
     }
@@ -580,9 +544,7 @@ fn prepare(
         currency,
         fx_rate,
         expected,
-        serial_year,
         lines,
-        specs,
     })
 }
 
@@ -610,7 +572,6 @@ pub fn create(tx: &mut WriteTx, input: &PoInput, res: &Reservation, costs: bool)
             "currency": p.currency,
             "fx_rate": p.fx_rate,
             "expected_date": p.expected,
-            "serial_year": p.serial_year.unwrap_or_else(|| boxes::this_year(tx.now_ms())),
             "status": PoStatus::Draft.as_str(),
             "supplier_ref": text_opt(&input.supplier_ref),
             "notes": text_opt(&input.notes),
@@ -621,83 +582,14 @@ pub fn create(tx: &mut WriteTx, input: &PoInput, res: &Reservation, costs: bool)
     Ok(id)
 }
 
-/// Placed with the supplier, so its lines have boxes.
-fn placed(status: PoStatus) -> bool {
-    !matches!(status, PoStatus::Draft | PoStatus::Cancelled)
-}
-
-fn year_or_now(year: Option<&str>, now_ms: i64) -> String {
-    year.map(String::from)
-        .unwrap_or_else(|| boxes::this_year(now_ms))
-}
-
-/// The PO's lines as stored, in order.
-fn stored_specs(conn: &Connection, po_id: &str) -> Result<Vec<LineSpec>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, COALESCE(item_id, ''), COALESCE(qty, 0), pcs_per_box FROM po_lines
-         WHERE po_id = ?1 AND _deleted = 0 ORDER BY line_no, id",
-    )?;
-    let rows = stmt.query_map([po_id], |r| {
-        Ok(LineSpec {
-            id: Some(r.get(0)?),
-            item_id: r.get(1)?,
-            qty: r.get(2)?,
-            per_box: r.get(3)?,
-        })
-    })?;
-    Ok(rows.collect::<Result<_, _>>()?)
-}
-
-/// Gives the PO's lines the boxes they need (or takes away the ones not
-/// received, for a draft or cancelled PO). `specs` are the lines as saved,
-/// in order.
-fn sync_boxes(
-    tx: &mut WriteTx,
-    po_id: &str,
-    status: PoStatus,
-    year: &str,
-    specs: &[LineSpec],
-    serials: &mut Serials,
-) -> Result<()> {
-    let plan = boxes::plan_po(tx.conn(), po_id, placed(status), year, specs)?;
-    if plan.is_empty() {
-        return Ok(());
-    }
-    let ids: Vec<String> = stored_specs(tx.conn(), po_id)?
-        .into_iter()
-        .filter_map(|s| s.id)
-        .collect();
-    boxes::apply_po(tx, po_id, plan, &ids, serials)
-}
-
-/// Checks an edit as [`update`] would, without writing, and returns the
-/// box serials it needs. Call it before reserving them.
-pub fn serials_for_update(
-    conn: &Connection,
-    input: &PoInput,
-    costs: bool,
-    now_ms: i64,
-) -> Result<Vec<SerialNeed>> {
-    let id = input.id.clone().unwrap_or_default();
-    let old = existing(conn, &id)?;
-    if old.status == PoStatus::Cancelled {
-        return Err(Error::Invalid("this purchase order is cancelled".into()));
-    }
-    let p = prepare(conn, input, costs, Some(&old))?;
-    let year = year_or_now(p.serial_year.as_deref(), now_ms);
-    Ok(boxes::plan_po(conn, &id, placed(old.status), &year, &p.specs)?.needs())
-}
-
-/// Saves a PO's header and lines (any status but cancelled). A placed PO's
-/// boxes follow its lines, taking new serials from `serials`.
-pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool, serials: &mut Serials) -> Result<()> {
+/// Saves a PO's header and lines (any status but cancelled).
+pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool) -> Result<()> {
     let id = input.id.clone().unwrap_or_default();
     let old = existing(tx.conn(), &id)?;
     if old.status == PoStatus::Cancelled {
         return Err(Error::Invalid("this purchase order is cancelled".into()));
     }
     let p = prepare(tx.conn(), input, costs, Some(&old))?;
-    let year = year_or_now(p.serial_year.as_deref(), tx.now_ms());
     tx.update(
         PURCHASE_ORDERS,
         &id,
@@ -709,11 +601,9 @@ pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool, serials: &mut Seri
             "expected_date": p.expected,
             "supplier_ref": text_opt(&input.supplier_ref),
             "notes": text_opt(&input.notes),
-            "serial_year": year,
         }),
     )?;
-    replace_lines(tx, PO_LINES, "po_id", &id, p.lines)?;
-    sync_boxes(tx, &id, old.status, &year, &p.specs, serials)
+    replace_lines(tx, PO_LINES, "po_id", &id, p.lines)
 }
 
 fn posted_receipts(conn: &Connection, po_id: &str) -> Result<i64> {
@@ -724,33 +614,8 @@ fn posted_receipts(conn: &Connection, po_id: &str) -> Result<i64> {
     )?)
 }
 
-/// The box serials marking a draft PO ordered needs ([`set_status`]).
-/// Call it before reserving them; other changes need none.
-pub fn serials_for_status(
-    conn: &Connection,
-    id: &str,
-    input: &PoStatusInput,
-    now_ms: i64,
-) -> Result<Vec<SerialNeed>> {
-    if input.action != PoAction::Order {
-        return Ok(Vec::new());
-    }
-    let old = existing(conn, id)?;
-    if old.status != PoStatus::Draft {
-        return Ok(Vec::new());
-    }
-    let year = year_or_now(old.serial_year.as_deref(), now_ms);
-    Ok(boxes::plan_po(conn, id, true, &year, &stored_specs(conn, id)?)?.needs())
-}
-
-/// Changes a PO's status. Marking it ordered gives its lines their boxes
-/// (serials from `serials`); back to draft or cancelled takes them away.
-pub fn set_status(
-    tx: &mut WriteTx,
-    id: &str,
-    input: &PoStatusInput,
-    serials: &mut Serials,
-) -> Result<()> {
+/// Changes a PO's status.
+pub fn set_status(tx: &mut WriteTx, id: &str, input: &PoStatusInput) -> Result<()> {
     let row = tx
         .get(PURCHASE_ORDERS, id)?
         .ok_or_else(|| Error::Invalid("that purchase order no longer exists".into()))?;
@@ -823,20 +688,7 @@ pub fn set_status(
             )));
         }
     };
-    tx.update(PURCHASE_ORDERS, id, patch.clone())?;
-    if matches!(
-        input.action,
-        PoAction::Order | PoAction::BackToDraft | PoAction::Cancel
-    ) {
-        let status = PoStatus::parse(patch["status"].as_str());
-        let year = year_or_now(row["serial_year"].as_str(), now);
-        if row["serial_year"].is_null() {
-            tx.update(PURCHASE_ORDERS, id, json!({ "serial_year": year }))?;
-        }
-        let specs = stored_specs(tx.conn(), id)?;
-        sync_boxes(tx, id, status, &year, &specs, serials)?;
-    }
-    Ok(())
+    tx.update(PURCHASE_ORDERS, id, patch).map(drop)
 }
 
 /// Deletes a draft PO without payments. Its number is not given out again.
@@ -1094,9 +946,8 @@ struct PreparedReceipt {
 struct ReceiptRow {
     po_line: String,
     item: String,
-    expiry: Option<String>,
+    details: LotDetails,
     qty: i64,
-    box_id: Option<String>,
 }
 
 fn prepare_receipt(
@@ -1129,16 +980,14 @@ fn prepare_receipt(
             "enter the quantity received of at least one item".into(),
         ));
     }
-    if input.lines.len() > boxes::MAX_BOXES {
+    if input.lines.len() > MAX_LINES {
         return Err(Error::Invalid(format!(
-            "a receiving report can have at most {} lines",
-            boxes::MAX_BOXES
+            "a receiving report can have at most {MAX_LINES} lines"
         )));
     }
-    let po_boxes = boxes::po_boxes(conn, &input.po_id)?;
+    let month = lots::month_of(&date).to_string();
     let mut lines = Vec::with_capacity(input.lines.len());
     let mut taken: HashMap<&str, i64> = HashMap::new();
-    let mut seen_boxes: Vec<&str> = Vec::new();
     for line in &input.lines {
         let (item, _, received) = old
             .lines
@@ -1151,18 +1000,8 @@ fn prepare_receipt(
                 "enter the quantity of {code} received"
             )));
         }
-        let expiry = match line
-            .expiry
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            _ if !tracks => None,
-            Some(text) => Some(parse_date(text).ok_or_else(|| {
-                Error::Invalid(format!("the expiry date of {code} is not a valid date"))
-            })?),
-            None => return Err(Error::Invalid(format!("enter the expiry date of {code}"))),
-        };
+        let expiry =
+            lots::incoming_expiry(conn, item, &code, tracks, &month, line.expiry.as_deref())?;
         let ordered: i64 = conn.query_row(
             "SELECT COALESCE(qty, 0) FROM po_lines WHERE id = ?1",
             [&line.po_line_id],
@@ -1177,43 +1016,15 @@ fn prepare_receipt(
                 left.max(0)
             )));
         }
-        // A line with boxes is received box by box.
-        let box_id = match po_boxes.get(&line.po_line_id) {
-            Some(line_boxes) if !line_boxes.is_empty() => {
-                let id = line
-                    .box_id
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| Error::Invalid(format!("choose the box of {code}")))?;
-                let b = line_boxes.iter().find(|b| b.id == id).ok_or_else(|| {
-                    Error::Invalid(format!("one of the boxes of {code} is not on this PO line"))
-                })?;
-                let serial = b.serial.as_deref().unwrap_or("?");
-                if b.received > 0 {
-                    return Err(Error::Invalid(format!("box {serial} was already received")));
-                }
-                if seen_boxes.contains(&id) {
-                    return Err(Error::Invalid(format!(
-                        "box {serial} is on the report twice"
-                    )));
-                }
-                if line.qty > b.pcs {
-                    return Err(Error::Invalid(format!(
-                        "box {serial} holds {}; it can't come in with {}",
-                        b.pcs, line.qty
-                    )));
-                }
-                seen_boxes.push(id);
-                Some(id.to_string())
-            }
-            _ => None,
-        };
         lines.push(ReceiptRow {
             po_line: line.po_line_id.clone(),
             item: item.clone(),
-            expiry,
+            details: LotDetails::new(
+                expiry,
+                line.serial_from.as_deref(),
+                line.serial_to.as_deref(),
+            ),
             qty: line.qty,
-            box_id,
         });
     }
     Ok(PreparedReceipt { date, lines })
@@ -1247,7 +1058,9 @@ pub fn receive(tx: &mut WriteTx, input: &ReceiptInput, res: &Reservation) -> Res
             "status": "posted",
         }),
     )?;
+    let month = lots::month_of(&p.date).to_string();
     for (i, l) in p.lines.into_iter().enumerate() {
+        let lot_id = lots::receive(tx, &l.item, &month, &l.details)?;
         tx.insert(
             PO_RECEIPT_LINES,
             json!({
@@ -1255,9 +1068,8 @@ pub fn receive(tx: &mut WriteTx, input: &ReceiptInput, res: &Reservation) -> Res
                 "line_no": i as i64 + 1,
                 "po_line_id": l.po_line,
                 "item_id": l.item,
-                "expiry": l.expiry,
                 "qty": l.qty,
-                "box_id": l.box_id,
+                "lot_id": lot_id,
             }),
         )?;
     }
@@ -1329,8 +1141,7 @@ const PO_SELECT: &str = "
     SELECT p.id, n.no, COALESCE(n.confirmed, 1), p.supplier_id, sn.no, s.name, p.date,
            COALESCE(p.currency, 'PHP'), p.fx_rate, p.expected_date, p.status, p.supplier_ref,
            p.notes, p.created_at, uc.display_name, p.ordered_at, uo.display_name,
-           p.shipped_date, p.arrived_date, p.closed_at, ul.display_name, p.cancel_reason,
-           p.serial_year
+           p.shipped_date, p.arrived_date, p.closed_at, ul.display_name, p.cancel_reason
     FROM purchase_orders p
     LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PO' AND n._deleted = 0
     LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -1365,8 +1176,6 @@ fn po_from_row(r: &rusqlite::Row) -> rusqlite::Result<PoInfo> {
         closed_at: r.get(19)?,
         closed_by_name: r.get(20)?,
         cancel_reason: r.get(21)?,
-        serial_year: r.get(22)?,
-        box_count: 0,
         total_minor: None,
         total_php_c: None,
         paid_minor: None,
@@ -1387,8 +1196,7 @@ fn po_from_row(r: &rusqlite::Row) -> rusqlite::Result<PoInfo> {
 fn lines_of(conn: &Connection, po: Option<&str>) -> Result<Vec<(String, PoLine)>> {
     let mut stmt = conn.prepare_cached(
         "SELECT l.po_id, l.id, l.item_id, i.code, i.name, i.unit, COALESCE(i.tracks_expiry, 0),
-                COALESCE(l.qty, 0), l.price_minor, l.notes, COALESCE(v.qty, 0), l.pcs_per_box,
-                i.serial_code, i.pcs_per_box
+                COALESCE(l.qty, 0), l.price_minor, l.notes, COALESCE(v.qty, 0)
          FROM po_lines l
          LEFT JOIN items i ON i.id = l.item_id
          LEFT JOIN v_po_received v ON v.po_line_id = l.id
@@ -1414,10 +1222,6 @@ fn lines_of(conn: &Connection, po: Option<&str>) -> Result<Vec<(String, PoLine)>
                 notes: r.get(9)?,
                 received,
                 remaining: qty - received,
-                pcs_per_box: r.get(11)?,
-                serial_code: r.get(12)?,
-                item_pcs_per_box: r.get(13)?,
-                boxes: Vec::new(),
             },
         ))
     })?;
@@ -1516,7 +1320,6 @@ pub fn list(conn: &Connection) -> Result<Vec<PoInfo>> {
         paid.entry(t.po_id.clone()).or_default().push(t);
     }
     let receipts = receipt_counts(conn)?;
-    let box_counts = boxes::box_counts(conn)?;
     let mut stmt = conn.prepare(&format!(
         "{PO_SELECT} ORDER BY p.date DESC, p.created_at DESC, p.id DESC"
     ))?;
@@ -1528,7 +1331,6 @@ pub fn list(conn: &Connection) -> Result<Vec<PoInfo>> {
         let payments = paid.remove(&po.id).unwrap_or_default();
         let n = receipts.get(&po.id).copied().unwrap_or(0);
         fill(&mut po, &lines, &payments, n);
-        po.box_count = box_counts.get(&po.id).copied().unwrap_or(0);
         out.push(po);
     }
     Ok(out)
@@ -1541,15 +1343,10 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<PoDetail>> {
     else {
         return Ok(None);
     };
-    let mut po_boxes = boxes::po_boxes(conn, id)?;
     let lines: Vec<PoLine> = lines_of(conn, Some(id))?
         .into_iter()
-        .map(|(_, mut l)| {
-            l.boxes = po_boxes.remove(&l.id).unwrap_or_default();
-            l
-        })
+        .map(|(_, l)| l)
         .collect();
-    po.box_count = lines.iter().map(|l| l.boxes.len() as i64).sum();
     let payments = payments_of(conn, Some(id))?;
     let receipts = receipts_of(conn, Some(id))?;
     let posted = receipts.iter().filter(|r| !r.voided).count() as i64;
@@ -1611,11 +1408,10 @@ fn receipt_lines_of(
     receipt: Option<&str>,
 ) -> Result<Vec<(String, ReceiptLine)>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT l.receipt_id, l.id, l.po_line_id, l.item_id, i.code, i.name, i.unit, l.expiry,
-                COALESCE(l.qty, 0), l.box_id, bn.no
+        "SELECT l.receipt_id, l.id, l.po_line_id, l.item_id, i.code, i.name, i.unit, l.lot_id,
+                COALESCE(l.qty, 0), t.month, t.expiry, t.serial_from, t.serial_to
          FROM po_receipt_lines l LEFT JOIN items i ON i.id = l.item_id
-         LEFT JOIN doc_numbers bn ON bn.ref_id = l.box_id AND bn.ref_tbl = 'boxes'
-                                 AND bn._deleted = 0
+         LEFT JOIN lots t ON t.id = l.lot_id
          WHERE l._deleted = 0 AND (?1 IS NULL OR l.receipt_id = ?1)
          ORDER BY l.receipt_id, l.line_no, l.id",
     )?;
@@ -1629,10 +1425,12 @@ fn receipt_lines_of(
                 item_code: r.get(4)?,
                 item_name: r.get(5)?,
                 unit: r.get(6)?,
-                expiry: r.get(7)?,
+                lot_id: r.get(7)?,
                 qty: r.get(8)?,
-                box_id: r.get(9)?,
-                serial: r.get(10)?,
+                month: r.get(9)?,
+                expiry: r.get(10)?,
+                serial_from: r.get(11)?,
+                serial_to: r.get(12)?,
             },
         ))
     })?;

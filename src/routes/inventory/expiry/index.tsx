@@ -2,7 +2,7 @@ import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
 import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import { commands, type LocationInfo, type StockLot } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDay, formatQty } from "~/lib/format";
+import { formatDay, formatMonth, formatQty, serialSpan } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { ExpiryBadge, NEAR_EXPIRY_DAYS } from "~/components/inventory/expiry-badge";
@@ -88,13 +88,15 @@ export default component$(() => {
               <tr>
                 <th class={th}>Expiry</th>
                 <th class={th}>Item</th>
+                <th class={th}>Lot</th>
+                <th class={th}>Serial #</th>
                 <th class={th}>Location</th>
                 <th class={[th, "text-right"]}>Qty</th>
               </tr>
             </thead>
             <tbody>
               {pg.value.rows.map((l) => (
-                <tr key={`${l.item_id}/${l.location_id}/${l.expiry}`}>
+                <tr key={`${l.location_id}/${l.lot_id}`}>
                   <td class={[td, "whitespace-nowrap"]}>
                     {formatDay(l.expiry)} <ExpiryBadge days={l.days_left} within={MAX_WINDOW} />
                   </td>
@@ -107,6 +109,8 @@ export default component$(() => {
                     </Link>{" "}
                     {l.item_name}
                   </td>
+                  <td class={[td, "whitespace-nowrap"]}>{formatMonth(l.month)}</td>
+                  <td class={[td, "whitespace-nowrap"]}>{serialSpan(l.serial_from, l.serial_to) || "—"}</td>
                   <td class={td}>{l.location_name ?? "Deleted location"}</td>
                   <td class={[td, "text-right tabular-nums"]}>{formatQty(l.qty, l.unit)}</td>
                 </tr>

@@ -3,6 +3,7 @@
 //! Rules:
 //! - Additive only: new tables, new nullable columns, new indexes and views.
 //!   Never drop or rename anything a peer on an older build might send.
+//!   The one exception is 0014, which removed boxes (user decision).
 //! - Backfills must be deterministic and must not stamp HLCs or bump
 //!   `row_versions`, so every peer computes the same result locally.
 //! - The database is copied with `VACUUM INTO` before any pending migration.
@@ -27,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("0011_boxes.sql"),
     include_str!("0012_invoices.sql"),
     include_str!("0013_hr.sql"),
+    include_str!("0014_lots.sql"),
 ];
 
 /// Schema version this build writes. Peers must match it to sync.

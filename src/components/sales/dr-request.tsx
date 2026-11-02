@@ -3,23 +3,12 @@ import {
   commands,
   type BookingDetail,
   type BookingLine,
-  type BoxDraw,
-  type BoxStock,
   type DrDetail,
   type LocationInfo,
   type ReceiptKind,
   type StockLot,
 } from "~/lib/bindings";
-import {
-  boxEquiv,
-  boxSummary,
-  formatDay,
-  formatPct,
-  formatQty,
-  oldestBox,
-  parseCount,
-  todayManila,
-} from "~/lib/format";
+import { formatPct, formatQty, lotText, parseCount, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Field, Modal } from "~/components/ui/ui";
 import { RECEIPT, Totals } from "~/components/sales/sales";
@@ -30,13 +19,9 @@ interface Row {
   /** The DR line being edited, if any. */
   id: string | null;
   line_id: string;
-  /** The lot's expiry date, or "" for the first lot in stock. */
-  lot: string;
+  /** The lot, picked by hand. */
+  lot_id: string;
   qty: string;
-  /** Items in boxes: the boxes chosen and the pieces taken from each. */
-  picks: { box_id: string; qty: string }[];
-  /** The edited line's saved draws, for the serials of boxes no longer listed. */
-  saved: BoxDraw[] | null;
 }
 
 interface Form {
@@ -61,10 +46,8 @@ const newRow = (line_id: string, qty = ""): Row => ({
   key: newKey(),
   id: null,
   line_id,
-  lot: "",
+  lot_id: "",
   qty,
-  picks: [],
-  saved: null,
 });
 
 /** A typed count, or 0 while it isn't one. */
@@ -76,92 +59,13 @@ const countOf = (text: string) => {
   }
 };
 
-/** Items that come in boxes, from whatever knows. */
-const boxedItems = (b: BookingDetail | null, dr: DrDetail | null | undefined, boxes: BoxStock[]) =>
-  new Set([
-    ...(b?.lines ?? []).filter((l) => l.pcs_per_box != null).map((l) => l.item_id),
-    ...(dr?.lines ?? []).filter((l) => l.boxed).map((l) => l.item_id),
-    ...boxes.map((x) => x.item_id),
-  ]);
-
-/** A box of the row's item at the location, with what's left for the row. */
-interface BoxLeft {
-  box: BoxStock;
-  left: number;
-}
-
-/** What a row of an item in boxes takes. */
-interface BoxPlan {
-  avail: BoxLeft[];
-  draws: BoxDraw[];
-  /** Pieces in those boxes for this row. */
-  onHand: number;
-  total: number;
-}
-
-/**
- * What each row of an item in boxes takes from which box (null for other
- * rows): the boxes chosen by hand, never picked automatically. Earlier
- * rows' draws are no longer available to later ones, as in the backend.
- */
-const planRows = (
-  rows: Row[],
-  lines: BookingLine[],
-  boxes: BoxStock[],
-  location: string,
-  boxed: Set<string>,
-) => {
-  const used = new Map<string, number>();
-  return rows.map((row): BoxPlan | null => {
-    const line = lines.find((l) => l.id === row.line_id);
-    if (!line || !boxed.has(line.item_id)) return null;
-    const avail = boxes
-      .filter((x) => x.item_id === line.item_id && x.location_id === location)
-      .map((box) => ({ box, left: box.qty - (used.get(box.box_id) ?? 0) }));
-    const draws = row.picks
-      .map((p) => {
-        const box = boxes.find((x) => x.box_id === p.box_id);
-        const was = row.saved?.find((d) => d.box_id === p.box_id);
-        return {
-          box_id: p.box_id,
-          serial: box?.serial ?? was?.serial ?? null,
-          expiry: box?.expiry ?? was?.expiry ?? null,
-          qty: countOf(p.qty),
-        };
-      })
-      .filter((d) => d.qty > 0);
-    for (const d of draws) used.set(d.box_id, (used.get(d.box_id) ?? 0) + d.qty);
-    return {
-      avail,
-      draws,
-      onHand: avail.reduce((n, a) => n + Math.max(a.left, 0), 0),
-      total: draws.reduce((n, d) => n + d.qty, 0),
-    };
-  });
-};
-
-/** Tick a box (with what the row still needs, else all that's left in
- *  it) or untick it. */
-const tickBox = (row: Row, plan: BoxPlan, box_id: string, left: number, on: boolean) => {
-  const i = row.picks.findIndex((p) => p.box_id === box_id);
-  if (!on) {
-    if (i >= 0) row.picks.splice(i, 1);
-    return;
-  }
-  if (i >= 0) return;
-  const need = countOf(row.qty) - plan.total;
-  const take = need > 0 ? Math.min(left, need) : left;
-  row.picks.push({ box_id, qty: String(Math.max(take, 0)) });
-};
-
-/** Lots of an item at a location, soonest expiry first. */
+/** Lots of an item at a location, oldest first. */
 const lotsFor = (lots: Lot[], line: BookingLine, location: string) =>
   lots.filter(
     (s) => s.item_id === line.item_id && s.location_id === location && (s.qty > 0 || s.own),
   );
 
-const lotLabel = (l: StockLot) =>
-  `${l.expiry ? `Exp. ${formatDay(l.expiry)}` : "No expiry"} · ${formatQty(l.qty, l.unit)}`;
+const lotLabel = (l: StockLot) => `${lotText(l)} · ${formatQty(l.qty, l.unit)}`;
 
 /** Qty the edited DR has on each booking line. */
 const ownQty = (dr: DrDetail | null | undefined, lineId: string) =>
@@ -180,7 +84,6 @@ export const DrRequestModal = component$<{
   const booking = useSignal<BookingDetail | null>(null);
   const locations = useSignal<LocationInfo[]>([]);
   const lots = useSignal<Lot[]>([]);
-  const boxes = useSignal<BoxStock[]>([]);
   const error = useSignal("");
   const busy = useSignal(false);
   const form = useStore<Form>({
@@ -200,11 +103,10 @@ export const DrRequestModal = component$<{
       if (!track(() => open.value)) return;
       error.value = "";
       try {
-        const [b, l, s, x] = await Promise.all([
+        const [b, l, s] = await Promise.all([
           commands.getBooking(bookingId),
           commands.listLocations(),
           commands.drLots(bookingId),
-          commands.drBoxes(bookingId),
         ]);
         booking.value = unwrap(b);
         locations.value = unwrap(l).filter((x) => x.active || x.id === dr?.dr.from_location_id);
@@ -214,7 +116,7 @@ export const DrRequestModal = component$<{
         if (dr) {
           const at = dr.dr.from_location_id ?? "";
           for (const l of dr.lines) {
-            let lot = stock.find((x) => x.item_id === l.item_id && x.location_id === at && x.expiry === l.expiry);
+            let lot = stock.find((x) => x.lot_id === l.lot_id && x.location_id === at);
             if (!lot) {
               lot = {
                 item_id: l.item_id,
@@ -224,55 +126,22 @@ export const DrRequestModal = component$<{
                 category: null,
                 location_id: at,
                 location_name: dr.dr.from_location_name,
+                lot_id: l.lot_id,
+                month: l.month,
                 expiry: l.expiry,
                 days_left: null,
+                serial_from: l.serial_from,
+                serial_to: l.serial_to,
                 qty: 0,
-                full_boxes: 0,
-                open_boxes: 0,
-                open_pcs: 0,
               };
               stock.push(lot);
             }
             lot.own = true;
             if (dr.dr.status === "delivered") lot.qty += l.qty;
           }
-          stock.sort((a, b) => (a.expiry ?? "9999").localeCompare(b.expiry ?? "9999"));
+          stock.sort((a, b) => (a.month ?? "").localeCompare(b.month ?? ""));
         }
         lots.value = stock;
-        // Likewise what a delivered DR took from each box, at its location
-        // (the backend adds it back before checking the new draws).
-        const inBoxes = unwrap(x);
-        if (dr?.dr.status === "delivered") {
-          const at = dr.dr.from_location_id ?? "";
-          for (const l of dr.lines) {
-            for (const d of l.boxes) {
-              let box = inBoxes.find((y) => y.box_id === d.box_id && y.location_id === at);
-              if (!box) {
-                // Emptied by this DR: its size isn't listed, so the preview
-                // takes the item's box size.
-                box = {
-                  box_id: d.box_id,
-                  serial: d.serial,
-                  item_id: l.item_id,
-                  item_code: l.item_code ?? "",
-                  unit: l.unit,
-                  location_id: at,
-                  location_name: dr.dr.from_location_name,
-                  expiry: d.expiry,
-                  days_left: null,
-                  pcs: l.pcs_per_box ?? d.qty,
-                  qty: 0,
-                  open: false,
-                  po_id: null,
-                  po_no: null,
-                };
-                inBoxes.push(box);
-              }
-              box.qty += d.qty;
-            }
-          }
-        }
-        boxes.value = inBoxes;
       } catch (e) {
         error.value = errorText(e);
         return;
@@ -290,9 +159,7 @@ export const DrRequestModal = component$<{
         const rows: Row[] = dr.lines.map((l) => ({
           ...newRow(l.booking_line_id ?? "", String(l.qty)),
           id: l.id,
-          lot: l.expiry ?? "",
-          picks: l.boxes.map((d) => ({ box_id: d.box_id, qty: String(d.qty) })),
-          saved: l.boxes.length ? l.boxes.map((d) => ({ ...d })) : null,
+          lot_id: l.lot_id ?? "",
         }));
         // Other booking lines with something left can be added.
         for (const l of lines) {
@@ -326,42 +193,13 @@ export const DrRequestModal = component$<{
     try {
       const b = booking.value;
       if (!b) throw new Error("the booking could not be loaded");
-      const plans = planRows(
-        form.rows,
-        b.lines,
-        boxes.value,
-        form.location_id,
-        boxedItems(b, dr, boxes.value),
-      );
       const lines = form.rows
-        .map((r, i) => ({ r, plan: plans[i] }))
-        .filter(({ r }) => r.qty.trim())
-        .map(({ r, plan }) => {
+        .filter((r) => r.qty.trim())
+        .map((r) => {
           const line = b.lines.find((l) => l.id === r.line_id);
           if (!line) throw new Error("reload the booking: a line changed");
           const qty = parseCount(r.qty, `quantity for ${line.item_code}`) ?? 0;
-          // Boxed items: each box has its own lot, and the boxes are chosen by hand.
-          if (plan) {
-            if (qty > 0 && !plan.draws.length) throw new Error(`choose the boxes of ${line.item_code}`);
-            if (qty > 0 && plan.total !== qty) {
-              throw new Error(`the boxes of ${line.item_code} add up to ${plan.total}, not ${qty}`);
-            }
-            return {
-              id: r.id,
-              booking_line_id: r.line_id,
-              expiry: null,
-              qty,
-              boxes: plan.draws.map((d) => ({ box_id: d.box_id, qty: d.qty })),
-            };
-          }
-          const lot = r.lot || lotsFor(lots.value, line, form.location_id)[0]?.expiry || null;
-          return {
-            id: r.id,
-            booking_line_id: r.line_id,
-            expiry: line.tracks_expiry ? lot : null,
-            qty,
-            boxes: [],
-          };
+          return { id: r.id, booking_line_id: r.line_id, lot_id: r.lot_id || null, qty };
         })
         .filter((l) => l.qty > 0);
       const request = {
@@ -407,14 +245,6 @@ export const DrRequestModal = component$<{
     return n + countOf(r.qty) * price;
   }, 0);
   const vat = form.kind === "invoice" ? Math.round((net * vatBp) / 10000) : 0;
-  const plans = planRows(
-    form.rows,
-    b?.lines ?? [],
-    boxes.value,
-    form.location_id,
-    boxedItems(b, dr, boxes.value),
-  );
-
   return (
     <Modal open={open} title={title} wide>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
@@ -484,11 +314,8 @@ export const DrRequestModal = component$<{
               required
               onChange$={(_, el) => {
                 form.location_id = el.value;
-                // Lots and boxes chosen at the old location don't apply.
-                form.rows.forEach((r) => {
-                  r.lot = "";
-                  r.picks = [];
-                });
+                // Lots chosen at the old location don't apply.
+                form.rows.forEach((r) => (r.lot_id = ""));
               }}
             >
               {locations.value.map((l) => (
@@ -545,50 +372,13 @@ export const DrRequestModal = component$<{
               {form.rows.map((row, idx) => {
                 const line = b?.lines.find((l) => l.id === row.line_id);
                 if (!line) return null;
-                const plan = plans[idx];
                 const avail = lotsFor(lots.value, line, form.location_id);
-                const lot = row.lot || avail[0]?.expiry || "";
-                const onHand = plan
-                  ? plan.onHand
-                  : line.tracks_expiry
-                    ? (avail.find((s) => s.expiry === lot)?.qty ?? 0)
-                    : avail.reduce((n, s) => n + s.qty, 0);
-                const qty = countOf(row.qty);
-                const short = qty > onHand;
-                const perBox = line.pcs_per_box ?? dr?.lines.find((l) => l.id === row.id)?.pcs_per_box;
-                // Boxes to tick: those with something left here, plus
-                // any already picked that aren't (e.g. a saved draw's box).
-                const choices = plan
-                  ? [
-                      ...plan.avail
-                        .filter((a) => a.left > 0 || row.picks.some((p) => p.box_id === a.box.box_id))
-                        .map((a) => ({
-                          box_id: a.box.box_id,
-                          serial: a.box.serial,
-                          expiry: a.box.expiry,
-                          left: a.left,
-                          pcs: a.box.pcs,
-                        })),
-                      ...row.picks
-                        .filter((p) => !plan.avail.some((a) => a.box.box_id === p.box_id))
-                        .map((p) => {
-                          const was = row.saved?.find((d) => d.box_id === p.box_id);
-                          return {
-                            box_id: p.box_id,
-                            serial: was?.serial ?? null,
-                            expiry: was?.expiry ?? null,
-                            left: 0,
-                            pcs: 0,
-                          };
-                        }),
-                    ]
-                  : [];
-                // The box to break first, among those with something left.
-                const oldest = oldestBox(choices.filter((c) => c.left > 0));
+                const onHand = avail.find((s) => s.lot_id === row.lot_id)?.qty ?? 0;
+                const short = !!row.lot_id && countOf(row.qty) > onHand;
                 return (
                   <div
                     key={row.key}
-                    class="grid grid-cols-[minmax(0,1fr)_13rem_6rem_auto] items-start gap-2"
+                    class="grid grid-cols-[minmax(0,1fr)_18rem_6rem_auto] items-start gap-2"
                   >
                     <div class="pt-1.5 text-sm">
                       <span class="font-medium">{line.item_code}</span> {line.item_name}
@@ -597,37 +387,21 @@ export const DrRequestModal = component$<{
                         {dr ? ` (with this ${k.name}'s)` : ""}
                       </span>
                     </div>
-                    {plan ? (
-                      <span class={[hint, "block pt-2"]}>
-                        {formatQty(onHand, line.unit)} in boxes here
-                        <span class="block">
-                          {boxSummary(
-                            plan.avail.filter((a) => a.left > 0 && a.left >= a.box.pcs).length,
-                            plan.avail.filter((a) => a.left > 0 && a.left < a.box.pcs).length,
-                            plan.avail
-                              .filter((a) => a.left > 0 && a.left < a.box.pcs)
-                              .reduce((n, a) => n + a.left, 0),
-                          )}
-                        </span>
-                      </span>
-                    ) : line.tracks_expiry ? (
-                      <select
-                        class={input}
-                        aria-label="Lot"
-                        onChange$={(_, el) => (row.lot = el.value)}
-                      >
-                        {avail.map((s) => (
-                          <option key={s.expiry ?? "-"} value={s.expiry ?? ""} selected={s.expiry === lot}>
-                            {lotLabel(s)}
-                          </option>
-                        ))}
-                        {!avail.length && <option value="">None in stock here</option>}
-                      </select>
-                    ) : (
-                      <span class={[hint, "block pt-2"]}>
-                        {formatQty(onHand, line.unit)} on hand
-                      </span>
-                    )}
+                    <select
+                      class={input}
+                      aria-label="Lot"
+                      required={!!row.qty.trim()}
+                      onChange$={(_, el) => (row.lot_id = el.value)}
+                    >
+                      <option value="" selected={!row.lot_id}>
+                        {avail.length ? "Choose a lot…" : "None in stock here"}
+                      </option>
+                      {avail.map((s) => (
+                        <option key={s.lot_id ?? ""} value={s.lot_id ?? ""} selected={s.lot_id === row.lot_id}>
+                          {lotLabel(s)}
+                        </option>
+                      ))}
+                    </select>
                     <div>
                       <input
                         class={[inputBase, "w-full text-right"]}
@@ -637,22 +411,17 @@ export const DrRequestModal = component$<{
                         value={row.qty}
                         onInput$={(_, el) => (row.qty = el.value)}
                       />
-                      {plan && boxEquiv(qty, perBox) && (
-                        <span class={[hint, "block text-right"]}>{boxEquiv(qty, perBox)}</span>
-                      )}
                       {short && <span class="block text-right text-xs text-danger">only {onHand}</span>}
                     </div>
                     <div class="flex">
-                      {line.tracks_expiry && !plan && (
-                        <button
-                          type="button"
-                          class={btnGhost}
-                          title="Take part from another lot"
-                          onClick$={() => form.rows.splice(idx + 1, 0, newRow(line.id))}
-                        >
-                          + lot
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        class={btnGhost}
+                        title="Take part from another lot"
+                        onClick$={() => form.rows.splice(idx + 1, 0, newRow(line.id))}
+                      >
+                        + lot
+                      </button>
                       <button
                         type="button"
                         class={btnGhost}
@@ -662,86 +431,6 @@ export const DrRequestModal = component$<{
                         ✕
                       </button>
                     </div>
-                    {plan && (
-                      <div class="col-span-full rounded-md border border-line bg-surface-muted px-3 py-2 text-sm">
-                        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <span>
-                            <span class="font-medium">Boxes to take from</span>{" "}
-                            <span class={plan.total === qty ? "text-ink-muted" : "text-danger"}>
-                              {formatQty(plan.total)} of {formatQty(qty, line.unit)}
-                              {plan.total !== qty &&
-                                (plan.draws.length ? " · must add up to the quantity" : " · tick the boxes")}
-                            </span>
-                          </span>
-                          {oldest && choices.length > 1 && (
-                            <span class={hint}>Oldest = earliest expiry, then lowest serial</span>
-                          )}
-                        </div>
-                        {choices.length ? (
-                          <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                            {choices.map((c) => {
-                              const id = c.box_id;
-                              const pick = row.picks.find((p) => p.box_id === id);
-                              const over = countOf(pick?.qty ?? "") > Math.max(c.left, 0);
-                              const opened = c.pcs > 0 && c.left > 0 && c.left < c.pcs;
-                              return (
-                                <div
-                                  key={id}
-                                  class={[
-                                    "flex items-center justify-between gap-2 rounded-md border bg-white px-2 py-1",
-                                    pick ? "border-brand-500" : "border-line",
-                                  ]}
-                                >
-                                  <label class="flex min-w-0 items-center gap-2">
-                                    <input
-                                      type="checkbox"
-                                      class="accent-brand-500"
-                                      checked={!!pick}
-                                      onChange$={(_, el) => tickBox(row, plan, id, Math.max(c.left, 0), el.checked)}
-                                    />
-                                    <span class="min-w-0">
-                                      <span class="font-medium">{c.serial ?? "Box"}</span>
-                                      {id === oldest && choices.length > 1 && (
-                                        <span class="ml-1.5 rounded bg-brand-50 px-1 text-xs text-brand-700">
-                                          oldest
-                                        </span>
-                                      )}
-                                      {opened && (
-                                        <span class="ml-1.5 rounded border border-line px-1 text-xs text-ink-muted">
-                                          opened
-                                        </span>
-                                      )}
-                                      <span class={[hint, "block"]}>
-                                        {c.expiry ? `Exp. ${formatDay(c.expiry)} · ` : ""}
-                                        {c.pcs ? `${c.left} of ${c.pcs} left` : `${c.left} left`}
-                                      </span>
-                                    </span>
-                                  </label>
-                                  <span class="text-right">
-                                    <input
-                                      class={[inputBase, "w-16 text-right"]}
-                                      aria-label={`Pieces from ${c.serial ?? "this box"}`}
-                                      inputMode="numeric"
-                                      disabled={!pick}
-                                      value={pick?.qty ?? ""}
-                                      onInput$={(_, el) => {
-                                        const p = row.picks.find((x) => x.box_id === id);
-                                        if (p) p.qty = el.value;
-                                      }}
-                                    />
-                                    {over && (
-                                      <span class="block text-xs text-danger">only {Math.max(c.left, 0)}</span>
-                                    )}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <p class={hint}>No boxes of this item here.</p>
-                        )}
-                      </div>
-                    )}
                   </div>
                 );
               })}

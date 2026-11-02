@@ -13,7 +13,6 @@ import {
 } from "@builder.io/qwik-city";
 import {
   commands,
-  type BoxStock,
   type ItemStock,
   type LocationInfo,
   type LocationQty,
@@ -22,7 +21,7 @@ import {
   type StockMove,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { boxSummary, formatDay, formatQty } from "~/lib/format";
+import { formatDay, formatMonth, formatQty, serialSpan } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -84,9 +83,6 @@ function atLocation(s: ItemStock, location_id: string): LocationQty {
     s.by_location.find((b) => b.location_id === location_id) ?? {
       location_id,
       qty: 0,
-      full_boxes: 0,
-      open_boxes: 0,
-      open_pcs: 0,
       next_expiry: null,
     }
   );
@@ -106,8 +102,7 @@ const StockList = component$(() => {
       "stock_doc_lines",
       "po_receipts",
       "delivery_receipts",
-      "boxes",
-      "dr_line_boxes",
+      "lots",
     ],
     $(async () => {
       try {
@@ -276,16 +271,6 @@ const StockList = component$(() => {
                         ]}
                       >
                         {b.qty === 0 ? "—" : formatQty(b.qty, s.unit)}
-                        {s.serial_code &&
-                          (b.full_boxes > 0 || b.open_boxes > 0) && (
-                            <span class={[hint, "block font-normal"]}>
-                              {boxSummary(
-                                b.full_boxes,
-                                b.open_boxes,
-                                b.open_pcs,
-                              )}
-                            </span>
-                          )}
                       </td>
                     ) : (
                       cols.map((l) => {
@@ -313,13 +298,6 @@ const StockList = component$(() => {
                       ]}
                     >
                       {formatQty(s.on_hand, s.unit)}
-                      {!one &&
-                        s.serial_code &&
-                        (s.full_boxes > 0 || s.open_boxes > 0) && (
-                          <span class={[hint, "block font-normal"]}>
-                            {boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)}
-                          </span>
-                        )}
                     </td>
                     <td class={[td, "text-right tabular-nums"]}>
                       {s.reorder_level == null
@@ -355,9 +333,6 @@ interface LocationLots {
   location_name: string | null;
   unit: string | null;
   qty: number;
-  full_boxes: number;
-  open_boxes: number;
-  open_pcs: number;
   lots: StockLot[];
 }
 
@@ -367,7 +342,6 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
   const missing = useSignal(false);
   const lots = useSignal<StockLot[]>([]);
   const moves = useSignal<StockMove[]>([]);
-  const boxes = useSignal<BoxStock[]>([]);
   const error = useSignal("");
 
   useLiveLoad(
@@ -378,8 +352,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
       "stock_doc_lines",
       "po_receipts",
       "delivery_receipts",
-      "boxes",
-      "dr_line_boxes",
+      "lots",
       "doc_numbers",
     ],
     $(async () => {
@@ -389,9 +362,6 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
         missing.value = !item.value;
         lots.value = unwrap(await commands.stockLots(id));
         moves.value = unwrap(await commands.itemStockMoves(id));
-        boxes.value = item.value?.serial_code
-          ? unwrap(await commands.boxStock(id))
-          : [];
       } catch (e) {
         error.value = errorText(e);
       }
@@ -409,24 +379,17 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
           location_name: l.location_name,
           unit: l.unit,
           qty: 0,
-          full_boxes: 0,
-          open_boxes: 0,
-          open_pcs: 0,
           lots: [],
         };
         out.push(g);
       }
       g.qty += l.qty;
-      g.full_boxes += l.full_boxes;
-      g.open_boxes += l.open_boxes;
-      g.open_pcs += l.open_pcs;
       g.lots.push(l);
     }
     return out;
   });
-  // Three paged tables on one screen, so each has its own page key.
+  // Two paged tables on one screen, so each has its own page key.
   const lotsPg = usePage(byLocation, undefined, "lots_page");
-  const boxesPg = usePage(boxes, undefined, "boxes_page");
   const movesPg = usePage(moves, undefined, "moves_page");
 
   if (missing.value) {
@@ -454,7 +417,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
       </p>
       <PageHeader
         title={`${s.code} · ${s.name}`}
-        subtitle={`${formatQty(s.on_hand, s.unit)} on hand${s.full_boxes || s.open_boxes ? ` (${boxSummary(s.full_boxes, s.open_boxes, s.open_pcs)})` : ""}${s.reorder_level == null ? "" : ` · reorder at ${formatQty(s.reorder_level)}`}${s.serial_code ? ` · serial ${s.serial_code}${s.pcs_per_box ? `, ${formatQty(s.pcs_per_box)} a box` : ""}` : ""}`}
+        subtitle={`${formatQty(s.on_hand, s.unit)} on hand${s.reorder_level == null ? "" : ` · reorder at ${formatQty(s.reorder_level)}`}`}
       >
         <div q:slot="actions" class="flex flex-wrap gap-2">
           {can(session.user, "items") && (
@@ -491,7 +454,7 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
               <table class={table}>
                 <thead>
                   <tr>
-                    <th class={th}>Location / expiry</th>
+                    <th class={th}>Location / lot</th>
                     <th class={[th, "text-right"]}>Qty</th>
                   </tr>
                 </thead>
@@ -509,23 +472,22 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                         ]}
                       >
                         {formatQty(g.qty, g.unit)}
-                        {(g.full_boxes > 0 || g.open_boxes > 0) && (
-                          <span class={[hint, "block font-normal"]}>
-                            {boxSummary(g.full_boxes, g.open_boxes, g.open_pcs)}
-                          </span>
-                        )}
                       </td>
                     </tr>
                     {g.lots.map((l) => (
-                      <tr key={`${l.location_id}/${l.expiry}`}>
-                        <td class={[td, "pl-8 whitespace-nowrap"]}>
-                          {l.expiry ? (
-                            <>
-                              {formatDay(l.expiry)}{" "}
+                      <tr key={`${l.location_id}/${l.lot_id}`}>
+                        <td class={[td, "pl-8"]}>
+                          {formatMonth(l.month)}
+                          {serialSpan(l.serial_from, l.serial_to) && (
+                            <span class={[hint, "block"]}>
+                              {serialSpan(l.serial_from, l.serial_to)}
+                            </span>
+                          )}
+                          {l.expiry && (
+                            <span class="block whitespace-nowrap text-xs">
+                              Exp. {formatDay(l.expiry)}{" "}
                               <ExpiryBadge days={l.days_left} />
-                            </>
-                          ) : (
-                            <span class="text-ink-muted">No expiry</span>
+                            </span>
                           )}
                         </td>
                         <td
@@ -536,15 +498,6 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                           ]}
                         >
                           {formatQty(l.qty, l.unit)}
-                          {(l.full_boxes > 0 || l.open_boxes > 0) && (
-                            <span class={[hint, "block"]}>
-                              {boxSummary(
-                                l.full_boxes,
-                                l.open_boxes,
-                                l.open_pcs,
-                              )}
-                            </span>
-                          )}
                         </td>
                       </tr>
                     ))}
@@ -554,78 +507,6 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
             )}
             <Pager of={lotsPg} />
           </section>
-          {s.serial_code && (
-            <section class={[card, "overflow-x-auto"]}>
-              <div class="border-b border-line px-4 py-3">
-                <h2 class="font-semibold">Boxes</h2>
-                <p class={hint}>In stock, lowest serial first.</p>
-              </div>
-              {boxes.value.length === 0 ? (
-                <Empty>No boxes in stock.</Empty>
-              ) : (
-                <table class={table}>
-                  <thead>
-                    <tr>
-                      <th class={th}>Serial</th>
-                      <th class={th}>Location</th>
-                      <th class={[th, "text-right"]}>Left</th>
-                      <th class={th}>Expiry</th>
-                      <th class={th}>PO</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {boxesPg.value.rows.map((b) => (
-                      <tr key={b.box_id}>
-                        <td class={[td, "whitespace-nowrap font-medium"]}>
-                          {b.serial ?? "—"}
-                          {b.open && (
-                            <span class="ml-2">
-                              <Badge>open</Badge>
-                            </span>
-                          )}
-                        </td>
-                        <td class={td}>
-                          {b.location_name ?? "Deleted location"}
-                        </td>
-                        <td
-                          class={[
-                            td,
-                            "text-right whitespace-nowrap tabular-nums",
-                            b.qty < 0 && "text-danger",
-                          ]}
-                        >
-                          {formatQty(b.qty)} / {formatQty(b.pcs)}
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          {b.expiry ? (
-                            <>
-                              {formatDay(b.expiry)}{" "}
-                              <ExpiryBadge days={b.days_left} />
-                            </>
-                          ) : (
-                            <span class="text-ink-muted">—</span>
-                          )}
-                        </td>
-                        <td class={[td, "whitespace-nowrap"]}>
-                          {b.po_id ? (
-                            <Link
-                              class="text-brand-700 hover:underline"
-                              href={`/orders/?id=${b.po_id}`}
-                            >
-                              {b.po_no ?? "PO"}
-                            </Link>
-                          ) : (
-                            <span class="text-ink-muted">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              <Pager of={boxesPg} />
-            </section>
-          )}
         </div>
         <section class={[card, "min-w-0 overflow-x-auto"]}>
           <div class="border-b border-line px-4 py-3">
@@ -643,8 +524,9 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                   <th class={th}>Date</th>
                   <th class={th}>Document</th>
                   <th class={th}>Location</th>
+                  <th class={th}>Lot</th>
+                  <th class={th}>Serial #</th>
                   <th class={th}>Expiry</th>
-                  {s.serial_code && <th class={th}>Box</th>}
                   <th class={[th, "text-right"]}>Change</th>
                 </tr>
               </thead>
@@ -685,13 +567,14 @@ const ItemStockDetail = component$<{ id: string }>(({ id }) => {
                       )}
                     </td>
                     <td class={[td, "whitespace-nowrap"]}>
+                      {formatMonth(m.month)}
+                    </td>
+                    <td class={[td, "whitespace-nowrap"]}>
+                      {serialSpan(m.serial_from, m.serial_to) || "—"}
+                    </td>
+                    <td class={[td, "whitespace-nowrap"]}>
                       {m.expiry ? formatDay(m.expiry) : "—"}
                     </td>
-                    {s.serial_code && (
-                      <td class={[td, "whitespace-nowrap"]}>
-                        {m.serial ?? "—"}
-                      </td>
-                    )}
                     <td
                       class={[
                         td,

@@ -1,11 +1,11 @@
 mod common;
 
 use common::{TestPeer, pull};
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::charge_types;
 use sanco_core::domain::conflicts;
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostLineInput, CostSheetInput, ItemInput};
+use sanco_core::domain::lots;
 use sanco_core::domain::pricing::ChargeMode;
 use sanco_core::domain::purchasing::{
     self, PoAction, PoInput, PoLineInput, PoStatus, PoStatusInput, ReceiptInput, ReceiptLineInput,
@@ -73,9 +73,6 @@ fn add_item(db: &Db, actor: &Actor, code: &str, supplier: &str, tracks_expiry: b
         default_margin_bp: Some(2000),
         notes: String::new(),
         active: true,
-        serial_code: String::new(),
-        serial_digits: None,
-        pcs_per_box: None,
     };
     db.write(actor.clone(), move |tx| items::save(tx, &input, true))
         .unwrap()
@@ -88,7 +85,6 @@ fn po_line(item: &str, qty: i64, price: Option<i64>) -> PoLineInput {
         qty,
         price_minor: price,
         notes: String::new(),
-        pcs_per_box: None,
     }
 }
 
@@ -103,7 +99,6 @@ fn po_input(supplier: &str, lines: Vec<PoLineInput>) -> PoInput {
         supplier_ref: "PI-77".into(),
         notes: String::new(),
         lines,
-        serial_year: String::new(),
     }
 }
 
@@ -118,7 +113,7 @@ fn create_po(db: &Db, actor: &Actor, input: PoInput) -> Result<String, Error> {
 
 fn update_po(db: &Db, actor: &Actor, input: PoInput, costs: bool) -> Result<(), Error> {
     db.write(actor.clone(), move |tx| {
-        purchasing::update(tx, &input, costs, &mut Serials::none())
+        purchasing::update(tx, &input, costs)
     })
 }
 
@@ -130,7 +125,7 @@ fn status(db: &Db, actor: &Actor, id: &str, action: PoAction) -> Result<(), Erro
         reason: "Supplier out of stock".into(),
     };
     db.write(actor.clone(), move |tx| {
-        purchasing::set_status(tx, &id, &input, &mut Serials::none())
+        purchasing::set_status(tx, &id, &input)
     })
 }
 
@@ -154,8 +149,9 @@ fn receipt(po: &str, location: &str, lines: Vec<(&str, Option<&str>, i64)>) -> R
             .map(|(l, e, q)| ReceiptLineInput {
                 po_line_id: l.into(),
                 expiry: e.map(String::from),
+                serial_from: None,
+                serial_to: None,
                 qty: q,
-                box_id: None,
             })
             .collect(),
     }
@@ -201,10 +197,8 @@ fn as_input(d: &purchasing::PoDetail) -> PoInput {
                 qty: l.qty,
                 price_minor: l.price_minor,
                 notes: String::new(),
-                pcs_per_box: None,
             })
             .collect(),
-        serial_year: String::new(),
     }
 }
 
@@ -434,19 +428,17 @@ fn po_payments_and_receiving_into_stock() {
         notes: String::new(),
         lines: vec![StockLineInput {
             item_id: glv.clone(),
-            expiry: Some("2028-03-31".into()),
+            expiry: None,
             qty: -5,
-            box_id: None,
-            pcs_per_box: None,
+            lot_id: Some(lots::lot_id(&glv, lots::month_of(TODAY))),
+            serial_from: None,
+            serial_to: None,
         }],
-        serial_year: String::new(),
     };
     let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], series::ADJUSTMENT, &id).unwrap();
-    a.db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &adj, &res, &mut Serials::none())
-    })
-    .unwrap();
+    a.db.write(actor.clone(), move |tx| inventory::create(tx, &adj, &res))
+        .unwrap();
     let r = rr2.clone();
     assert!(
         invalid(
@@ -691,7 +683,6 @@ fn po_payments_and_receiving_into_stock() {
         reason: String::new(),
         notes: String::new(),
         lines: vec![],
-        serial_year: String::new(),
     };
     assert!(a.db.read(|c| inventory::validate(c, &fake, TODAY)).is_err());
 }

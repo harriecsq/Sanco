@@ -8,7 +8,7 @@ import {
   type SupplierChoice,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDateTime, formatDay, formatQty } from "~/lib/format";
+import { formatDateTime, formatDay, formatMonth, serialSpan, formatQty } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -179,7 +179,6 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
     rows.push(["Voided", `${formatDateTime(r.voided_at)} by ${r.voided_by_name ?? "—"}`]);
     rows.push(["Reason", r.void_reason ?? ""]);
   }
-  const boxed = det.lines.some((l) => l.box_id);
 
   return (
     <>
@@ -223,7 +222,8 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
             <thead>
               <tr>
                 <th class={th}>Item</th>
-                {boxed && <th class={th}>Box</th>}
+                <th class={th}>Lot</th>
+                <th class={th}>Serial #</th>
                 <th class={th}>Expiry</th>
                 <th class={[th, "text-right"]}>Qty</th>
               </tr>
@@ -237,9 +237,8 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
                     </Link>{" "}
                     {l.item_name}
                   </td>
-                  {boxed && (
-                    <td class={[td, "whitespace-nowrap font-mono"]}>{l.box_id ? (l.serial ?? "no serial") : "—"}</td>
-                  )}
+                  <td class={[td, "whitespace-nowrap"]}>{formatMonth(l.month)}</td>
+                  <td class={[td, "whitespace-nowrap"]}>{serialSpan(l.serial_from, l.serial_to) || "—"}</td>
                   <td class={[td, "whitespace-nowrap"]}>{l.expiry ? formatDay(l.expiry) : "—"}</td>
                   <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>{formatQty(l.qty, l.unit)}</td>
                 </tr>

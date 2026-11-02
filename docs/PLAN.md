@@ -198,6 +198,7 @@ _Update this section when each milestone is finished: set its status, the date, 
 | M12 DR or Invoice | 🟡 Code done, UI click-through pending | 2026-10-27 | See M12 notes below. Plan was `m12-dr-invoice.md`. Commit `d305311` on main (not pushed; `7956423` before it is cargo fmt only); version not bumped (still 1.1.0). Schema **v12**: every PC must update together. |
 | BD removal | ✅ Code done | 2026-10-27 | See BD removal notes below. Commit `aea9cdf` on main. No schema change (still v12). |
 | M13 macOS support | 🟡 **Next.** Merged with HR, Mac build via GitHub Actions pending | 2026-10-31 | See M13 notes below. Branch `macos-support` (`a0bb228` and earlier; `3538159` "mac" left out: it committed `target/` and churned `package-lock.json`) merged into the HR branch as `claude/wonderful-edison-avq5gb`. Release builds (NSIS + universal DMG) run on GitHub Actions from a `v*` tag. Never run on a Mac yet. |
+| M14 Lots | 🟡 Code done, inventory import and release pending | 2026-11-02 | See M14 notes below. Plan: `docs/plans/m14-lots.md`. Boxes removed, lots added. Nothing committed yet; version not bumped (still 1.3.0). Schema **v14**: every PC must update together. |
 | HR | ✅ Code done | 2026-10-31 | See `docs/hr-plan.md` (plan + build notes). Commits `27557b0`, `9207142`. Released together with M13 as **1.3.0**. Schema **v13** (migration `0013_hr`): every PC must update together. |
 
 **M0 notes**
@@ -464,6 +465,15 @@ _Update this section when each milestone is finished: set its status, the date, 
   - A Windows PC older than this branch doesn't filter by OS: with a newer Mac it may show a banner, and "Update now" fails safely with "not a Windows program".
   - `cargo fmt --all` reformats untouched files; `c5b90d9` caught them up. Reverting them with `git checkout` was blocked as destructive.
   - Sanco on this PC is installed in the repo folder (`C:\Users\Harrie\Sanco`, hence the untracked `sanco.exe`, `sanco-setup.exe`, `uninstall.exe`). Don't `git clean`. Better reinstalled to the default location.
+
+**M14 notes (lots, 2026-11-02)**
+- Replaces M11. `domain/boxes.rs`, `tests/boxes.rs`, the box UI and the box serial numbering (`reserve_batch`, `assign_seq`, `keeps_clashes`, `Node::reserve_serials`) are gone. `NumberClaim.count` and the private `claim_run` count stay, always 1.
+- **Deviations from the plan:** receiving forms aren't prefilled from an existing lot; blank means "keep what the lot has". The RR form has one row per PO line, since one date is one lot (no more "+ lot" there).
+- **Gotcha:** `ALTER TABLE ... DROP COLUMN` re-reads every view. SQLite 3.51.2 fails on `v_receipt_no`'s correlated ORDER BY, so 0014 drops and recreates that view around the drops.
+- `npm run app` on this PC would migrate the real database. Test with `--data-dir .dev/x`.
+- Checked: 0014 on copies of the real database (also with box rows added), and through a test instance: lots list, stock receipt form, two-lot DR with oldest-first dropdown, PO receiving with a serial range.
+- Not clicked through: adjustment and transfer posting from the forms (covered by tests in `tests/inventory.rs`), DR edit after delivery, void flows.
+- **Next:** inventory import from `Sanco inventory - cleaned.xlsx` (`docs/plans/m14-lots.md` step 6).
 
 ## Milestones
 - **M0 — Setup.**

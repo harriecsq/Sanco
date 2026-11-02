@@ -21,7 +21,6 @@ import {
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import {
-  boxEquiv,
   formatDateTime,
   formatDay,
   formatPct,
@@ -99,8 +98,6 @@ interface FormLine {
   notes: string;
   /** Saved price and its source, while editing a line. */
   saved: { price: number; rule: PriceSource } | null;
-  /** The saved item's box size, for items in boxes. */
-  per_box: number | null;
 }
 
 interface Form {
@@ -123,7 +120,6 @@ const blankLine = (): FormLine => ({
   price: "",
   notes: "",
   saved: null,
-  per_box: null,
 });
 
 const blank = (): Form => ({
@@ -153,7 +149,6 @@ const toForm = (d: BookingDetail): Form => ({
     price: moneyText(l.price_c),
     notes: l.notes ?? "",
     saved: { price: l.price_c, rule: l.price_rule },
-    per_box: l.pcs_per_box,
   })),
 });
 
@@ -166,8 +161,6 @@ const BookingFormModal = component$<{
 }>(({ open, form, saved$ }) => {
   const clients = useSignal<Choice[]>([]);
   const items = useSignal<Choice[]>([]);
-  /** Box size of each item that comes in boxes (needs the items list). */
-  const boxSizes = useSignal<Record<string, number>>({});
   const vatBp = useSignal(1200);
   const quotes = useStore<Record<string, PriceQuote | null>>({});
   const error = useSignal("");
@@ -178,11 +171,7 @@ const BookingFormModal = component$<{
     $(async () => {
       try {
         clients.value = unwrap(await commands.clientOptions());
-        const list = unwrap(await commands.itemOptions());
-        items.value = list;
-        boxSizes.value = Object.fromEntries(
-          list.flatMap((i) => (i.serial_code && i.pcs_per_box ? [[i.id, i.pcs_per_box]] : [])),
-        );
+        items.value = unwrap(await commands.itemOptions());
         vatBp.value = unwrap(await commands.pricingSettings()).vat_bp;
       } catch (e) {
         error.value = errorText(e);
@@ -324,12 +313,6 @@ const BookingFormModal = component$<{
               const kept = typed != null && line.saved?.price === typed ? line.saved.rule : null;
               const custom = typed != null && q?.net_c !== typed;
               const below = typed != null && q?.cost_c != null && typed < q.cost_c;
-              let equiv = "";
-              try {
-                equiv = boxEquiv(parseCount(line.qty) ?? 0, boxSizes.value[line.item_id] ?? line.per_box);
-              } catch {
-                equiv = "";
-              }
               return (
                 <div
                   key={line.key}
@@ -342,7 +325,6 @@ const BookingFormModal = component$<{
                     onChange$={(_, el) => {
                       line.item_id = el.value;
                       line.saved = null;
-                      line.per_box = null;
                     }}
                   >
                     <option value="">Choose an item…</option>
@@ -361,7 +343,6 @@ const BookingFormModal = component$<{
                       value={line.qty}
                       onInput$={(_, el) => (line.qty = el.value)}
                     />
-                    {equiv && <span class={[hint, "block text-right"]}>{equiv}</span>}
                   </div>
                   <div class="space-y-0.5">
                     <input
@@ -775,9 +756,6 @@ const BookingView = component$<{ id: string }>(({ id }) => {
                     </td>
                     <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
                       {formatQty(l.qty, l.unit)}
-                      {l.pcs_per_box != null && (
-                        <span class={[hint, "block"]}>{boxEquiv(l.qty, l.pcs_per_box)}</span>
-                      )}
                     </td>
                     <td class={[td, "text-right tabular-nums"]}>
                       {formatPeso(l.price_c)}

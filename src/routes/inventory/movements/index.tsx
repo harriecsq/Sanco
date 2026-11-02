@@ -7,7 +7,7 @@ import {
   type StockDocInfo,
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
-import { formatDateTime, formatDay, formatQty } from "~/lib/format";
+import { formatDateTime, formatDay, formatMonth, serialSpan, formatQty } from "~/lib/format";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -164,7 +164,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
   const busy = useSignal(false);
 
   useLiveLoad(
-    ["stock_docs", "stock_doc_lines", "po_receipts", "boxes", "items", "locations", "doc_numbers", "users"],
+    ["stock_docs", "stock_doc_lines", "po_receipts", "lots", "items", "locations", "doc_numbers", "users"],
     $(async () => {
       try {
         const d = unwrap(await commands.getStockDoc(id));
@@ -189,7 +189,6 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
   const det = detail.value;
   if (!det) return error.value ? <Alert>{error.value}</Alert> : null;
   const d = det.doc;
-  const boxed = det.lines.some((l) => l.serial);
 
   const rows: [string, string][] = [
     ["Type", KIND_LABEL[d.kind]],
@@ -244,8 +243,9 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
             <thead>
               <tr>
                 <th class={th}>Item</th>
+                <th class={th}>Lot</th>
+                <th class={th}>Serial #</th>
                 <th class={th}>Expiry</th>
-                {boxed && <th class={th}>Box</th>}
                 <th class={[th, "text-right"]}>{d.kind === "adjustment" ? "Change" : "Qty"}</th>
               </tr>
             </thead>
@@ -258,8 +258,9 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
                     </Link>{" "}
                     {l.item_name}
                   </td>
+                  <td class={[td, "whitespace-nowrap"]}>{formatMonth(l.month)}</td>
+                  <td class={[td, "whitespace-nowrap"]}>{serialSpan(l.serial_from, l.serial_to) || "—"}</td>
                   <td class={[td, "whitespace-nowrap"]}>{l.expiry ? formatDay(l.expiry) : "—"}</td>
-                  {boxed && <td class={[td, "whitespace-nowrap"]}>{l.serial ?? "—"}</td>}
                   <td class={[td, "text-right tabular-nums"]}>
                     {d.kind === "adjustment" && l.qty > 0 ? "+" : ""}
                     {formatQty(l.qty, l.unit)}

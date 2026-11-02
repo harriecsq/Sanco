@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use sanco_core::Db;
 use sanco_core::domain::auth::{Action, Module};
-use sanco_core::domain::boxes::BoxStock;
 use sanco_core::domain::delivery::{self, DeliverInput, DrDetail, DrInfo, DrRequestInput};
 use sanco_core::domain::inventory::StockLot;
 use sanco_core::sync::numbering::{self, Reservation};
@@ -44,19 +43,6 @@ pub async fn dr_lots(
     let (db, _) = require_view_any(&state, &VIEWERS).await?;
     let today = manila_date_string(db.now_ms());
     blocking(move || db.read(|c| delivery::lots_for_booking(c, &booking_id, &today))).await
-}
-
-/// Boxes in stock of a booking's items, for choosing what a DR takes
-/// from each box.
-#[tauri::command]
-#[specta::specta]
-pub async fn dr_boxes(
-    state: State<'_, AppState>,
-    booking_id: String,
-) -> Result<Vec<BoxStock>, String> {
-    let (db, _) = require_view_any(&state, &VIEWERS).await?;
-    let today = manila_date_string(db.now_ms());
-    blocking(move || db.read(|c| delivery::boxes_for_booking(c, &booking_id, &today))).await
 }
 
 /// Requests a DR for a confirmed booking. Returns its id.

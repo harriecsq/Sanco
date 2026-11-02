@@ -3,14 +3,14 @@
 //! the delete permission.
 
 use sanco_core::domain::auth::{Action, Module};
-use sanco_core::domain::boxes::{self, BoxStock};
 use sanco_core::domain::inventory::{
     self, ItemStock, StockDocDetail, StockDocInfo, StockDocInput, StockLot, StockMove,
 };
+use sanco_core::domain::lots::{self, LotInfo, LotInput};
 use sanco_core::time::manila_date_string;
 use tauri::State;
 
-use crate::commands::sync::{reserve_number, reserve_serials};
+use crate::commands::sync::reserve_number;
 use crate::commands::{blocking, require};
 use crate::state::AppState;
 
@@ -23,7 +23,8 @@ pub async fn stock_overview(state: State<'_, AppState>) -> Result<Vec<ItemStock>
     blocking(move || db.read(|c| inventory::item_stock(c, &today))).await
 }
 
-/// Non-zero lots (item, location, expiry), optionally of one item.
+/// Non-zero stock per lot and location, optionally of one item, oldest lot
+/// first.
 #[tauri::command]
 #[specta::specta]
 pub async fn stock_lots(
@@ -86,30 +87,11 @@ pub async fn post_stock_doc(
     let (db, user) = require(&state, Module::Inventory, Action::Create).await?;
     // Check first, so a refused document doesn't use up a number.
     let (read, input) = (db.clone(), doc.clone());
-    let (now, today) = (db.now_ms(), manila_date_string(db.now_ms()));
-    let needs =
-        blocking(move || read.read(|c| inventory::serials_for_doc(c, &input, &today, now))).await?;
-    let id = db.new_id().map_err(|e| e.to_string())?;
-    let mut serials = reserve_serials(&state, needs, &id).await?;
-    let res = reserve_number(&state, doc.kind.series(), &id).await?;
-    blocking(move || {
-        db.write(user.actor(), move |tx| {
-            inventory::create(tx, &doc, &res, &mut serials)
-        })
-    })
-    .await
-}
-
-/// Boxes in stock with what is left in each, optionally of one item.
-#[tauri::command]
-#[specta::specta]
-pub async fn box_stock(
-    state: State<'_, AppState>,
-    item_id: Option<String>,
-) -> Result<Vec<BoxStock>, String> {
-    let (db, _) = require(&state, Module::Inventory, Action::View).await?;
     let today = manila_date_string(db.now_ms());
-    blocking(move || db.read(|c| boxes::box_stock(c, item_id.as_deref(), None, &today))).await
+    blocking(move || read.read(|c| inventory::validate(c, &input, &today))).await?;
+    let id = db.new_id().map_err(|e| e.to_string())?;
+    let res = reserve_number(&state, doc.kind.series(), &id).await?;
+    blocking(move || db.write(user.actor(), move |tx| inventory::create(tx, &doc, &res))).await
 }
 
 #[tauri::command]
@@ -121,4 +103,21 @@ pub async fn void_stock_doc(
 ) -> Result<(), String> {
     let (db, user) = require(&state, Module::Inventory, Action::Delete).await?;
     blocking(move || db.write(user.actor(), move |tx| inventory::void(tx, &id, &reason))).await
+}
+
+/// Every lot, in stock or not, by item, oldest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_lots(state: State<'_, AppState>) -> Result<Vec<LotInfo>, String> {
+    let (db, _) = require(&state, Module::Inventory, Action::View).await?;
+    let today = manila_date_string(db.now_ms());
+    blocking(move || db.read(|c| lots::list(c, &today))).await
+}
+
+/// Sets a lot's expiry and serial range.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_lot(state: State<'_, AppState>, lot: LotInput) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Inventory, Action::Edit).await?;
+    blocking(move || db.write(user.actor(), move |tx| lots::update(tx, &lot))).await
 }

@@ -2,12 +2,12 @@ mod common;
 
 use common::{T0, TestPeer, pull};
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::conflicts;
 use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
+use sanco_core::domain::lots;
 use sanco_core::domain::payments::{
     self, AllocationInput, CheckInput, CheckStatus, CheckStep, CheckStepInput, PayMethod,
     PaymentInput,
@@ -85,9 +85,6 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
-        serial_code: String::new(),
-        serial_digits: None,
-        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -114,17 +111,15 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
             item_id: id.clone(),
             expiry: None,
             qty: 100,
-            box_id: None,
-            pcs_per_box: None,
+            lot_id: None,
+            serial_from: None,
+            serial_to: None,
         }],
-        serial_year: String::new(),
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &doc, &res, &mut Serials::none())
-    })
-    .unwrap();
+    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res))
+        .unwrap();
     id
 }
 
@@ -169,7 +164,13 @@ fn booking(
     (id, line)
 }
 
-fn dr_input(booking: &str, line: &str, qty: i64, line_id: Option<String>) -> DrRequestInput {
+fn dr_input(
+    db: &Db,
+    booking: &str,
+    line: &str,
+    qty: i64,
+    line_id: Option<String>,
+) -> DrRequestInput {
     DrRequestInput {
         booking_id: booking.into(),
         kind: None,
@@ -180,9 +181,8 @@ fn dr_input(booking: &str, line: &str, qty: i64, line_id: Option<String>) -> DrR
         lines: vec![DrLineInput {
             id: line_id,
             booking_line_id: line.into(),
-            expiry: None,
+            lot_id: lot_of(db, line),
             qty,
-            boxes: vec![],
         }],
     }
 }
@@ -197,7 +197,7 @@ fn delivered_dr(
     no: &str,
     date: &str,
 ) -> String {
-    let input = dr_input(booking, line, qty, None);
+    let input = dr_input(db, booking, line, qty, None);
     let id = db
         .write(actor.clone(), move |tx| delivery::request(tx, &input))
         .unwrap();
@@ -407,7 +407,7 @@ fn checks_payments_and_receivables() {
             .lines[0]
             .id
             .clone();
-    let (id, input) = (dr1.clone(), dr_input(&bk, &line, 3, Some(dl)));
+    let (id, input) = (dr1.clone(), dr_input(&a.db, &bk, &line, 3, Some(dl)));
     assert!(
         invalid(a.db.write(actor.clone(), move |tx| delivery::update(
             tx, &id, &input, None
@@ -623,4 +623,18 @@ fn offline_payments_for_the_same_dr_show_as_overpaid() {
     ];
     nos.sort();
     assert_eq!(nos, ["PAY-2026-0001", "PAY-2026-0002"]);
+}
+
+/// The lot of this month of a booking line's item.
+fn lot_of(db: &Db, booking_line: &str) -> Option<String> {
+    let item: String = db
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT item_id FROM booking_lines WHERE id = ?1",
+                [booking_line],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    Some(lots::lot_id(&item, lots::month_of(TODAY)))
 }

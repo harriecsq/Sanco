@@ -4,7 +4,7 @@ Desktop app for Sanco Medical Supply, a Philippine wholesaler of medical equipme
 
 Every PC keeps a full SQLite replica and syncs peer-to-peer over Tailscale. There is no server and there are no paid services. Any number of users and PCs is allowed. Windows, plus macOS (being tested, M13).
 
-The full plan is in `docs/PLAN.md` (the M11 and M12 plans are in `docs/plans/`).
+The full plan is in `docs/PLAN.md` (the M11, M12 and M14 plans are in `docs/plans/`).
 - Read its **Progress** section at the start of each session to see which milestone is next.
 - **When a milestone is finished, update the plan before ending the session:**
   - Set the milestone's status and date in the Progress table, and mark the next one as next.
@@ -62,7 +62,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
   - Quantities are integers in the base unit.
   - Timestamps are UTC milliseconds, displayed in Asia/Manila.
   - Calendar dates are `YYYY-MM-DD`.
-- **Migrations are additive only.** Backfills are deterministic and do not bump the HLC or `row_versions`. Run `VACUUM INTO` before each migration. Views (`v_stock`, …) aren't replicated, so a later migration may drop and recreate them.
+- **Migrations are additive only** (one exception: `0014_lots` removed boxes, a user decision, safe because peers on another schema version are refused). Backfills are deterministic and do not bump the HLC or `row_versions`. Run `VACUUM INTO` before each migration. Views (`v_stock`, …) aren't replicated, so a later migration may drop and recreate them.
 - **Database connections:** one writer thread with a job channel, plus read connections. WAL with `synchronous=FULL`.
 - **Qwik static rules:**
   - Call `invoke`/`commands.*` only in the browser (`useVisibleTask$`, event handlers).
@@ -108,12 +108,13 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **Bank accounts** are the company's own accounts (Accounting → Bank accounts). Check deposits, bank transfers received and TT payments pick one (`bank_account_id`); the check's own "bank" is the client's bank and stays free text. No running balance is kept, only what the app moved. Used accounts are made inactive, not deleted.
 - **Payments** (cash, check, bank transfer) get automatic `PAY` numbers plus an optional OR/CR no. A check is a payment with check fields; it counts as paid from receipt until it bounces or is replaced (a posted payment with `replaces_id`; "replaced" is never stored). Allocations go only to the client's delivered DRs (derived ids, cleared not deleted); the unapplied rest is credit. A DR with payments applied can't be voided or edited below what's paid.
 - **Receivables** = delivered DR gross − counting allocations (`v_receivables`). Aging counts days past due = delivery + client terms.
-- **Purchase orders** (draft → ordered → shipped → arrived → closed, or cancelled) stay editable except when cancelled; a received line can't be removed or go below what was received. Goods come in through receiving reports (`RR`, one location, expiry per line), which are void-and-re-enter like stock documents; received quantities are computed (`v_po_received`). PO prices, totals, FX and TT payments are cost data (`Field::Costs`). Receiving or placing a PO never changes cost sheets. Prices reach them only on request: a PO button copies all its prices and FX, and the item's cost sheet has "Update to supplier price" (`purchasing::apply_latest_price`, latest non-draft, non-cancelled PO), which also flags a pending new price.
+- **Purchase orders** (draft → ordered → shipped → arrived → closed, or cancelled) stay editable except when cancelled; a received line can't be removed or go below what was received. Goods come in through receiving reports (`RR`, one location; its date picks each item's lot), which are void-and-re-enter like stock documents; received quantities are computed (`v_po_received`). PO prices, totals, FX and TT payments are cost data (`Field::Costs`). Receiving or placing a PO never changes cost sheets. Prices reach them only on request: a PO button copies all its prices and FX, and the item's cost sheet has "Update to supplier price" (`purchasing::apply_latest_price`, latest non-draft, non-cancelled PO), which also flags a pending new price.
 
-- **Boxes and serials** (M11, `domain/boxes.rs`): an item with a `serial_code` comes in boxes, one serial per box: code + 2-digit year + seq padded to the item's 3/4/5 digits (`MT26-0001`). Items sharing a code share the counter; it restarts yearly (series `BOX:<code>`, period = year, `doc_numbers.ref_tbl = 'boxes'`). Box size = the PO line's `pcs_per_box`, else the item's; the last box of a line holds the rest.
-  - A PO gets its boxes when marked ordered, in the PO's `serial_year` (chosen on the PO, any year; fixed while it has boxes). Qty changes resize/add boxes or remove trailing unreceived ones; back to draft or cancel removes the unreceived ones. Received boxes never change.
-  - Receiving is one line per box (`po_receipt_lines.box_id`, expiry per box). A stock receipt without a box makes boxes; adjustments and transfers name the box. DR lines record pieces per box (`dr_line_boxes`, derived ids, cleared not deleted); no draws = picked automatically (started boxes, then earliest expiry, then lowest serial). What is left in a box comes from `v_stock` (per item, location, expiry, box). Bookings and DRs stay in pieces and show the box equivalent.
-  - Writes that make boxes: read-only `serials_for_*` first, then reserve the serials in one batch per series (`numbering::reserve_batch`, `NumberClaim.count`), then write with the `Serials` pool. Box serials are never renumbered after an offline clash (`numbering::keeps_clashes`; user decision: it won't happen).
+- **Lots** (M14, `domain/lots.rs`, replaced boxes): a lot is one item's stock that arrived in one month (`lots`, id = `derived_id(item, "lot/YYYY-MM")`, never deleted). Stock is per item, location and lot (`v_stock`).
+  - Receipts (RR and stock receipt): the document's date picks the lot, made or filled in on posting. What a line leaves blank stays as the lot has it, so a second shipment in a month shares the first's lot.
+  - Everything else names its lot by hand: DR lines, transfers, adjustments. Dropdowns list the oldest lot first and nothing picks one automatically. Stock can't go below zero per lot and location. A DR takes several lots with several lines on one booking line. Bookings stay in pieces with no lot.
+  - One expiry per lot, on the lot. Line tables have no `expiry` column.
+  - Serial range: `serial_from`, `serial_to`, free text for looking things up (a complaint about a serial number → which lot). **No logic on them:** no parsing, no count check, no overlap check, no continuing. Individual pieces aren't tracked. Editable any time under Inventory → Lots, which also lists sold-out lots. Shown wherever a lot is.
 - **HR** (`domain/hr.rs`, plan in `docs/hr-plan.md`): employees, Mon–Sat attendance (present/absent/unpaid holiday/paid holiday; an unpaid holiday is like an absence and a paid holiday like a day present, but neither is counted as an absence), debts (PI Loan, PI STL, SSS EL, SSS SL, Vale) and the Saturday payroll. A payroll week is keyed by its Saturday. No paid day (present or paid holiday) = no pay, no contributions, no deductions that week. Debt money is in ₱0.05 steps; a week's charge comes from the balance (`scheduled_charge`), so a skipped or reduced week is spread over the weeks left. The payroll is computed live until posted; posting stores a snapshot (`payrolls`, `payroll_lines`, `payroll_debt_lines`, derived ids) and locks that week's attendance; it is voided to change. Posting is blocked while deductions exceed anyone's pay. HR is admin-only by default (`Perms::staff` leaves it out).
 
 ## Glossary
@@ -123,6 +124,7 @@ assets/app-icon.svg     source for `npx tauri icon` and the favicon
 - **PDC:** post-dated check.
 - **TT:** telegraphic transfer (supplier payment).
 - **Landed cost:** the item's cost in PHP after FX and import charges.
+- **Lot:** one item's stock that arrived in one month.
 - **Margin tier:** a client's default margin %.
 
 ## Modules

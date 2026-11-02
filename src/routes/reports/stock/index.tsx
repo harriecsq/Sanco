@@ -2,6 +2,7 @@ import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
 import { useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import { commands, type LocationInfo, type StockLot } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
+import { formatMonth, serialSpan } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
@@ -10,7 +11,7 @@ import { makeReport, REPORT_TABLES, ReportTable, searchRows, type Cell } from "~
 import { Alert, PageHeader } from "~/components/ui/ui";
 
 const VIEWS = [
-  { value: "lots", label: "By lot (expiry)" },
+  { value: "lots", label: "By lot" },
   { value: "expiring", label: `Expiring within ${NEAR_EXPIRY_DAYS} days` },
 ];
 
@@ -43,15 +44,29 @@ export default component$(() => {
         .filter((l) => f.view === "lots" || (l.days_left != null && l.days_left <= NEAR_EXPIRY_DAYS))
         .sort(
           (a, b) =>
-            (a.expiry ?? "9999").localeCompare(b.expiry ?? "9999") || a.item_code.localeCompare(b.item_code),
+            f.view === "lots"
+              ? a.item_code.localeCompare(b.item_code) || (a.month ?? "").localeCompare(b.month ?? "")
+              : (a.expiry ?? "9999").localeCompare(b.expiry ?? "9999") || a.item_code.localeCompare(b.item_code),
         )
-        .map((l) => [l.item_code, l.item_name, l.location_name, l.expiry, l.days_left, l.qty, l.unit]);
+        .map((l) => [
+          l.item_code,
+          l.item_name,
+          l.location_name,
+          formatMonth(l.month),
+          serialSpan(l.serial_from, l.serial_to),
+          l.expiry,
+          l.days_left,
+          l.qty,
+          l.unit,
+        ]);
       const rep = makeReport(
         f.view === "lots" ? "stock-by-lot" : "expiring-stock",
         [
           { label: "Code" },
           { label: "Item" },
           { label: "Location" },
+          { label: "Lot" },
+          { label: "Serial #" },
           { label: "Expiry", kind: "date" },
           { label: "Days left", kind: "qty" },
           { label: "Qty", kind: "qty" },
@@ -95,7 +110,7 @@ export default component$(() => {
 
   return (
     <>
-      <PageHeader title="Stock" subtitle="On hand now, by item and location, or per lot with expiry." />
+      <PageHeader title="Stock" subtitle="On hand now, by item and location, or per lot with serial range and expiry." />
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
         search="Search item, category"

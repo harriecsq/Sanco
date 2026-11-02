@@ -133,12 +133,6 @@ export const commands = {
 	default_margin_bp: number | null,
 	notes: string | null,
 	active: boolean,
-	/**  Box serial code, e.g. `MT`; `None` = the item doesn't come in boxes. */
-	serial_code: string | null,
-	/**  Digits of the serial sequence (3, 4 or 5). */
-	serial_digits: number,
-	/**  Default box size. */
-	pcs_per_box: number | null,
 	/**  Another live item has the same code. */
 	duplicate_code: boolean,
 	/**  Stripped without the costs permission. */
@@ -187,10 +181,15 @@ export const commands = {
 	itemOptions: () => typedError<ItemChoice[], string>(__TAURI_INVOKE("item_options")),
 	/**  Every live item with its stock per location. */
 	stockOverview: () => typedError<ItemStock[], string>(__TAURI_INVOKE("stock_overview")),
-	/**  Non-zero lots (item, location, expiry), optionally of one item. */
+	/**
+	 *  Non-zero stock per lot and location, optionally of one item, oldest lot
+	 *  first.
+	 */
 	stockLots: (itemId: string | null) => typedError<StockLot[], string>(__TAURI_INVOKE("stock_lots", { itemId })),
-	/**  Boxes in stock with what is left in each, optionally of one item. */
-	boxStock: (itemId: string | null) => typedError<BoxStock[], string>(__TAURI_INVOKE("box_stock", { itemId })),
+	/**  Every lot, in stock or not, by item, oldest first. */
+	listLots: () => typedError<LotInfo[], string>(__TAURI_INVOKE("list_lots")),
+	/**  Sets a lot's expiry and serial range. */
+	saveLot: (lot: LotInput) => typedError<null, string>(__TAURI_INVOKE("save_lot", { lot })),
 	/**  Lots in stock expiring within `within_days` days, or already expired. */
 	expiringStock: (withinDays: number) => typedError<StockLot[], string>(__TAURI_INVOKE("expiring_stock", { withinDays })),
 	itemStockMoves: (itemId: string) => typedError<StockMove[], string>(__TAURI_INVOKE("item_stock_moves", { itemId })),
@@ -234,11 +233,6 @@ export const commands = {
 } | null, string>(__TAURI_INVOKE("get_dr", { id })),
 	/**  Stock lots of a booking's items, for choosing a DR's lots. */
 	drLots: (bookingId: string) => typedError<StockLot[], string>(__TAURI_INVOKE("dr_lots", { bookingId })),
-	/**
-	 *  Boxes in stock of a booking's items, for choosing what a DR takes
-	 *  from each box.
-	 */
-	drBoxes: (bookingId: string) => typedError<BoxStock[], string>(__TAURI_INVOKE("dr_boxes", { bookingId })),
 	/**  Requests a DR for a confirmed booking. Returns its id. */
 	requestDr: (request: DrRequestInput) => typedError<string, string>(__TAURI_INVOKE("request_dr", { request })),
 	/**
@@ -661,8 +655,6 @@ export type BookingLine = {
 	/**  Stripped without the margins permission. */
 	margin_bp: number | null,
 	below_cost: boolean,
-	/**  The item's box size, for items in boxes. */
-	pcs_per_box: number | null,
 };
 
 export type BookingLineInput = {
@@ -676,41 +668,6 @@ export type BookingLineInput = {
 };
 
 export type BookingStatus = "draft" | "confirmed" | "closed" | "cancelled";
-
-/**  A DR line's draw from one box. */
-export type BoxDraw = {
-	box_id: string,
-	serial: string | null,
-	expiry: string | null,
-	qty: number,
-};
-
-/**  Pieces a DR line takes from one box. */
-export type BoxDrawInput = {
-	box_id: string,
-	qty: number,
-};
-
-/**  What is left in one box at one location. */
-export type BoxStock = {
-	box_id: string,
-	serial: string | null,
-	item_id: string,
-	item_code: string,
-	unit: string | null,
-	location_id: string,
-	location_name: string | null,
-	expiry: string | null,
-	days_left: number | null,
-	/**  What the box holds when full. */
-	pcs: number,
-	/**  Left in it (negative if offline PCs took the same pieces). */
-	qty: number,
-	/**  Started: some pieces were taken out. */
-	open: boolean,
-	po_id: string | null,
-	po_no: string | null,
-};
 
 export type ChargeMode = 
 /**  A PHP amount per unit, in centavos. */
@@ -1127,33 +1084,24 @@ export type DrLine = {
 	item_code: string | null,
 	item_name: string | null,
 	unit: string | null,
+	lot_id: string | null,
+	/**  The lot's arrival month, `YYYY-MM`. */
+	month: string | null,
 	expiry: string | null,
+	serial_from: string | null,
+	serial_to: string | null,
 	qty: number,
 	price_c: number,
 	amount_c: number,
-	/**  The item's box size, for items in boxes. */
-	pcs_per_box: number | null,
-	boxed: boolean,
-	/**  What it takes from each box. */
-	boxes: BoxDraw[],
 };
 
 export type DrLineInput = {
 	/**  The DR line being edited; `None` for a new line. */
 	id: string | null,
 	booking_line_id: string,
-	/**
-	 *  The lot. Required for items that track expiry, ignored otherwise
-	 *  and for items in boxes (each box has its lot).
-	 */
-	expiry: string | null,
+	/**  The lot it comes from. */
+	lot_id: string | null,
 	qty: number,
-	/**
-	 *  For items in boxes: pieces from each box, adding up to `qty`. Empty =
-	 *  picked automatically (started boxes, then earliest expiry, then
-	 *  lowest serial).
-	 */
-	boxes: BoxDrawInput[],
 };
 
 /**  A payment allocated to a DR, for the DR's page. */
@@ -1249,16 +1197,12 @@ export type Issue = {
 	href: string,
 };
 
-/**  An item to pick, with what forms need to enter boxes. */
+/**  An item to pick. */
 export type ItemChoice = {
 	id: string,
 	label: string,
 	active: boolean,
 	unit: string | null,
-	/**  Box serial code; `None` = the item doesn't come in boxes. */
-	serial_code: string | null,
-	/**  Default box size. */
-	pcs_per_box: number | null,
 };
 
 export type ItemInfo = {
@@ -1275,12 +1219,6 @@ export type ItemInfo = {
 	default_margin_bp: number | null,
 	notes: string | null,
 	active: boolean,
-	/**  Box serial code, e.g. `MT`; `None` = the item doesn't come in boxes. */
-	serial_code: string | null,
-	/**  Digits of the serial sequence (3, 4 or 5). */
-	serial_digits: number,
-	/**  Default box size. */
-	pcs_per_box: number | null,
 	/**  Another live item has the same code. */
 	duplicate_code: boolean,
 	/**  Stripped without the costs permission. */
@@ -1303,11 +1241,6 @@ export type ItemInput = {
 	default_margin_bp: number | null,
 	notes: string,
 	active: boolean,
-	/**  Box serial code (letters, e.g. `MT`); blank = no boxes. */
-	serial_code: string,
-	/**  3, 4 or 5; `None` = 4. */
-	serial_digits: number | null,
-	pcs_per_box: number | null,
 };
 
 /**  One item's stock across locations. */
@@ -1330,12 +1263,6 @@ export type ItemStock = {
 	negative: boolean,
 	/**  Earliest expiry among lots in stock. */
 	next_expiry: string | null,
-	/**  Box serial code; `None` = no boxes. */
-	serial_code: string | null,
-	pcs_per_box: number | null,
-	full_boxes: number,
-	open_boxes: number,
-	open_pcs: number,
 };
 
 export type ItemSuggestions = {
@@ -1390,11 +1317,44 @@ export type LocationInput = {
 export type LocationQty = {
 	location_id: string,
 	qty: number,
-	full_boxes: number,
-	open_boxes: number,
-	open_pcs: number,
 	/**  The earliest expiry of this location's stock. */
 	next_expiry: string | null,
+};
+
+/**
+ *  One lot, in stock or not: a sold-out lot is still looked up for
+ *  complaints.
+ */
+export type LotInfo = {
+	id: string,
+	item_id: string,
+	item_code: string,
+	item_name: string,
+	unit: string | null,
+	tracks_expiry: boolean,
+	/**  `YYYY-MM`. */
+	month: string,
+	expiry: string | null,
+	days_left: number | null,
+	serial_from: string | null,
+	serial_to: string | null,
+	on_hand: number,
+	/**  Locations with non-zero stock. */
+	by_location: LotLocation[],
+};
+
+export type LotInput = {
+	id: string,
+	expiry: string | null,
+	serial_from: string,
+	serial_to: string,
+};
+
+/**  What one location has of a lot. */
+export type LotLocation = {
+	location_id: string,
+	location_name: string | null,
+	qty: number,
 };
 
 export type MarginRow = {
@@ -1670,16 +1630,6 @@ export type PoAction =
 /**  → cancelled. Only before anything was received. */
 "cancel";
 
-/**  One box of a PO line. */
-export type PoBox = {
-	id: string,
-	serial: string | null,
-	/**  What it holds when full. */
-	pcs: number,
-	/**  Received on posted receiving reports (0 = not yet). */
-	received: number,
-};
-
 export type PoDetail = {
 	po: PoInfo,
 	lines: PoLine[],
@@ -1724,9 +1674,6 @@ export type PoInfo = {
 	over_received: boolean,
 	/**  Posted receiving reports. */
 	receipt_count: number,
-	/**  Year of the box serials. */
-	serial_year: string | null,
-	box_count: number,
 	created_at: number,
 	created_by_name: string | null,
 	ordered_at: number | null,
@@ -1755,11 +1702,6 @@ export type PoInput = {
 	/**  The supplier's proforma invoice or order number. */
 	supplier_ref: string,
 	notes: string,
-	/**
-	 *  Year printed in the box serials (`YYYY`); blank = this year. Fixed
-	 *  once the PO has boxes.
-	 */
-	serial_year: string,
 	lines: PoLineInput[],
 };
 
@@ -1779,13 +1721,6 @@ export type PoLine = {
 	received: number,
 	/**  Still to come (negative if receipts from offline PCs overshoot). */
 	remaining: number,
-	/**  Box size set on the line. */
-	pcs_per_box: number | null,
-	/**  The item's box serial code and default box size. */
-	serial_code: string | null,
-	item_pcs_per_box: number | null,
-	/**  Lowest serial first. Empty for drafts and items without boxes. */
-	boxes: PoBox[],
 };
 
 export type PoLineInput = {
@@ -1799,8 +1734,6 @@ export type PoLineInput = {
 	 */
 	price_minor: number | null,
 	notes: string,
-	/**  Pieces per box, for items that come in boxes; `None` = the item's. */
-	pcs_per_box: number | null,
 };
 
 export type PoStatus = "draft" | "ordered" | "shipped" | "arrived" | "closed" | "cancelled";
@@ -1947,18 +1880,25 @@ export type ReceiptLine = {
 	item_code: string | null,
 	item_name: string | null,
 	unit: string | null,
+	lot_id: string | null,
+	/**  The lot's arrival month, `YYYY-MM`. */
+	month: string | null,
 	expiry: string | null,
+	serial_from: string | null,
+	serial_to: string | null,
 	qty: number,
-	box_id: string | null,
-	serial: string | null,
 };
 
 export type ReceiptLineInput = {
 	po_line_id: string,
-	/**  The box received, for lines that have boxes (one input per box). */
-	box_id: string | null,
-	/**  Required for items that track expiry; ignored for others. */
+	/**
+	 *  Required for items that track expiry, unless their lot has one;
+	 *  ignored for others.
+	 */
 	expiry: string | null,
+	/**  The lot's serial range, free text. */
+	serial_from: string | null,
+	serial_to: string | null,
 	qty: number,
 };
 
@@ -2112,8 +2052,6 @@ export type StockDocInput = {
 	/**  Why stock was adjusted. Required for adjustments. */
 	reason: string,
 	notes: string,
-	/**  Year in the serials of new boxes (`YYYY`); blank = this year. */
-	serial_year: string,
 	lines: StockLineInput[],
 };
 
@@ -2123,10 +2061,13 @@ export type StockDocLine = {
 	item_code: string | null,
 	item_name: string | null,
 	unit: string | null,
-	expiry: string | null,
 	qty: number,
-	box_id: string | null,
-	serial: string | null,
+	lot_id: string | null,
+	/**  The lot's arrival month, `YYYY-MM`. */
+	month: string | null,
+	expiry: string | null,
+	serial_from: string | null,
+	serial_to: string | null,
 };
 
 export type StockKind = "receipt" | "adjustment" | "transfer" | 
@@ -2144,22 +2085,23 @@ export type StockKind = "receipt" | "adjustment" | "transfer" |
 export type StockLineInput = {
 	item_id: string,
 	/**
-	 *  `YYYY-MM-DD`. Required for stock coming in of an item that tracks
-	 *  expiry; ignored for incoming stock of other items.
+	 *  The lot it moves. A stock receipt's lot comes from its date, so this
+	 *  is left blank there.
 	 */
-	expiry: string | null,
+	lot_id: string | null,
 	/**  In the item's base unit. Signed for adjustments, positive otherwise. */
 	qty: number,
 	/**
-	 *  The box the pieces go into or come out of, for items that come in
-	 *  boxes. Blank on a stock receipt makes new boxes.
+	 *  Stock receipts: `YYYY-MM-DD`, required for items that track expiry
+	 *  unless their lot has one. Ignored otherwise.
 	 */
-	box_id: string | null,
-	/**  Size of the new boxes a stock receipt makes; `None` = the item's. */
-	pcs_per_box: number | null,
+	expiry: string | null,
+	/**  Stock receipts: the lot's serial range, free text. */
+	serial_from: string | null,
+	serial_to: string | null,
 };
 
-/**  Stock of one item at one location with one expiry date. */
+/**  Stock of one lot of an item at one location. */
 export type StockLot = {
 	item_id: string,
 	item_code: string,
@@ -2168,14 +2110,15 @@ export type StockLot = {
 	category: string | null,
 	location_id: string,
 	location_name: string | null,
+	lot_id: string | null,
+	/**  The lot's arrival month, `YYYY-MM`. */
+	month: string | null,
 	expiry: string | null,
 	/**  Days from today to expiry; negative once expired. */
 	days_left: number | null,
+	serial_from: string | null,
+	serial_to: string | null,
 	qty: number,
-	/**  Boxes still full, boxes started, and the pieces left in those. */
-	full_boxes: number,
-	open_boxes: number,
-	open_pcs: number,
 };
 
 /**  One line of an item's stock history. */
@@ -2190,14 +2133,17 @@ export type StockMove = {
 	/**  A transfer's destination. */
 	to_location_id: string | null,
 	to_location_name: string | null,
+	lot_id: string | null,
+	/**  The lot's arrival month, `YYYY-MM`. */
+	month: string | null,
 	expiry: string | null,
+	serial_from: string | null,
+	serial_to: string | null,
 	/**  Positive in, negative out; a transfer's moved qty is positive. */
 	qty: number,
 	created_at: number,
 	/**  The purchase order of a PO receiving report. */
 	po_id: string | null,
-	box_id: string | null,
-	serial: string | null,
 	/**  A delivery on an invoice (else on a DR). */
 	invoice: boolean,
 };

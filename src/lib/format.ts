@@ -97,38 +97,28 @@ export const addDays = (date: string, days: number) => {
 export const formatQty = (qty: number, unit?: string | null) =>
   `${qty.toLocaleString("en-PH")}${unit ? ` ${unit}` : ""}`;
 
-/** Box equivalent of a quantity: "9 boxes + 7" for 97 at 10 a box. Empty
- * without a box size. */
-export const boxEquiv = (qty: number, perBox: number | null | undefined) => {
-  if (!perBox || perBox <= 0 || qty <= 0) return "";
-  const full = Math.floor(qty / perBox);
-  const rest = qty % perBox;
-  const boxes = full ? `${full.toLocaleString("en-PH")} ${full === 1 ? "box" : "boxes"}` : "";
-  return [boxes, rest ? (full ? `+ ${rest}` : `${rest} loose`) : ""].filter(Boolean).join(" ");
+/** A lot's month: "Jul 2026". */
+export const formatMonth = (month: string | null | undefined) => {
+  if (!month) return "—";
+  const [y, m] = month.split("-").map(Number);
+  const name = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1];
+  return name ? `${name} ${y}` : month;
 };
 
-/** Boxes in stock: "9 full + 1 open (7)". Empty when there are none. */
-export const boxSummary = (full: number, open: number, openPcs: number) => {
-  const parts = [];
-  if (full) parts.push(`${full.toLocaleString("en-PH")} full`);
-  if (open) parts.push(`${open.toLocaleString("en-PH")} open (${openPcs.toLocaleString("en-PH")})`);
-  return parts.join(" + ");
-};
+/** A serial range as typed: "ANE 1 – ANE 30". Empty when there is none. */
+export const serialSpan = (from: string | null | undefined, to: string | null | undefined) =>
+  [from, to].filter(Boolean).join(" – ");
 
-/** "MT26-0001 – MT26-0010" for a list of serials in order. */
-export const serialRange = (serials: (string | null)[]) => {
-  const s = serials.filter((x): x is string => !!x);
-  if (!s.length) return "";
-  return s.length === 1 ? s[0] : `${s[0]} – ${s[s.length - 1]}`;
-};
-
-/** The box to break first: the earliest expiry, then the first listed
- *  (boxes come lowest serial first). Undefined for an empty list. */
-export const oldestBox = (boxes: { box_id: string; expiry: string | null }[]) =>
-  boxes.reduce<(typeof boxes)[number] | undefined>(
-    (best, b) => (!best || (b.expiry ?? "9999") < (best.expiry ?? "9999") ? b : best),
-    undefined,
-  )?.box_id;
+/** A lot in one line: "Jul 2026 · ANE 1 – ANE 30 · Exp. Jan 31, 2029". */
+export const lotText = (l: {
+  month: string | null;
+  serial_from: string | null;
+  serial_to: string | null;
+  expiry: string | null;
+}) =>
+  [formatMonth(l.month), serialSpan(l.serial_from, l.serial_to), l.expiry ? `Exp. ${formatDay(l.expiry)}` : ""]
+    .filter(Boolean)
+    .join(" · ");
 
 /** Thrown by the parsers below; the message is shown to the user. */
 export class InputError extends Error {}

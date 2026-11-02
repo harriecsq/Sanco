@@ -146,17 +146,13 @@ pub async fn price_quote(
     Ok(q)
 }
 
-/// An item to pick, with what forms need to enter boxes.
+/// An item to pick.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct ItemChoice {
     pub id: String,
     pub label: String,
     pub active: bool,
     pub unit: Option<String>,
-    /// Box serial code; `None` = the item doesn't come in boxes.
-    pub serial_code: Option<String>,
-    /// Default box size.
-    pub pcs_per_box: Option<i64>,
 }
 
 /// Every item, for pickers in other modules.
@@ -172,8 +168,6 @@ pub async fn item_options(state: State<'_, AppState>) -> Result<Vec<ItemChoice>,
             id: i.id,
             active: i.active,
             unit: i.unit,
-            serial_code: i.serial_code,
-            pcs_per_box: i.pcs_per_box,
         })
         .collect())
 }

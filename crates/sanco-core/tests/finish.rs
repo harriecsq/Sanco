@@ -7,12 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use common::TestPeer;
 use sanco_core::domain::auth::{Action, Module, Perms};
 use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::dashboard::{self, Tone};
 use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
+use sanco_core::domain::lots;
 use sanco_core::domain::reports::{self, DateRange, SalesGroup};
 use sanco_core::domain::todos::{self, TodoInput};
 use sanco_core::domain::users::{self, NewUser};
@@ -79,9 +79,6 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
-        serial_code: String::new(),
-        serial_digits: None,
-        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -108,17 +105,15 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
             item_id: id.clone(),
             expiry: None,
             qty: 100,
-            box_id: None,
-            pcs_per_box: None,
+            lot_id: None,
+            serial_from: None,
+            serial_to: None,
         }],
-        serial_year: String::new(),
     };
     let doc_id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &doc_id).unwrap();
-    db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &doc, &res, &mut Serials::none())
-    })
-    .unwrap();
+    db.write(actor.clone(), move |tx| inventory::create(tx, &doc, &res))
+        .unwrap();
     id
 }
 
@@ -167,9 +162,8 @@ fn request_dr(db: &Db, actor: &Actor, booking: &str, line: &str, qty: i64) -> St
         lines: vec![DrLineInput {
             id: None,
             booking_line_id: line.into(),
-            expiry: None,
+            lot_id: lot_of(db, line),
             qty,
-            boxes: vec![],
         }],
     };
     db.write(actor.clone(), move |tx| delivery::request(tx, &input))
@@ -439,4 +433,18 @@ fn todos_visibility_and_delete() {
     })
     .unwrap();
     assert_eq!(titles(&ana_id), ["Ana only"]);
+}
+
+/// The lot of this month of a booking line's item.
+fn lot_of(db: &Db, booking_line: &str) -> Option<String> {
+    let item: String = db
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT item_id FROM booking_lines WHERE id = ?1",
+                [booking_line],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    Some(lots::lot_id(&item, lots::month_of(TODAY)))
 }

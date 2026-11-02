@@ -1,7 +1,6 @@
 mod common;
 
 use common::{TestPeer, pull};
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, ItemInput};
 use sanco_core::domain::locations;
@@ -47,9 +46,6 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
         default_margin_bp: None,
         notes: String::new(),
         active: true,
-        serial_code: String::new(),
-        serial_digits: None,
-        pcs_per_box: None,
     };
     db.write(actor.clone(), move |tx| items::save(tx, &input, true))
         .unwrap()
@@ -60,8 +56,24 @@ fn line(item: &str, expiry: Option<&str>, qty: i64) -> StockLineInput {
         item_id: item.into(),
         expiry: expiry.map(String::from),
         qty,
-        box_id: None,
-        pcs_per_box: None,
+        lot_id: None,
+        serial_from: None,
+        serial_to: None,
+    }
+}
+
+/// A line that moves stock of a lot, by its month.
+fn moved(item: &str, month: &str, qty: i64) -> StockLineInput {
+    StockLineInput {
+        lot_id: Some(sanco_core::domain::lots::lot_id(item, month)),
+        ..line(item, None, qty)
+    }
+}
+
+fn on(date: &str, input: StockDocInput) -> StockDocInput {
+    StockDocInput {
+        date: date.into(),
+        ..input
     }
 }
 
@@ -78,16 +90,13 @@ fn doc(kind: StockKind, from: &str, to: Option<&str>, lines: Vec<StockLineInput>
         },
         notes: String::new(),
         lines,
-        serial_year: String::new(),
     }
 }
 
 fn post(db: &Db, actor: &Actor, input: StockDocInput) -> Result<String, Error> {
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], input.kind.series(), &id).unwrap();
-    db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &input, &res, &mut Serials::none())
-    })
+    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res))
 }
 
 /// (location, expiry, qty) of an item's non-zero lots.
@@ -133,18 +142,32 @@ fn receipts_transfers_and_adjustments_move_stock() {
             None,
             vec![
                 line(&glv, Some("2027-03-31"), 100),
-                line(&glv, Some("2026-12-31"), 20),
                 // Expiry is dropped for items that don't track it.
                 line(&tape, Some("2030-01-01"), 50),
             ],
         ),
     )
     .unwrap();
+    post(
+        &a.db,
+        &actor,
+        on(
+            "2026-09-15",
+            doc(
+                StockKind::Receipt,
+                &warehouse(),
+                None,
+                vec![line(&glv, Some("2026-12-31"), 20)],
+            ),
+        ),
+    )
+    .unwrap();
     let detail = a.db.read(|c| inventory::get_doc(c, &sr)).unwrap().unwrap();
     assert_eq!(detail.doc.no.as_deref(), Some("SR-2026-0001"));
-    assert_eq!(detail.lines.len(), 3);
-    assert_eq!(detail.lines[2].expiry, None);
-    assert_eq!(detail.doc.summary, "GLV-100 ×100, GLV-100 ×20, TAPE ×50");
+    assert_eq!(detail.lines.len(), 2);
+    assert_eq!(detail.lines[0].month.as_deref(), Some("2026-10"));
+    assert_eq!(detail.lines[1].expiry, None);
+    assert_eq!(detail.doc.summary, "GLV-100 ×100, TAPE ×50");
 
     let tr = post(
         &a.db,
@@ -153,7 +176,7 @@ fn receipts_transfers_and_adjustments_move_stock() {
             StockKind::Transfer,
             &warehouse(),
             Some(&office()),
-            vec![line(&glv, Some("2026-12-31"), 15)],
+            vec![moved(&glv, "2026-09", 15)],
         ),
     )
     .unwrap();
@@ -164,7 +187,7 @@ fn receipts_transfers_and_adjustments_move_stock() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![line(&tape, None, -3)],
+            vec![moved(&tape, "2026-10", -3)],
         ),
     )
     .unwrap();
@@ -244,19 +267,19 @@ fn stock_never_goes_below_zero_locally() {
             StockKind::Transfer,
             &warehouse(),
             Some(&office()),
-            vec![line(&glv, Some("2027-03-31"), 11)],
+            vec![moved(&glv, "2026-10", 11)],
         ),
     ));
     assert_eq!(
         msg,
-        "not enough GLV-100 (expiry 2027-03-31) at Warehouse: 10 pc on hand, 11 pc needed"
+        "not enough GLV-100 (lot Oct 2026) at Warehouse: 10 pc on hand, 11 pc needed"
     );
     // The same check runs before a number is reserved.
     let input = doc(
         StockKind::Transfer,
         &warehouse(),
         Some(&office()),
-        vec![line(&glv, Some("2027-03-31"), 11)],
+        vec![moved(&glv, "2026-10", 11)],
     );
     match a.db.read(|c| inventory::validate(c, &input, TODAY)) {
         Err(Error::Invalid(m)) => assert_eq!(m, msg),
@@ -272,7 +295,7 @@ fn stock_never_goes_below_zero_locally() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![line(&glv, Some("2027-04-01"), -1)],
+            vec![moved(&glv, "2026-01", -1)],
         ),
     ));
     invalid(post(
@@ -282,7 +305,7 @@ fn stock_never_goes_below_zero_locally() {
             StockKind::Adjustment,
             &office(),
             None,
-            vec![line(&glv, Some("2027-03-31"), -1)],
+            vec![moved(&glv, "2026-10", -1)],
         ),
     ));
     // Two lines that together take too much.
@@ -293,10 +316,7 @@ fn stock_never_goes_below_zero_locally() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![
-                line(&glv, Some("2027-03-31"), -6),
-                line(&glv, Some("2027-03-31"), -6),
-            ],
+            vec![moved(&glv, "2026-10", -6), moved(&glv, "2026-10", -6)],
         ),
     ));
     // A refused document leaves nothing behind, not even its number.
@@ -310,7 +330,7 @@ fn stock_never_goes_below_zero_locally() {
             StockKind::Transfer,
             &warehouse(),
             Some(&office()),
-            vec![line(&glv, Some("2027-03-31"), 4)],
+            vec![moved(&glv, "2026-10", 4)],
         ),
     )
     .unwrap();
@@ -375,13 +395,16 @@ fn documents_are_validated() {
         invalid(post(&a.db, &actor, d)),
         "enter a reason for the adjustment"
     );
+    let mut d = ok();
+    d.kind = StockKind::Adjustment;
+    d.reason = "Count".into();
+    assert_eq!(invalid(post(&a.db, &actor, d)), "choose the lot of GLV-100");
 
     let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], StockKind::Transfer.series(), &id).unwrap();
     let input = ok();
-    let wrong = a.db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &input, &res, &mut Serials::none())
-    });
+    let wrong =
+        a.db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res));
     assert!(matches!(wrong, Err(Error::Invalid(_))));
 
     post(&a.db, &actor, ok()).unwrap();
@@ -427,6 +450,26 @@ fn low_stock_and_expiry_lists() {
     // Reorder level 10 for both.
     let glv = add_item(&a.db, &actor, "GLV-100", true);
     let msk = add_item(&a.db, &actor, "MSK-1", true);
+    for (date, expiry, qty) in [
+        ("2026-08-01", "2026-10-01", 3),
+        ("2026-09-01", "2027-01-19", 4),
+        ("2026-10-01", "2027-01-20", 3),
+    ] {
+        post(
+            &a.db,
+            &actor,
+            on(
+                date,
+                doc(
+                    StockKind::Receipt,
+                    &warehouse(),
+                    None,
+                    vec![line(&glv, Some(expiry), qty)],
+                ),
+            ),
+        )
+        .unwrap();
+    }
     post(
         &a.db,
         &actor,
@@ -434,12 +477,7 @@ fn low_stock_and_expiry_lists() {
             StockKind::Receipt,
             &warehouse(),
             None,
-            vec![
-                line(&glv, Some("2026-10-01"), 3),
-                line(&glv, Some("2027-01-19"), 4),
-                line(&glv, Some("2027-01-20"), 3),
-                line(&msk, Some("2028-01-01"), 11),
-            ],
+            vec![line(&msk, Some("2028-01-01"), 11)],
         ),
     )
     .unwrap();
@@ -487,7 +525,7 @@ fn offline_pcs_can_oversell_and_it_shows_as_negative() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![line(&glv, Some("2027-03-31"), -8)],
+            vec![moved(&glv, "2026-10", -8)],
         )
     };
     post(&a.db, &actor, take()).unwrap();
@@ -517,7 +555,7 @@ fn offline_pcs_can_oversell_and_it_shows_as_negative() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![line(&glv, Some("2027-03-31"), -1)],
+            vec![moved(&glv, "2026-10", -1)],
         ),
     ));
     post(
@@ -527,7 +565,7 @@ fn offline_pcs_can_oversell_and_it_shows_as_negative() {
             StockKind::Adjustment,
             &warehouse(),
             None,
-            vec![line(&glv, Some("2027-03-31"), 6)],
+            vec![moved(&glv, "2026-10", 6)],
         ),
     )
     .unwrap();

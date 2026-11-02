@@ -5,13 +5,13 @@ use sanco_core::domain::bookings::{
     self, BookingAction, BookingInput, BookingLineInput, BookingStatus, DeliveryProgress,
     PriceSource,
 };
-use sanco_core::domain::boxes::Serials;
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::delivery::{
     self, DeliverInput, DrLineInput, DrRequestInput, DrStatus, ReceiptKind,
 };
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
+use sanco_core::domain::lots;
 use sanco_core::domain::pricing::{self, RateInput};
 use sanco_core::domain::settings;
 use sanco_core::domain::users::{self, NewUser};
@@ -86,9 +86,6 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
         default_margin_bp: Some(2_000),
         notes: String::new(),
         active: true,
-        serial_code: String::new(),
-        serial_digits: None,
-        pcs_per_box: None,
     };
     let id = db
         .write(actor.clone(), move |tx| items::save(tx, &input, true))
@@ -108,9 +105,14 @@ fn add_item(db: &Db, actor: &Actor, code: &str, tracks_expiry: bool) -> String {
 }
 
 fn receive(db: &Db, actor: &Actor, item: &str, expiry: Option<&str>, qty: i64) {
+    receive_on(db, actor, TODAY, item, expiry, qty);
+}
+
+/// A stock receipt on `date`, which picks its lot.
+fn receive_on(db: &Db, actor: &Actor, date: &str, item: &str, expiry: Option<&str>, qty: i64) {
     let input = StockDocInput {
         kind: StockKind::Receipt,
-        date: TODAY.into(),
+        date: date.into(),
         location_id: warehouse(),
         to_location_id: None,
         reason: String::new(),
@@ -119,17 +121,36 @@ fn receive(db: &Db, actor: &Actor, item: &str, expiry: Option<&str>, qty: i64) {
             item_id: item.into(),
             expiry: expiry.map(String::from),
             qty,
-            box_id: None,
-            pcs_per_box: None,
+            lot_id: None,
+            serial_from: None,
+            serial_to: None,
         }],
-        serial_year: String::new(),
     };
     let id = db.new_id().unwrap();
     let res = numbering::reserve(db, &[], series::STOCK_RECEIPT, &id).unwrap();
-    db.write(actor.clone(), move |tx| {
-        inventory::create(tx, &input, &res, &mut Serials::none())
-    })
-    .unwrap();
+    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res))
+        .unwrap();
+}
+
+/// The lot a DR line takes, from the expiry the test names: the September
+/// lot expires 2026-12-31, the October one 2027-03-31. No expiry on an item
+/// that tracks one means no lot chosen.
+fn lot_of(db: &Db, booking_line: &str, expiry: Option<&str>) -> Option<String> {
+    let (item, tracks): (String, i64) = db
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT l.item_id, COALESCE(i.tracks_expiry, 0) FROM booking_lines l
+                 JOIN items i ON i.id = l.item_id WHERE l.id = ?1",
+                [booking_line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    match expiry {
+        None if tracks != 0 => None,
+        Some("2026-12-31") => Some(lots::lot_id(&item, "2026-09")),
+        _ => Some(lots::lot_id(&item, lots::month_of(TODAY))),
+    }
 }
 
 fn on_hand(db: &Db, item: &str) -> i64 {
@@ -199,10 +220,9 @@ fn request_dr(
             .into_iter()
             .map(|(booking_line_id, expiry, qty)| DrLineInput {
                 id: None,
+                lot_id: lot_of(db, &booking_line_id, expiry),
                 booking_line_id,
-                expiry: expiry.map(String::from),
                 qty,
-                boxes: vec![],
             })
             .collect(),
     };
@@ -265,7 +285,7 @@ fn booking_to_delivered_dr() {
     let glv = add_item(&a.db, &actor, "GLV", true);
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &glv, Some("2027-03-31"), 50);
-    receive(&a.db, &actor, &glv, Some("2026-12-31"), 10);
+    receive_on(&a.db, &actor, "2026-09-15", &glv, Some("2026-12-31"), 10);
     receive(&a.db, &actor, &tape, None, 100);
     let client = add_client(&a.db, &actor, "Mercury Drug Cubao", None);
 
@@ -691,7 +711,7 @@ fn dr_lines_stay_editable_even_after_delivery() {
     let glv = add_item(&a.db, &actor, "GLV", true);
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &glv, Some("2027-03-31"), 50);
-    receive(&a.db, &actor, &glv, Some("2026-12-31"), 10);
+    receive_on(&a.db, &actor, "2026-09-15", &glv, Some("2026-12-31"), 10);
     receive(&a.db, &actor, &tape, None, 100);
     let client = add_client(&a.db, &actor, "Watsons", None);
     let bk = create_booking(
@@ -724,10 +744,9 @@ fn dr_lines_stay_editable_even_after_delivery() {
             .into_iter()
             .map(|(id, booking_line_id, expiry, qty)| DrLineInput {
                 id,
+                lot_id: lot_of(&a.db, &booking_line_id, expiry),
                 booking_line_id,
-                expiry: expiry.map(String::from),
                 qty,
-                boxes: vec![],
             })
             .collect(),
     };
@@ -835,9 +854,8 @@ fn as_kind(db: &Db, id: &str, kind: ReceiptKind) -> DrRequestInput {
             .map(|l| DrLineInput {
                 id: Some(l.id.clone()),
                 booking_line_id: l.booking_line_id.clone().unwrap(),
-                expiry: l.expiry.clone(),
+                lot_id: l.lot_id.clone(),
                 qty: l.qty,
-                boxes: vec![],
             })
             .collect(),
     }
