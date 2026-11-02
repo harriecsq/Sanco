@@ -50,8 +50,40 @@ pub mod series {
     pub const PAYMENT: &str = "PAY";
     pub const PO: &str = "PO";
     pub const RECEIVING: &str = "RR";
+    /// Client codes live in code groups, series `CL.<KEY>` (see
+    /// `domain::code_groups`). Bare `CL` is the old single series: still
+    /// accepted for rows that have it, never offered.
     pub const CLIENT: &str = "CL";
+    /// Supplier codes: `SUP.<KEY>`, bare `SUP` is the old series.
     pub const SUPPLIER: &str = "SUP";
+
+    fn in_family(series: &str, family: &str) -> bool {
+        series == family
+            || series
+                .strip_prefix(family)
+                .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1)
+    }
+
+    pub fn client(key: &str) -> String {
+        format!("{CLIENT}.{key}")
+    }
+
+    pub fn supplier(key: &str) -> String {
+        format!("{SUPPLIER}.{key}")
+    }
+
+    pub fn is_client(series: &str) -> bool {
+        in_family(series, CLIENT)
+    }
+
+    pub fn is_supplier(series: &str) -> bool {
+        in_family(series, SUPPLIER)
+    }
+
+    /// Series of master-data codes: no year, no yearly restart.
+    pub fn is_party(series: &str) -> bool {
+        is_client(series) || is_supplier(series)
+    }
     pub const STOCK_RECEIPT: &str = "SR";
     pub const ADJUSTMENT: &str = "ADJ";
     pub const TRANSFER: &str = "TR";
@@ -82,7 +114,7 @@ struct PartialFormat {
 impl NumberFormat {
     /// Documents show and reset by year; master-data codes don't.
     pub fn default_for(series: &str) -> Self {
-        let yearly = !matches!(series, series::CLIENT | series::SUPPLIER);
+        let yearly = !series::is_party(series);
         Self {
             prefix: series.to_string(),
             year: yearly,

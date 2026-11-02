@@ -80,10 +80,19 @@ export const commands = {
 	setNumberFormat: (series: string, format: NumberFormat) => typedError<null, string>(__TAURI_INVOKE("set_number_format", { series, format })),
 	/**  Switches a series (DRs) between numbers typed by staff and automatic ones. */
 	setNumberMode: (series: string, manual: boolean) => typedError<null, string>(__TAURI_INVOKE("set_number_mode", { series, manual })),
+	/**  The code groups of clients or suppliers, for the forms and Settings. */
+	listCodeGroups: (kind: Kind) => typedError<CodeGroupInfo[], string>(__TAURI_INVOKE("list_code_groups", { kind })),
+	/**  Adds a code group, or edits (or retires) the one with the same key. */
+	saveCodeGroup: (kind: Kind, group: CodeGroup) => typedError<null, string>(__TAURI_INVOKE("save_code_group", { kind, group })),
 	listClients: () => typedError<ClientInfo[], string>(__TAURI_INVOKE("list_clients")),
 	getClient: (id: string) => typedError<{
 	id: string,
 	code: string | null,
+	/**
+	 *  Key of the code group the code is in (`NCR`); `None` for an old
+	 *  single-series code or none.
+	 */
+	code_group: string | null,
 	/**  False while the code was given offline: it may still change. */
 	code_confirmed: boolean,
 	name: string,
@@ -104,13 +113,13 @@ export const commands = {
 	created_at: number,
 } | null, string>(__TAURI_INVOKE("get_client", { id })),
 	/**  Creates (with a new shared code) or updates a client. Returns its id. */
-	saveClient: (client: ClientInput) => typedError<string, string>(__TAURI_INVOKE("save_client", { client })),
+	saveClient: (client: ClientInput, codeGroup: string) => typedError<string, string>(__TAURI_INVOKE("save_client", { client, codeGroup })),
 	deleteClient: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_client", { id })),
 	/**  Every client, for pickers in other modules. */
 	clientOptions: () => typedError<Choice[], string>(__TAURI_INVOKE("client_options")),
 	listSuppliers: () => typedError<SupplierInfo[], string>(__TAURI_INVOKE("list_suppliers")),
 	/**  Creates (with a new shared code) or updates a supplier. Returns its id. */
-	saveSupplier: (supplier: SupplierInput) => typedError<string, string>(__TAURI_INVOKE("save_supplier", { supplier })),
+	saveSupplier: (supplier: SupplierInput, codeGroup: string) => typedError<string, string>(__TAURI_INVOKE("save_supplier", { supplier, codeGroup })),
 	deleteSupplier: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_supplier", { id })),
 	/**  Every supplier with its default currency, for pickers. */
 	supplierOptions: () => typedError<SupplierChoice[], string>(__TAURI_INVOKE("supplier_options")),
@@ -211,6 +220,13 @@ export const commands = {
 	 *  runs while there are no items.
 	 */
 	runStockImport: (json: string) => typedError<ImportSummary, string>(__TAURI_INVOKE("run_stock_import", { json })),
+	/**  Checks an import file without writing anything. */
+	checkPartiesImport: (json: string) => typedError<PartiesSummary, string>(__TAURI_INVOKE("check_parties_import", { json })),
+	/**
+	 *  Creates the code groups, clients and suppliers, after a backup. Only runs
+	 *  while there are no clients or suppliers.
+	 */
+	runPartiesImport: (json: string) => typedError<PartiesSummary, string>(__TAURI_INVOKE("run_parties_import", { json })),
 	listBookings: () => typedError<BookingInfo[], string>(__TAURI_INVOKE("list_bookings")),
 	/**
 	 *  A booking with its lines and DRs. Accounting may read it too (editing
@@ -794,6 +810,11 @@ export type ClientBalance = {
 export type ClientInfo = {
 	id: string,
 	code: string | null,
+	/**
+	 *  Key of the code group the code is in (`NCR`); `None` for an old
+	 *  single-series code or none.
+	 */
+	code_group: string | null,
 	/**  False while the code was given offline: it may still change. */
 	code_confirmed: boolean,
 	name: string,
@@ -829,6 +850,25 @@ export type ClientInput = {
 	credit_limit_c: number | null,
 	notes: string,
 	active: boolean,
+};
+
+export type CodeGroup = {
+	/**  Short id of the group (`NCR`); makes the series. Can't change. */
+	key: string,
+	/**  Printed before the number: `NCR`, `SUP-TWN`. */
+	prefix: string,
+	/**  Minimum digits of the number. */
+	pad: number,
+	/**  Retired groups give out no new codes. */
+	active: boolean,
+};
+
+/**  A group and how many live records hold a code in it. */
+export type CodeGroupInfo = {
+	group: CodeGroup,
+	used: number,
+	/**  What the first code looks like. */
+	example: string,
 };
 
 export type Company = {
@@ -1286,6 +1326,8 @@ export type ItemSuggestions = {
 	units: string[],
 };
 
+export type Kind = "client" | "supplier";
+
 export type Kpi = {
 	key: string,
 	/**  The module it belongs to (for grouping). */
@@ -1433,6 +1475,14 @@ export type OpenDr = {
 	open_c: number,
 	/**  Allocated by this payment now. */
 	allocated_c: number,
+};
+
+/**  What an import creates, or created. */
+export type PartiesSummary = {
+	clients: number,
+	suppliers: number,
+	/**  Records per code group, e.g. `NCR` → 86. */
+	groups: ([string, number])[],
 };
 
 export type PayMethod = "cash" | "check" | "bank_transfer";
@@ -2174,6 +2224,8 @@ export type SupplierChoice = {
 export type SupplierInfo = {
 	id: string,
 	code: string | null,
+	/**  Key of the code group the code is in; `None` for an old code or none. */
+	code_group: string | null,
 	code_confirmed: boolean,
 	name: string,
 	/**  TW | CN | OTHER */

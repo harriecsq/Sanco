@@ -75,6 +75,7 @@ import {
   NoAccess,
   PageHeader,
 } from "~/components/ui/ui";
+import { CodeGroupSelect } from "~/components/code-groups/code-group-select";
 import { Pager, usePage } from "~/components/ui/pager";
 import { TabNav } from "~/components/ui/tabs";
 import {
@@ -90,6 +91,7 @@ import {
 
 interface Form {
   id: string;
+  code_group: string;
   name: string;
   contact_person: string;
   phone: string;
@@ -105,6 +107,7 @@ interface Form {
 
 const blank = (): Form => ({
   id: "",
+  code_group: "",
   name: "",
   contact_person: "",
   phone: "",
@@ -120,6 +123,7 @@ const blank = (): Form => ({
 
 const toForm = (c: ClientInfo): Form => ({
   id: c.id,
+  code_group: c.code_group ?? "",
   name: c.name,
   contact_person: c.contact_person ?? "",
   phone: c.phone ?? "",
@@ -161,7 +165,7 @@ const ClientFormModal = component$<{
           credit_limit_c: parseMoney(form.credit, "credit limit"),
           notes: form.notes,
           active: form.active,
-        }),
+        }, form.code_group),
       );
       open.value = false;
       if (saved$) await saved$(id);
@@ -176,10 +180,12 @@ const ClientFormModal = component$<{
     <Modal open={open} title={form.id ? "Edit client" : "New client"} wide>
       <form class="space-y-3" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
-        {!form.id && (
-          <p class={hint}>The client code is given automatically when you save.</p>
-        )}
         <div class="grid gap-3 sm:grid-cols-2">
+          <CodeGroupSelect
+            kind="client"
+            value={form.code_group}
+            onChange$={$((key: string) => (form.code_group = key))}
+          />
           <Field label="Name" class="sm:col-span-2">
             <input
               class={input}
@@ -312,10 +318,11 @@ const ClientList = component$(() => {
   );
 
   const shown = useComputed$(() => {
-    const f = filtersOf(loc.url, ["q", "status"]);
+    const f = filtersOf(loc.url, ["q", "status", "group"]);
     const q = f.q.toLowerCase();
     return clients.value.filter(
       (c) =>
+        (!f.group || c.code_group === f.group) &&
         (!q ||
           [c.code, c.name, c.contact_person, c.tin, c.phone].some((v) =>
             v?.toLowerCase().includes(q),
@@ -325,6 +332,11 @@ const ClientList = component$(() => {
     );
   });
 
+  const groupOptions = useComputed$(() =>
+    [...new Set(clients.value.map((c) => c.code_group).filter((g): g is string => !!g))]
+      .sort()
+      .map((g) => ({ value: g, label: g })),
+  );
   const pg = usePage(shown);
   const margins = sees(session.user, "margins");
 
@@ -348,6 +360,7 @@ const ClientList = component$(() => {
       <FilterBar
         search="Search code, name, contact, TIN"
         selects={[
+          { key: "group", label: "Code groups", options: groupOptions.value },
           {
             key: "status",
             label: "Statuses",

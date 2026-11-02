@@ -533,7 +533,7 @@ const SELECT: &str = "
     FROM bookings b
     LEFT JOIN doc_numbers n ON n.ref_id = b.id AND n.series = 'BK' AND n._deleted = 0
     LEFT JOIN clients c ON c.id = b.client_id
-    LEFT JOIN doc_numbers cn ON cn.ref_id = b.client_id AND cn.series = 'CL' AND cn._deleted = 0
+    LEFT JOIN doc_numbers cn ON cn.ref_id = b.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%') AND cn.seq IS NOT NULL AND cn._deleted = 0
     LEFT JOIN users uc ON uc.id = b.created_by
     LEFT JOIN users uf ON uf.id = b.confirmed_by
     LEFT JOIN users ul ON ul.id = b.closed_by

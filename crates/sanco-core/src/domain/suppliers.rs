@@ -1,9 +1,11 @@
-//! Suppliers. Codes (`SUP-0001`) are shared numbers in series `SUP`.
+//! Suppliers. Codes (`SUP-TWN-001`) are shared numbers in one of the
+//! supplier code groups (series `SUP.<KEY>`, see `code_groups`).
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::domain::code_groups;
 use crate::domain::pricing::check_currency;
 use crate::domain::{require_text, text_opt};
 use crate::error::{Error, Result};
@@ -20,6 +22,8 @@ pub const COUNTRIES: [&str; 3] = ["TW", "CN", "OTHER"];
 pub struct SupplierInfo {
     pub id: String,
     pub code: Option<String>,
+    /// Key of the code group the code is in; `None` for an old code or none.
+    pub code_group: Option<String>,
     pub code_confirmed: bool,
     pub name: String,
     /// TW | CN | OTHER
@@ -58,15 +62,18 @@ const SELECT: &str = "
            EXISTS (SELECT 1 FROM suppliers d WHERE d._deleted = 0 AND d.id <> s.id
                    AND d.name = s.name COLLATE NOCASE),
            (SELECT COUNT(*) FROM items i WHERE i.supplier_id = s.id AND i._deleted = 0),
-           s.created_at
+           s.created_at, n.series
     FROM suppliers s
-    LEFT JOIN doc_numbers n ON n.ref_id = s.id AND n.series = 'SUP' AND n._deleted = 0
+    LEFT JOIN doc_numbers n ON n.ref_id = s.id AND (n.series = 'SUP' OR n.series LIKE 'SUP.%') AND n.seq IS NOT NULL AND n._deleted = 0
     WHERE s._deleted = 0";
 
 fn from_row(r: &rusqlite::Row) -> rusqlite::Result<SupplierInfo> {
     Ok(SupplierInfo {
         id: r.get(0)?,
         code: r.get(1)?,
+        code_group: r
+            .get::<_, Option<String>>(15)?
+            .and_then(|s| code_groups::group_of(&s).map(String::from)),
         code_confirmed: r.get::<_, i64>(2)? != 0,
         name: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
         country: r
@@ -118,7 +125,7 @@ fn data(input: &SupplierInput) -> Result<Value> {
 }
 
 pub fn create(tx: &mut WriteTx, input: &SupplierInput, res: &Reservation) -> Result<String> {
-    if res.series != series::SUPPLIER {
+    if !series::is_supplier(&res.series) {
         return Err(Error::Invalid("wrong number series for a supplier".into()));
     }
     let mut v = data(input)?;
@@ -126,6 +133,31 @@ pub fn create(tx: &mut WriteTx, input: &SupplierInput, res: &Reservation) -> Res
     let id = tx.insert(SUPPLIERS, v)?;
     numbering::assign(tx, res, SUPPLIERS)?;
     Ok(id)
+}
+
+/// Moves a supplier to another code group: its old code is freed and it
+/// takes the new reserved one (`res.ref_id` is the supplier's id).
+pub fn change_group(tx: &mut WriteTx, res: &Reservation) -> Result<()> {
+    if !series::is_supplier(&res.series) {
+        return Err(Error::Invalid("wrong number series for a supplier".into()));
+    }
+    let id = &res.ref_id;
+    if tx.get(SUPPLIERS, id)?.is_none() {
+        return Err(Error::Invalid("that supplier no longer exists".into()));
+    }
+    let old: Vec<String> = {
+        let mut stmt = tx.conn().prepare(
+            "SELECT series FROM doc_numbers
+             WHERE ref_id = ?1 AND _deleted = 0 AND seq IS NOT NULL AND series <> ?2
+               AND (series = 'SUP' OR series LIKE 'SUP.%')",
+        )?;
+        let rows = stmt.query_map([id, &res.series], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for s in old {
+        numbering::release(tx, id, &s)?;
+    }
+    numbering::assign_or_change(tx, res, SUPPLIERS).map(drop)
 }
 
 pub fn update(tx: &mut WriteTx, input: &SupplierInput) -> Result<()> {

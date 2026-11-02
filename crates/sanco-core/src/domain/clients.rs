@@ -1,11 +1,13 @@
-//! Clients. A client's code (`CL-0001`) is a shared number in series `CL`,
-//! stored in `doc_numbers`, not on the client row.
+//! Clients. A client's code (`NCR-0001`) is a shared number in one of the
+//! client code groups (series `CL.<KEY>`, see `code_groups`), stored in
+//! `doc_numbers`, not on the client row.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::domain::auth::{Field, Perms};
+use crate::domain::code_groups;
 use crate::domain::pricing::{self, CLIENT_ITEM_RATES};
 use crate::domain::{require_text, text_opt};
 use crate::error::{Error, Result};
@@ -19,6 +21,9 @@ pub const CLIENTS: &str = "clients";
 pub struct ClientInfo {
     pub id: String,
     pub code: Option<String>,
+    /// Key of the code group the code is in (`NCR`); `None` for an old
+    /// single-series code or none.
+    pub code_group: Option<String>,
     /// False while the code was given offline: it may still change.
     pub code_confirmed: bool,
     pub name: String,
@@ -75,15 +80,19 @@ const SELECT: &str = "
            (SELECT COUNT(*) FROM client_item_rates r
             JOIN items i ON i.id = r.item_id AND i._deleted = 0
             WHERE r.client_id = c.id AND r._deleted = 0 AND r.price_c IS NOT NULL),
-           c.created_at
+           c.created_at, n.series
     FROM clients c
-    LEFT JOIN doc_numbers n ON n.ref_id = c.id AND n.series = 'CL' AND n._deleted = 0
+    LEFT JOIN doc_numbers n ON n.ref_id = c.id AND n._deleted = 0 AND n.seq IS NOT NULL
+         AND (n.series = 'CL' OR n.series LIKE 'CL.%')
     WHERE c._deleted = 0";
 
 fn from_row(r: &rusqlite::Row) -> rusqlite::Result<ClientInfo> {
     Ok(ClientInfo {
         id: r.get(0)?,
         code: r.get(1)?,
+        code_group: r
+            .get::<_, Option<String>>(17)?
+            .and_then(|s| code_groups::group_of(&s).map(String::from)),
         code_confirmed: r.get::<_, i64>(2)? != 0,
         name: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
         contact_person: r.get(4)?,
@@ -160,7 +169,7 @@ pub fn create(
     res: &Reservation,
     margins: bool,
 ) -> Result<String> {
-    if res.series != series::CLIENT {
+    if !series::is_client(&res.series) {
         return Err(Error::Invalid("wrong number series for a client".into()));
     }
     let mut v = data(input, margins)?;
@@ -168,6 +177,31 @@ pub fn create(
     let id = tx.insert(CLIENTS, v)?;
     numbering::assign(tx, res, CLIENTS)?;
     Ok(id)
+}
+
+/// Moves a client to another code group: its old code is freed and it takes
+/// the new reserved one (`res.ref_id` is the client's id).
+pub fn change_group(tx: &mut WriteTx, res: &Reservation) -> Result<()> {
+    if !series::is_client(&res.series) {
+        return Err(Error::Invalid("wrong number series for a client".into()));
+    }
+    let id = &res.ref_id;
+    if tx.get(CLIENTS, id)?.is_none() {
+        return Err(Error::Invalid("that client no longer exists".into()));
+    }
+    let old: Vec<String> = {
+        let mut stmt = tx.conn().prepare(
+            "SELECT series FROM doc_numbers
+             WHERE ref_id = ?1 AND _deleted = 0 AND seq IS NOT NULL AND series <> ?2
+               AND (series = 'CL' OR series LIKE 'CL.%')",
+        )?;
+        let rows = stmt.query_map([id, &res.series], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for s in old {
+        numbering::release(tx, id, &s)?;
+    }
+    numbering::assign_or_change(tx, res, CLIENTS).map(drop)
 }
 
 pub fn update(tx: &mut WriteTx, input: &ClientInput, margins: bool) -> Result<()> {

@@ -358,7 +358,7 @@ pub fn list_rates(conn: &Connection, filter: &RateFilter) -> Result<Vec<RateInfo
          FROM client_item_rates r
          JOIN clients c ON c.id = r.client_id AND c._deleted = 0
          JOIN items i ON i.id = r.item_id AND i._deleted = 0
-         LEFT JOIN doc_numbers n ON n.ref_id = c.id AND n.series = 'CL' AND n._deleted = 0
+         LEFT JOIN doc_numbers n ON n.ref_id = c.id AND (n.series = 'CL' OR n.series LIKE 'CL.%') AND n.seq IS NOT NULL AND n._deleted = 0
          WHERE r._deleted = 0 AND r.price_c IS NOT NULL
            AND (?1 IS NULL OR r.client_id = ?1) AND (?2 IS NULL OR r.item_id = ?2)
          ORDER BY c.name COLLATE NOCASE, i.code COLLATE NOCASE, r.id",

@@ -937,7 +937,7 @@ const SELECT: &str = "
     LEFT JOIN v_receipt_no n ON n.dr_id = r.id
     LEFT JOIN doc_numbers bn ON bn.ref_id = r.booking_id AND bn.series = 'BK' AND bn._deleted = 0
     LEFT JOIN clients c ON c.id = r.client_id
-    LEFT JOIN doc_numbers cn ON cn.ref_id = r.client_id AND cn.series = 'CL' AND cn._deleted = 0
+    LEFT JOIN doc_numbers cn ON cn.ref_id = r.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%') AND cn.seq IS NOT NULL AND cn._deleted = 0
     LEFT JOIN locations l ON l.id = r.from_location_id
     LEFT JOIN users uc ON uc.id = r.created_by
     LEFT JOIN users ua ON ua.id = r.approved_by

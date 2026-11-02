@@ -247,25 +247,12 @@ fn number_formats_apply_to_new_codes() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
-    let fmt = NumberFormat {
-        prefix: "c".into(),
-        year: false,
-        reset_yearly: false,
-        pad: 3,
-    };
-    a.db.write(actor.clone(), move |tx| {
-        settings::set_number_format(tx, series::CLIENT, &fmt)
-    })
-    .unwrap();
-    let id = add_client(&a.db, &actor, "A", None);
-    let got = a.db.read(|c| clients::get(c, &id)).unwrap().unwrap();
-    assert_eq!(got.code.as_deref(), Some("C-001"));
-
-    // The yearly reset is fixed once numbers exist.
+    // Client and supplier codes take their format from their code group, not
+    // from Number formats.
     let fmt = NumberFormat {
         prefix: "C".into(),
-        year: true,
-        reset_yearly: true,
+        year: false,
+        reset_yearly: false,
         pad: 3,
     };
     let r = a.db.write(actor.clone(), move |tx| {

@@ -783,7 +783,7 @@ const SELECT: &str = "
     LEFT JOIN v_payment_counts v ON v.payment_id = p.id
     LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PAY' AND n._deleted = 0
     LEFT JOIN clients c ON c.id = p.client_id
-    LEFT JOIN doc_numbers cn ON cn.ref_id = p.client_id AND cn.series = 'CL' AND cn._deleted = 0
+    LEFT JOIN doc_numbers cn ON cn.ref_id = p.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%') AND cn.seq IS NOT NULL AND cn._deleted = 0
     LEFT JOIN doc_numbers rn ON rn.ref_id = p.replaces_id AND rn.series = 'PAY' AND rn._deleted = 0
     LEFT JOIN users uc ON uc.id = p.created_by
     LEFT JOIN users uv ON uv.id = p.voided_by

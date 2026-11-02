@@ -5,6 +5,7 @@ import { useLiveLoad } from "~/lib/events";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
+import { CodeGroupsAdmin } from "~/components/code-groups/code-groups-admin";
 import { Alert, Field, Modal, PageHeader } from "~/components/ui/ui";
 import {
   btnGhost,
@@ -70,7 +71,7 @@ export default component$(() => {
     <>
       <PageHeader
         title="Number formats"
-        subtitle="How new document numbers and codes look. Numbers already given keep their text."
+        subtitle="How new document numbers and client and supplier codes look. Numbers already given keep their text."
       />
       {error.value && <Alert>{error.value}</Alert>}
       <section class={[card, "max-w-4xl"]}>
@@ -125,6 +126,8 @@ export default component$(() => {
         "Next looks like" shows the format with sequence 1; the real next number continues from
         the last one given. The yearly restart can't change once a series has numbers.
       </p>
+
+      <CodeGroupsAdmin editable={editable} />
 
       <Modal open={open} title={`Format: ${editing.label}`}>
         <form class="space-y-3" preventdefault:submit onSubmit$={save}>

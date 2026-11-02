@@ -4,6 +4,7 @@
 
 use sanco_core::domain::auth::{Action, Module};
 use sanco_core::domain::charge_types::{self, ChargeTypeInfo, ChargeTypeInput};
+use sanco_core::domain::code_groups::{self, CodeGroup, CodeGroupInfo, Kind};
 use sanco_core::domain::settings::{self, Company, SeriesFormat};
 use sanco_core::sync::numbering::NumberFormat;
 use serde::Serialize;
@@ -116,4 +117,27 @@ pub async fn set_number_mode(
         })
     })
     .await
+}
+
+/// The code groups of clients or suppliers, for the forms and Settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_code_groups(
+    state: State<'_, AppState>,
+    kind: Kind,
+) -> Result<Vec<CodeGroupInfo>, String> {
+    let (db, _) = signed_in(&state).await?;
+    blocking(move || db.read(|c| code_groups::infos(c, kind))).await
+}
+
+/// Adds a code group, or edits (or retires) the one with the same key.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_code_group(
+    state: State<'_, AppState>,
+    kind: Kind,
+    group: CodeGroup,
+) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Settings, Action::Edit).await?;
+    blocking(move || db.write(user.actor(), move |tx| code_groups::save(tx, kind, &group))).await
 }

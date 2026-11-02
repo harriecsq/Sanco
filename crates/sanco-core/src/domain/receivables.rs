@@ -218,7 +218,7 @@ fn open_drs(conn: &Connection, client: Option<&str>, today: &str) -> Result<Vec<
          JOIN delivery_receipts r ON r.id = v.dr_id
          LEFT JOIN v_receipt_no n ON n.dr_id = v.dr_id
          LEFT JOIN clients c ON c.id = v.client_id
-         LEFT JOIN doc_numbers cn ON cn.ref_id = v.client_id AND cn.series = 'CL' AND cn._deleted = 0
+         LEFT JOIN doc_numbers cn ON cn.ref_id = v.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%') AND cn.seq IS NOT NULL AND cn._deleted = 0
          WHERE v.balance_c <> 0 AND (?1 IS NULL OR v.client_id = ?1)
          ORDER BY v.delivered_date, n.no, v.dr_id",
     )?;
@@ -270,7 +270,7 @@ fn payment_sums(conn: &Connection, client: Option<&str>) -> Result<HashMap<Strin
 fn fill_client(conn: &Connection, b: &mut ClientBalance) -> Result<()> {
     let row = conn.query_row(
         "SELECT n.no, c.name, c.terms_days, c.credit_limit_c FROM clients c
-         LEFT JOIN doc_numbers n ON n.ref_id = c.id AND n.series = 'CL' AND n._deleted = 0
+         LEFT JOIN doc_numbers n ON n.ref_id = c.id AND (n.series = 'CL' OR n.series LIKE 'CL.%') AND n.seq IS NOT NULL AND n._deleted = 0
          WHERE c.id = ?1",
         [&b.client_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),

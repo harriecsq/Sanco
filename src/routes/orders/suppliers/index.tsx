@@ -27,6 +27,7 @@ import {
   td,
   th,
 } from "~/components/ui/styles";
+import { CodeGroupSelect } from "~/components/code-groups/code-group-select";
 import { Pager, usePage } from "~/components/ui/pager";
 
 const COUNTRIES = [
@@ -38,6 +39,7 @@ const countryLabel = (c: string) => COUNTRIES.find((x) => x.value === c)?.label 
 
 interface Form {
   id: string;
+  code_group: string;
   name: string;
   country: string;
   currency: string;
@@ -51,6 +53,7 @@ interface Form {
 
 const blank = (): Form => ({
   id: "",
+  code_group: "",
   name: "",
   country: "TW",
   currency: "USD",
@@ -86,15 +89,21 @@ export default component$(() => {
   );
 
   const shown = useComputed$(() => {
-    const f = filtersOf(loc.url, ["q", "country", "status"]);
+    const f = filtersOf(loc.url, ["q", "country", "status", "group"]);
     const q = f.q.toLowerCase();
     return suppliers.value.filter(
       (s) =>
         (!q || [s.code, s.name, s.contact_person, s.email].some((v) => v?.toLowerCase().includes(q))) &&
+        (!f.group || s.code_group === f.group) &&
         (!f.country || s.country === f.country) &&
         (!f.status || (f.status === "active") === s.active),
     );
   });
+  const groupOptions = useComputed$(() =>
+    [...new Set(suppliers.value.map((s) => s.code_group).filter((g): g is string => !!g))]
+      .sort()
+      .map((g) => ({ value: g, label: g })),
+  );
   const pg = usePage(shown);
 
   const save = $(async () => {
@@ -113,7 +122,7 @@ export default component$(() => {
           address: form.address,
           notes: form.notes,
           active: form.active,
-        }),
+        }, form.code_group),
       );
       open.value = false;
     } catch (e) {
@@ -147,6 +156,7 @@ export default component$(() => {
       <FilterBar
         search="Search code, name, contact"
         selects={[
+          { key: "group", label: "Code groups", options: groupOptions.value },
           { key: "country", label: "Countries", options: COUNTRIES },
           {
             key: "status",
@@ -224,6 +234,7 @@ export default component$(() => {
                         onClick$={() => {
                           Object.assign(form, {
                             id: s.id,
+                            code_group: s.code_group ?? "",
                             name: s.name,
                             country: s.country,
                             currency: s.currency,
@@ -264,10 +275,12 @@ export default component$(() => {
       <Modal open={open} title={form.id ? "Edit supplier" : "New supplier"} wide>
         <form class="space-y-3" preventdefault:submit onSubmit$={save}>
           {formError.value && <Alert>{formError.value}</Alert>}
-          {!form.id && (
-            <p class={hint}>The supplier code is given automatically when you save.</p>
-          )}
           <div class="grid gap-3 sm:grid-cols-2">
+            <CodeGroupSelect
+              kind="supplier"
+              value={form.code_group}
+              onChange$={$((key: string) => (form.code_group = key))}
+            />
             <Field label="Name" class="sm:col-span-2">
               <input
                 class={input}

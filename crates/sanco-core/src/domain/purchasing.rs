@@ -1145,7 +1145,7 @@ const PO_SELECT: &str = "
     FROM purchase_orders p
     LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PO' AND n._deleted = 0
     LEFT JOIN suppliers s ON s.id = p.supplier_id
-    LEFT JOIN doc_numbers sn ON sn.ref_id = p.supplier_id AND sn.series = 'SUP'
+    LEFT JOIN doc_numbers sn ON sn.ref_id = p.supplier_id AND (sn.series = 'SUP' OR sn.series LIKE 'SUP.%') AND sn.seq IS NOT NULL
                             AND sn._deleted = 0
     LEFT JOIN users uc ON uc.id = p.created_by
     LEFT JOIN users uo ON uo.id = p.ordered_by

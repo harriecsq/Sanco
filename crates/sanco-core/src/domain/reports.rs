@@ -149,7 +149,7 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
              FROM v_dr_totals t
              JOIN delivery_receipts r ON r.id = t.dr_id
              LEFT JOIN clients c ON c.id = t.client_id
-             LEFT JOIN doc_numbers n ON n.ref_id = t.client_id AND n.series = 'CL'
+             LEFT JOIN doc_numbers n ON n.ref_id = t.client_id AND (n.series = 'CL' OR n.series LIKE 'CL.%') AND n.seq IS NOT NULL
                                     AND n._deleted = 0
              WHERE t.status = 'delivered'",
         )?;
