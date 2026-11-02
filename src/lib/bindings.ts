@@ -204,6 +204,13 @@ export const commands = {
 	 */
 	postStockDoc: (doc: StockDocInput) => typedError<string, string>(__TAURI_INVOKE("post_stock_doc", { doc })),
 	voidStockDoc: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_stock_doc", { id, reason })),
+	/**  Checks an import file without writing anything. */
+	checkStockImport: (json: string) => typedError<ImportSummary, string>(__TAURI_INVOKE("check_stock_import", { json })),
+	/**
+	 *  Creates the items and posts the opening receipts, after a backup. Only
+	 *  runs while there are no items.
+	 */
+	runStockImport: (json: string) => typedError<ImportSummary, string>(__TAURI_INVOKE("run_stock_import", { json })),
 	listBookings: () => typedError<BookingInfo[], string>(__TAURI_INVOKE("list_bookings")),
 	/**
 	 *  A booking with its lines and DRs. Accounting may read it too (editing
@@ -1187,6 +1194,15 @@ export type FieldDiff = {
 	column: string,
 	lost: string,
 	current: string,
+};
+
+/**  What an import creates, or created. */
+export type ImportSummary = {
+	items: number,
+	documents: number,
+	lines: number,
+	/**  Quantity per location name. */
+	totals: ([string, number])[],
 };
 
 export type Issue = {

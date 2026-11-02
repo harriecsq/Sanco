@@ -473,7 +473,8 @@ _Update this section when each milestone is finished: set its status, the date, 
 - `npm run app` on this PC would migrate the real database. Test with `--data-dir .dev/x`.
 - Checked: 0014 on copies of the real database (also with box rows added), and through a test instance: lots list, stock receipt form, two-lot DR with oldest-first dropdown, PO receiving with a serial range.
 - Not clicked through: adjustment and transfer posting from the forms (covered by tests in `tests/inventory.rs`), DR edit after delivery, void flows.
-- **Next:** inventory import. Plan: `docs/plans/m14-inventory-import.md`.
+- **Inventory import (built 2026-11-02, not run on real data):** `domain/import.rs` + `commands/import.rs` + Settings → Import stock (admin only). One transaction creates the items and the `SR` receipts (one per date and location, note "Opening balance"); numbers are reserved first. It refuses on any database that already has an item. `tools/convert-inventory.mjs` (needs `exceljs`, install it outside the repo) turns the cleaned xlsx into the import JSON; a copy is at `Downloads\Sanco inventory - import.json`. Dry run on the real file: 251 items, 351 lines, 47 receipts, KB 2,000, Office 6,597, Warehouse 107,582, 14 items with several lots. `tests/import.rs` has an ignored dry-run test (`SANCO_IMPORT_FILE=...`).
+- **Next:** release (bump version in `Cargo.toml` and `tauri.conf.json`, tag), update this PC, back up, run the import from Settings → Import stock on one PC only. Then decide whether to remove the import command. Plan: `docs/plans/m14-inventory-import.md`.
 
 ## Milestones
 - **M0 — Setup.**

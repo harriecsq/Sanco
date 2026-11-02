@@ -94,6 +94,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::inventory::get_stock_doc,
             commands::inventory::post_stock_doc,
             commands::inventory::void_stock_doc,
+            commands::import::check_stock_import,
+            commands::import::run_stock_import,
             commands::bookings::list_bookings,
             commands::bookings::get_booking,
             commands::bookings::save_booking,

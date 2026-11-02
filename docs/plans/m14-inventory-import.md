@@ -33,7 +33,10 @@ Seeds the real stock into Sanco from the cleaned Excel file. Decided with the us
 - **PIB-100 at SM STORE (-2):** treat as 0, so skip it. Its warehouse qty of 28 stays. Expected SM STORE total after the fix is 6,597, since the file's total includes the -2.
 - **Serial ranges and expiry:** none. Leave them blank. The owner adds them later under Inventory → Lots.
 
-## Open decision: how to run it
+## Status (2026-11-02)
+Steps 1–3 done (approach confirmed, built, dry run on the real file). Lots shipped in 1.4.0 already. Left: steps 4–6 and the doc updates. See the M14 notes in `docs/PLAN.md`.
+
+## Decided: how to run it
 Numbers must be claimed through the sync node, and writes must go through `db.write`, so raw SQL is out. Recommended:
 1. A Node script (scratchpad) turns the cleaned `.xlsx` into JSON, applying the rules above.
 2. `sanco-core/src/domain/import.rs` validates that JSON and creates items and receipts through `items::save` and `inventory::create`.

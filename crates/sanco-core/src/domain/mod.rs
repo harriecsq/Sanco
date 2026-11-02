@@ -11,6 +11,7 @@ pub mod conflicts;
 pub mod dashboard;
 pub mod delivery;
 pub mod hr;
+pub mod import;
 pub mod inventory;
 pub mod items;
 pub mod locations;
