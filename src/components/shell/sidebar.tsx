@@ -76,7 +76,9 @@ export const Sidebar = component$(() => {
         <Logo />
       </div>
       <nav class="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="Modules">
-        {NAV.filter((n) => can(user, n.module)).map((n) => {
+        {NAV.filter(
+          (n) => can(user, n.module) || (n.module === "bookings" && can(user, "accounting")),
+        ).map((n) => {
           const active = isActive(n.href);
           return (
             <Link

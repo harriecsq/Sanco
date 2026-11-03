@@ -4,7 +4,6 @@
 pub mod audit;
 pub mod auth;
 pub mod bank_accounts;
-pub mod bookings;
 pub mod charge_types;
 pub mod clients;
 pub mod code_groups;

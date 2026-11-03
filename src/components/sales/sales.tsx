@@ -1,7 +1,5 @@
 import { component$ } from "@builder.io/qwik";
 import type {
-  BookingStatus,
-  DeliveryProgress,
   DrInfo,
   DrStatus,
   PriceSource,
@@ -13,19 +11,8 @@ import { Badge } from "~/components/ui/ui";
 
 type Tone = "brand" | "muted" | "danger" | "warning";
 
-export const BOOKING_STATUS: Record<
-  BookingStatus,
-  { label: string; tone: Tone }
-> = {
-  draft: { label: "Draft", tone: "warning" },
-  confirmed: { label: "Confirmed", tone: "brand" },
-  closed: { label: "Closed", tone: "muted" },
-  cancelled: { label: "Cancelled", tone: "muted" },
-};
-
 export const DR_STATUS: Record<DrStatus, { label: string; tone: Tone }> = {
-  requested: { label: "Requested", tone: "warning" },
-  approved: { label: "Approved", tone: "brand" },
+  new: { label: "New", tone: "warning" },
   delivered: { label: "Delivered", tone: "brand" },
   cancelled: { label: "Cancelled", tone: "muted" },
 };
@@ -47,7 +34,7 @@ export const RECEIPT: Record<
     name: "DR",
     plural: "DRs",
     list: "Delivery receipts",
-    route: "/accounting/",
+    route: "/bookings/",
     booklet: "DR booklet",
   },
   invoice: {
@@ -55,7 +42,7 @@ export const RECEIPT: Record<
     name: "invoice",
     plural: "invoices",
     list: "Invoices",
-    route: "/accounting/invoices/",
+    route: "/bookings/invoices/",
     booklet: "invoice booklet",
   },
 };
@@ -68,17 +55,11 @@ export const receiptHref = (kind: ReceiptKind, id: string) =>
 export const receiptName = (kind: ReceiptKind, no: string | null) =>
   `${RECEIPT[kind].title} ${no ?? "(no number)"}`;
 
-export const PROGRESS_LABEL: Record<DeliveryProgress, string> = {
-  none: "Not delivered",
-  partial: "Partly delivered",
-  full: "Delivered",
-};
-
 export const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
   manual: "Client rate",
   client_tier: "Client's margin tier",
   item_default: "Item's default margin",
-  quoted: "Quoted in BD",
+  quoted: "Quoted (older booking)",
   custom: "Typed in",
 };
 

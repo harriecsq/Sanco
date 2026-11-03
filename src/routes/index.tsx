@@ -51,7 +51,7 @@ const TONE_TEXT: Record<Kpi["tone"], string> = {
 
 /** Where a to-do's document opens. */
 const REF_HREF: Record<string, string> = {
-  delivery_receipts: "/accounting/",
+  delivery_receipts: "/bookings/",
   payments: "/accounting/payments/",
   bookings: "/bookings/",
   purchase_orders: "/orders/",

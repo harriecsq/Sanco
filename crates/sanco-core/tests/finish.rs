@@ -6,10 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::TestPeer;
 use sanco_core::domain::auth::{Action, Module, Perms};
-use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::dashboard::{self, Tone};
-use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
+use sanco_core::domain::delivery::{self, DeliverInput, DrInput, DrLineInput, ReceiptKind};
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
 use sanco_core::domain::lots;
@@ -117,57 +116,33 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
     id
 }
 
-/// A confirmed VAT booking of 10 at the default price; returns (booking, line).
-fn booking(db: &Db, actor: &Actor, client: &str, item: &str) -> (String, String) {
-    let input = BookingInput {
-        id: None,
+/// An invoice of `qty` of the item at the default price, on 2026-07-01 (a
+/// new receipt, not delivered). Returns its id.
+fn request_dr(db: &Db, actor: &Actor, client: &str, item: &str, qty: i64) -> String {
+    let input = DrInput {
         client_id: client.into(),
-        date: "2026-07-01".into(),
-        vat: true,
-        client_ref: String::new(),
-        deliver_to: String::new(),
-        notes: String::new(),
-        lines: vec![BookingLineInput {
-            id: None,
-            item_id: item.into(),
-            qty: 10,
-            price_c: None,
-            notes: String::new(),
-        }],
-    };
-    let id = db.new_id().unwrap();
-    let res = numbering::reserve(db, &[], series::BOOKING, &id).unwrap();
-    let id = db
-        .write(actor.clone(), move |tx| bookings::create(tx, &input, &res))
-        .unwrap();
-    let bid = id.clone();
-    db.write(actor.clone(), move |tx| {
-        bookings::set_status(tx, &bid, BookingAction::Confirm, "")
-    })
-    .unwrap();
-    let line = db.read(|c| bookings::get(c, &id)).unwrap().unwrap().lines[0]
-        .id
-        .clone();
-    (id, line)
-}
-
-fn request_dr(db: &Db, actor: &Actor, booking: &str, line: &str, qty: i64) -> String {
-    let input = DrRequestInput {
-        booking_id: booking.into(),
-        kind: None,
+        kind: ReceiptKind::Invoice,
         date: "2026-07-01".into(),
         from_location_id: warehouse(),
+        client_ref: String::new(),
         deliver_to: String::new(),
         notes: String::new(),
         lines: vec![DrLineInput {
             id: None,
-            booking_line_id: line.into(),
-            lot_id: lot_of(db, line),
+            item_id: item.into(),
             qty,
+            price_c: None,
+            lot_id: Some(lots::lot_id(item, lots::month_of(TODAY))),
+            notes: String::new(),
         }],
     };
-    db.write(actor.clone(), move |tx| delivery::request(tx, &input))
-        .unwrap()
+    let id = db.new_id().unwrap();
+    let new_id = id.clone();
+    db.write(actor.clone(), move |tx| {
+        delivery::create(tx, &new_id, &input, None)
+    })
+    .unwrap();
+    id
 }
 
 fn deliver(db: &Db, actor: &Actor, id: &str, no: &str, date: &str) {
@@ -179,11 +154,6 @@ fn deliver(db: &Db, actor: &Actor, id: &str, no: &str, date: &str) {
         id,
     )
     .unwrap();
-    let rid = id.to_string();
-    db.write(actor.clone(), move |tx| {
-        delivery::approve(tx, &rid, Some(&res))
-    })
-    .unwrap();
     let (rid, input) = (
         id.to_string(),
         DeliverInput {
@@ -192,7 +162,7 @@ fn deliver(db: &Db, actor: &Actor, id: &str, no: &str, date: &str) {
         },
     );
     db.write(actor.clone(), move |tx| {
-        delivery::deliver(tx, &rid, &input, None)
+        delivery::deliver(tx, &rid, &input, Some(&res))
     })
     .unwrap();
 }
@@ -226,10 +196,9 @@ fn dashboard_kpis_and_issues() {
 
     let client = add_client(db, &ana, "Mercury Drug");
     let item = add_item(db, &ana, "GLV-100");
-    let (bk, line) = booking(db, &ana, &client, &item);
-    let dr = request_dr(db, &ana, &bk, &line, 4);
+    let dr = request_dr(db, &ana, &client, &item, 4);
     deliver(db, &ana, &dr, "1001", "2026-07-01");
-    request_dr(db, &ana, &bk, &line, 2);
+    request_dr(db, &ana, &client, &item, 2);
 
     let d = db.read(|c| dashboard::summary(c, &all(), TODAY)).unwrap();
     let kpi = |key: &str| {
@@ -239,14 +208,9 @@ fn dashboard_kpis_and_issues() {
             .unwrap_or_else(|| panic!("no KPI {key}"))
             .clone()
     };
-    assert_eq!(kpi("bookings_to_deliver").value, 1);
-    // The booking has VAT: its receipts are invoices.
     assert_eq!(kpi("drs_open").value, 0);
     assert_eq!(kpi("invoices_open").value, 1);
-    assert_eq!(
-        kpi("invoices_open").href,
-        "/accounting/invoices/?status=requested"
-    );
+    assert_eq!(kpi("invoices_open").href, "/bookings/invoices/?status=new");
     // 4 × ₱125 (no VAT on top), due 30 days after 2026-07-01: overdue.
     assert_eq!(kpi("receivables").value, 50_000);
     assert_eq!(kpi("overdue").value, 50_000);
@@ -289,10 +253,9 @@ fn reports_sales_margin_and_bd() {
     let ana = admin(db);
     let client = add_client(db, &ana, "Mercury Drug");
     let item = add_item(db, &ana, "GLV-100");
-    let (bk, line) = booking(db, &ana, &client, &item);
-    let dr = request_dr(db, &ana, &bk, &line, 4);
+    let dr = request_dr(db, &ana, &client, &item, 4);
     deliver(db, &ana, &dr, "1001", "2026-07-01");
-    let dr = request_dr(db, &ana, &bk, &line, 3);
+    let dr = request_dr(db, &ana, &client, &item, 3);
     deliver(db, &ana, &dr, "1002", "2026-08-15");
 
     let any = DateRange::default();
@@ -433,18 +396,4 @@ fn todos_visibility_and_delete() {
     })
     .unwrap();
     assert_eq!(titles(&ana_id), ["Ana only"]);
-}
-
-/// The lot of this month of a booking line's item.
-fn lot_of(db: &Db, booking_line: &str) -> Option<String> {
-    let item: String = db
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT item_id FROM booking_lines WHERE id = ?1",
-                [booking_line],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
-    Some(lots::lot_id(&item, lots::month_of(TODAY)))
 }

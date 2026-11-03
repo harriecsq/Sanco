@@ -335,6 +335,8 @@ pub static TABLES: &[TableDef] = &[
             int("cancelled_at"),
             text("cancelled_by"),
             text("cancel_reason"),
+            // Added in 0015: the client's own PO / reference.
+            text("client_ref"),
         ],
     },
     TableDef {
@@ -348,6 +350,9 @@ pub static TABLES: &[TableDef] = &[
             int("price_c"),
             // Added in 0014.
             text("lot_id"),
+            // Added in 0015.
+            text("price_rule"),
+            text("notes"),
         ],
     },
     TableDef {

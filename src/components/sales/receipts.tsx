@@ -1,5 +1,6 @@
-// DRs (no VAT) and invoices (VAT): their lists and pages. The routes
-// accounting/ and accounting/invoices/ show one type each.
+// DRs (no VAT) and invoices (VAT): their lists and pages, and where every
+// client order starts. The routes bookings/ and bookings/invoices/ show one
+// type each.
 import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
 import { Link, useLocation, useNavigate } from "@builder.io/qwik-city";
 import {
@@ -16,7 +17,7 @@ import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
-import { DrRequestModal } from "~/components/sales/dr-request";
+import { ReceiptFormModal } from "~/components/sales/receipt-form";
 import { DR_STATUS, DrNo, DrStatusBadge, RECEIPT, receiptHref, Totals } from "~/components/sales/sales";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
@@ -50,8 +51,15 @@ const TABLES = [
 /** The date that matters: delivered on, else planned for. */
 const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
 
+/** Booking and Accounting users may both work on DRs and invoices. */
+const mayDo = (user: Parameters<typeof can>[0], action: "create" | "edit" | "delete") =>
+  can(user, "bookings", action) || can(user, "accounting", action);
+
 const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
   const k = RECEIPT[kind];
+  const session = useSession();
+  const nav = useNavigate();
+  const newOpen = useSignal(false);
   const loc = useLocation();
   const drs = useSignal<DrInfo[]>([]);
   const clients = useSignal<Choice[]>([]);
@@ -77,7 +85,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
     return drs.value.filter(
       (d) =>
         (!q ||
-          [d.no, d.booking_no, d.client_name, d.summary, d.received_by, d.notes].some((v) =>
+          [d.no, d.booking_no, d.client_name, d.client_ref, d.summary, d.received_by, d.notes].some((v) =>
             v?.toLowerCase().includes(q),
           )) &&
         (!f.from || dayOf(d) >= f.from) &&
@@ -102,20 +110,26 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
         title={k.list}
         subtitle={
           kind === "dr"
-            ? "DRs (no VAT) are requested from bookings, approved, then marked delivered (stock goes out)."
-            : "Invoices (with VAT) are requested from bookings, approved, then marked delivered (stock goes out)."
+            ? "Every client order starts here: enter the DR, then mark it delivered (stock goes out)."
+            : "Every client order that needs an invoice starts here: enter it, then mark it delivered (stock goes out)."
         }
-      />
+      >
+        {mayDo(session.user, "create") && (
+          <button q:slot="actions" class={btnPrimary} onClick$={() => (newOpen.value = true)}>
+            New {k.name}
+          </button>
+        )}
+      </PageHeader>
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
-        search={`Search ${k.name} no., booking, client, items`}
+        search={`Search ${k.name} no., client, PO, items`}
         dates
         selects={[
           {
             key: "status",
             label: "Statuses",
             options: [
-              ...(["requested", "approved", "delivered", "cancelled"] as const).map((s) => ({
+              ...(["new", "delivered", "cancelled"] as const).map((s) => ({
                 value: s,
                 label: DR_STATUS[s].label,
               })),
@@ -141,7 +155,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
           <Empty>
             {drs.value.length
               ? `No ${k.plural} match.`
-              : `No ${k.plural} yet. Request one from a confirmed booking.`}
+              : `No ${k.plural} yet. Enter the first one with "New ${k.name}".`}
           </Empty>
         ) : (
           <table class={table}>
@@ -150,7 +164,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
                 <th class={th}>{k.title} no.</th>
                 <th class={th}>Date</th>
                 <th class={th}>Client</th>
-                <th class={th}>Booking</th>
+                <th class={th}>Client's PO</th>
                 <th class={th}>From</th>
                 <th class={th}>Items</th>
                 <th class={[th, "text-right"]}>Gross</th>
@@ -172,13 +186,8 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
                   </td>
                   <td class={td}>{d.client_name ?? "—"}</td>
                   <td class={[td, "whitespace-nowrap"]}>
-                    {d.booking_id ? (
-                      <Link class="text-brand-700 hover:underline" href={`/bookings/?id=${d.booking_id}`}>
-                        {d.booking_no ?? "—"}
-                      </Link>
-                    ) : (
-                      "—"
-                    )}
+                    {d.client_ref ?? "—"}
+                    {d.booking_no && <span class={[hint, "block"]}>old booking {d.booking_no}</span>}
                   </td>
                   <td class={td}>{d.from_location_name ?? "—"}</td>
                   <td class={td}>{d.summary}</td>
@@ -204,19 +213,24 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
         )}
         <Pager of={pg} />
       </section>
+      <ReceiptFormModal
+        open={newOpen}
+        kind={kind}
+        saved$={$((id: string, saved: ReceiptKind) => nav(receiptHref(saved, id)))}
+      />
     </>
   );
 });
 
-type Step = "approve" | "deliver" | "number" | "cancel" | "void";
+type Step = "deliver" | "number" | "cancel" | "void" | "restore";
 
 const stepTitle = (step: Step, name: string) =>
   ({
-    approve: `Approve ${name}`,
     deliver: "Mark delivered",
     number: `${name === "DR" ? "DR" : "Invoice"} number`,
     cancel: `Cancel ${name}`,
     void: `Void delivered ${name}`,
+    restore: `Restore ${name}`,
   })[step];
 
 const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
@@ -225,7 +239,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
   const detail = useSignal<DrDetail | null>(null);
   const missing = useSignal(false);
   const error = useSignal("");
-  const step = useSignal<Step>("approve");
+  const step = useSignal<Step>("deliver");
   const open = useSignal(false);
   const no = useSignal("");
   const date = useSignal("");
@@ -286,9 +300,6 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
     const typed = manual ? no.value.trim() || null : null;
     try {
       switch (step.value) {
-        case "approve":
-          unwrap(await commands.approveDr(id, typed));
-          break;
         case "deliver":
           unwrap(await commands.deliverDr(id, { date: date.value, received_by: receivedBy.value }, typed));
           break;
@@ -300,6 +311,9 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
           break;
         case "void":
           unwrap(await commands.voidDr(id, reason.value));
+          break;
+        case "restore":
+          unwrap(await commands.restoreDr(id));
           break;
       }
       open.value = false;
@@ -315,11 +329,11 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
     ["Client", d.client_name ? `${d.client_name}${d.client_code ? ` (${d.client_code})` : ""}` : "—"],
     ["From", d.from_location_name ?? "—"],
     ["Planned for", formatDay(d.date)],
+    ["Client's PO", d.client_ref ?? ""],
     ["Deliver to", d.deliver_to ?? ""],
     ["Notes", d.notes ?? ""],
-    ["Requested", `${formatDateTime(d.created_at)} by ${d.created_by_name ?? "—"}`],
+    ["Entered", `${formatDateTime(d.created_at)} by ${d.created_by_name ?? "—"}`],
   ];
-  if (d.approved_at) rows.push(["Approved", `${formatDateTime(d.approved_at)} by ${d.approved_by_name ?? "—"}`]);
   if (d.delivered_at) {
     rows.push(["Delivered on", formatDay(d.delivered_date)]);
     rows.push(["Received by", d.received_by ?? ""]);
@@ -330,8 +344,8 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
     rows.push(["Reason", d.cancel_reason ?? ""]);
   }
 
-  const canEdit = can(user, "accounting", "edit");
-  const needsNo = manual && (step.value === "approve" || step.value === "deliver" || step.value === "number");
+  const canEdit = mayDo(user, "edit");
+  const needsNo = manual && (step.value === "deliver" || step.value === "number");
 
   return (
     <>
@@ -341,34 +355,32 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
         </Link>
       </p>
       <PageHeader title={d.no ? `${k.title} ${d.no}` : `${k.title} (no number yet)`} subtitle={d.client_name ?? undefined}>
-        {d.status === "delivered" && can(user, "accounting", "delete") && (
+        {d.status === "delivered" && mayDo(user, "delete") && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => begin("void")}>
             Void
           </button>
         )}
-        {d.status !== "cancelled" &&
-          d.booking_id &&
-          (canEdit || can(user, "bookings", "edit")) && (
-            <button q:slot="actions" class={btnSecondary} onClick$={() => (editOpen.value = true)}>
-              Edit
-            </button>
-          )}
-        {(d.status === "requested" || d.status === "approved") && canEdit && (
+        {d.status === "cancelled" && mayDo(user, "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("restore")}>
+            Restore
+          </button>
+        )}
+        {canEdit && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => (editOpen.value = true)}>
+            Edit
+          </button>
+        )}
+        {d.status === "new" && canEdit && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => begin("cancel")}>
             Cancel {k.name}
           </button>
         )}
-        {manual && d.status !== "cancelled" && canEdit && (
+        {manual && canEdit && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => begin("number")}>
             {d.no ? `Correct ${k.name} no.` : `Enter ${k.name} no.`}
           </button>
         )}
-        {d.status === "requested" && can(user, "accounting", "approve") && (
-          <button q:slot="actions" class={btnPrimary} onClick$={() => begin("approve")}>
-            Approve
-          </button>
-        )}
-        {d.status === "approved" && canEdit && (
+        {d.status === "new" && canEdit && (
           <button q:slot="actions" class={btnPrimary} onClick$={() => begin("deliver")}>
             Mark delivered
           </button>
@@ -381,14 +393,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
           <span class="text-sm">
             <DrNo d={d} />
           </span>
-          {d.booking_id && (
-            <span class="text-sm">
-              Booking{" "}
-              <Link class="text-brand-700 hover:underline" href={`/bookings/?id=${d.booking_id}`}>
-                {d.booking_no ?? "—"}
-              </Link>
-            </span>
-          )}
+          {d.booking_no && <span class="text-sm text-ink-muted">From old booking {d.booking_no}</span>}
         </div>
         {d.no_clash && (
           <Alert>
@@ -506,17 +511,10 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
         </section>
       )}
 
-      {d.booking_id && <DrRequestModal open={editOpen} bookingId={d.booking_id} dr={det} />}
+      <ReceiptFormModal open={editOpen} dr={det} />
       <Modal open={open} title={stepTitle(step.value, k.name)}>
         <form class="space-y-3" preventdefault:submit onSubmit$={submit}>
           {stepError.value && <Alert>{stepError.value}</Alert>}
-          {step.value === "approve" && (
-            <p class="text-sm">
-              {manual
-                ? `Enter the ${k.name} number from the ${d.no_series === "DR" ? "DR booklet" : k.booklet} now, or later when it is delivered.`
-                : `The ${k.name} gets the next number automatically.`}
-            </p>
-          )}
           {step.value === "deliver" && (
             <>
               <p class="text-sm">
@@ -539,7 +537,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
           )}
           {needsNo && (
             <Field
-              label={`${d.no_series === "DR" ? "DR" : "Invoice"} number (BIR booklet)`}
+              label={`${d.kind === "dr" ? "DR" : "Invoice"} number (BIR booklet)`}
               hint={
                 step.value === "number"
                   ? "Digits only, as printed. A correction keeps the old number in the audit log."
@@ -549,18 +547,25 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
               <input
                 class={input}
                 inputMode="numeric"
-                required={step.value !== "approve"}
+                required
                 value={no.value}
                 onInput$={(_, el) => (no.value = el.value)}
               />
             </Field>
+          )}
+          {step.value === "restore" && (
+            <p class="text-sm">
+              {d.voided
+                ? `The ${k.name} is delivered again: its stock goes out again.`
+                : `The ${k.name} goes back to new, so it can be delivered.`}
+            </p>
           )}
           {(step.value === "cancel" || step.value === "void") && (
             <>
               <p class="text-sm">
                 {step.value === "void"
                   ? `Its stock comes back on every PC. The ${k.name} stays in the list, marked void. This can't be undone.`
-                  : `The ${k.name} stays in the list, marked cancelled. Its items can be requested again.`}
+                  : `The ${k.name} stays in the list, marked cancelled. It can be restored later.`}
               </p>
               <Field label="Reason">
                 <input
@@ -580,12 +585,12 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
               class={step.value === "cancel" || step.value === "void" ? btnDanger : btnPrimary}
               disabled={busy.value}
             >
-              {step.value === "approve"
-                ? "Approve"
-                : step.value === "deliver"
-                  ? "Mark delivered"
-                  : step.value === "number"
-                    ? "Save number"
+              {step.value === "deliver"
+                ? "Mark delivered"
+                : step.value === "number"
+                  ? "Save number"
+                  : step.value === "restore"
+                    ? "Restore"
                     : step.value === "void"
                       ? `Void ${k.name}`
                       : `Cancel ${k.name}`}

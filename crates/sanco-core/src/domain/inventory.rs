@@ -459,7 +459,15 @@ pub fn create(tx: &mut WriteTx, input: &StockDocInput, res: &Reservation) -> Res
             "status": "posted",
         }),
     )?;
-    for (i, l) in p.lines.into_iter().enumerate() {
+    write_lines(tx, &id, p.lines)?;
+    numbering::assign(tx, res, STOCK_DOCS)?;
+    Ok(id)
+}
+
+/// Writes a document's lines (new rows; the lots of a stock receipt are
+/// made or filled in).
+fn write_lines(tx: &mut WriteTx, id: &str, lines: Vec<PreparedLine>) -> Result<()> {
+    for (i, l) in lines.into_iter().enumerate() {
         let lot_id = match &l.lot {
             LineLot::Known(id) => id.clone(),
             LineLot::Receive { month, details } => lots::receive(tx, &l.item, month, details)?,
@@ -475,8 +483,135 @@ pub fn create(tx: &mut WriteTx, input: &StockDocInput, res: &Reservation) -> Res
             }),
         )?;
     }
-    numbering::assign(tx, res, STOCK_DOCS)?;
-    Ok(id)
+    Ok(())
+}
+
+/// What a document's lines do to stock while it is posted, whether or not
+/// it is (a void document's lines still count for restoring it).
+fn lines_effect(conn: &Connection, id: &str) -> Result<Vec<Effect>> {
+    let (kind, from, to): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT kind, location_id, to_location_id FROM stock_docs WHERE id = ?1 AND _deleted = 0",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let from = from.unwrap_or_default();
+    let mut net: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    for (_, l) in lines_of(conn, Some(id))? {
+        let key = |loc: &str| (l.item_id.clone(), loc.to_string(), l.lot_id.clone());
+        if kind.as_deref() == Some("transfer") {
+            *net.entry(key(&from)).or_default() -= l.qty;
+            *net.entry(key(to.as_deref().unwrap_or_default()))
+                .or_default() += l.qty;
+        } else {
+            *net.entry(key(&from)).or_default() += l.qty;
+        }
+    }
+    Ok(net
+        .into_iter()
+        .map(|((item_id, location_id, lot_id), qty)| Effect {
+            item_id,
+            location_id,
+            lot_id,
+            qty,
+        })
+        .collect())
+}
+
+fn is_void(conn: &Connection, id: &str) -> Result<bool> {
+    let status: Option<Option<String>> = conn
+        .query_row(
+            "SELECT status FROM stock_docs WHERE id = ?1 AND _deleted = 0",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match status {
+        Some(s) => Ok(s.as_deref() == Some("void")),
+        None => Err(Error::Invalid("that document no longer exists".into())),
+    }
+}
+
+/// Checks an edit as [`update`] would, without writing.
+pub fn check_update(conn: &Connection, id: &str, input: &StockDocInput, today: &str) -> Result<()> {
+    let kind: Option<String> = conn.query_row(
+        "SELECT kind FROM stock_docs WHERE id = ?1 AND _deleted = 0",
+        [id],
+        |r| r.get(0),
+    )?;
+    if kind.as_deref() != Some(input.kind.as_str()) {
+        return Err(Error::Invalid(
+            "a document can't change its type: it is numbered from its own series".into(),
+        ));
+    }
+    let p = prepare(conn, input, today)?;
+    if is_void(conn, id)? {
+        return Ok(());
+    }
+    // Net of what the document did before and what it does now.
+    let mut net: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    for e in doc_effect(conn, id)? {
+        *net.entry((e.item_id, e.location_id, e.lot_id)).or_default() -= e.qty;
+    }
+    for e in p.effects {
+        *net.entry((e.item_id, e.location_id, e.lot_id)).or_default() += e.qty;
+    }
+    let effects: Vec<Effect> = net
+        .into_iter()
+        .map(|((item_id, location_id, lot_id), qty)| Effect {
+            item_id,
+            location_id,
+            lot_id,
+            qty,
+        })
+        .collect();
+    check_not_negative(conn, &effects, "")
+}
+
+/// Edits a stock document, posted or void: date, locations, reason, notes
+/// and lines. Its type and number stay. Stock moves by the difference.
+pub fn update(tx: &mut WriteTx, id: &str, input: &StockDocInput) -> Result<()> {
+    let today = manila_date_string(tx.now_ms());
+    check_update(tx.conn(), id, input, &today)?;
+    let p = prepare(tx.conn(), input, &today)?;
+    tx.update(
+        STOCK_DOCS,
+        id,
+        json!({
+            "date": p.date,
+            "location_id": input.location_id,
+            "to_location_id": p.to,
+            "reason": p.reason,
+            "notes": text_opt(&input.notes),
+        }),
+    )?;
+    for line in crate::domain::line_ids(tx, STOCK_DOC_LINES, "doc_id", id)? {
+        tx.delete(STOCK_DOC_LINES, &line)?;
+    }
+    write_lines(tx, id, p.lines)
+}
+
+/// Checks that a void document can be posted again, without writing.
+pub fn check_restore(conn: &Connection, id: &str) -> Result<()> {
+    if !is_void(conn, id)? {
+        return Err(Error::Invalid("that document isn't void".into()));
+    }
+    check_not_negative(conn, &lines_effect(conn, id)?, "can't restore: ")
+}
+
+/// Posts a void document again: its stock movements count again.
+pub fn restore(tx: &mut WriteTx, id: &str) -> Result<()> {
+    check_restore(tx.conn(), id)?;
+    tx.update(
+        STOCK_DOCS,
+        id,
+        json!({
+            "status": "posted",
+            "voided_at": null,
+            "voided_by": null,
+            "void_reason": null,
+        }),
+    )
+    .map(drop)
 }
 
 /// Voids a posted document: its stock movements no longer count.

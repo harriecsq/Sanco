@@ -23,9 +23,9 @@ _Business Development was removed on 2026-10-27 (user decision); see "BD removal
    - Alerts: sync conflicts and data issues.
    - To-dos: personal or shared, assignable, with due dates.
 2. ~~**Business Development:**~~ (removed 2026-10-27) client requests and inquiries (client or prospect, requested items, qty, quoted rate, follow-up date). Status: open → quoted → won/lost. A won request converts to a Booking.
-3. **Booking:** confirmed client orders (lines: item, qty, rate taken from the client's rate). Status: draft → confirmed → closed/cancelled. Creates DR requests.
+3. **Booking:** (changed in M15) the DR and invoice screen: every client order starts as a DR or invoice with client, items, qty, price and lot. Status: new → delivered, or cancelled. The old booking step is gone.
 4. **Accounting:**
-   - **DR requests:** requested → approved → delivered/cancelled, with the source location per DR. "Delivered" takes stock out.
+   - **DRs and invoices** moved to Booking in M15 (new → delivered/cancelled, source location per receipt; "delivered" takes stock out).
    - **Receivables:** delivered DR totals minus payments, with aging buckets.
    - **Checks received:** bank, check no., check date (PDC if in the future), amount. Status: on hand → deposited → cleared / bounced / replaced.
    - **Payments:** cash, check or bank transfer, allocated to DRs.
@@ -199,6 +199,7 @@ _Update this section when each milestone is finished: set its status, the date, 
 | BD removal | ✅ Code done | 2026-10-27 | See BD removal notes below. Commit `aea9cdf` on main. No schema change (still v12). |
 | M13 macOS support | 🟡 **Next.** Merged with HR, Mac build via GitHub Actions pending | 2026-10-31 | See M13 notes below. Branch `macos-support` (`a0bb228` and earlier; `3538159` "mac" left out: it committed `target/` and churned `package-lock.json`) merged into the HR branch as `claude/wonderful-edison-avq5gb`. Release builds (NSIS + universal DMG) run on GitHub Actions from a `v*` tag. Never run on a Mac yet. |
 | M14 Lots | 🟡 Code done, inventory import and release pending | 2026-11-02 | See M14 notes below. Plan: `docs/plans/m14-lots.md`. Boxes removed, lots added. Nothing committed yet; version not bumped (still 1.3.0). Schema **v14**: every PC must update together. |
+| M15 Receipts as orders + edit anytime | 🟡 Code done, UI click-through on a real PC pending | 2026-11-03 | See M15 notes below. DRs and invoices are the client's order (no booking step, no approval); every document is editable in any status. Version **1.7.0**. Schema **v15** (migration `0015_receipts_as_orders`): every PC must update together. |
 | HR | ✅ Code done | 2026-10-31 | See `docs/hr-plan.md` (plan + build notes). Commits `27557b0`, `9207142`. Released together with M13 as **1.3.0**. Schema **v13** (migration `0013_hr`): every PC must update together. |
 
 **M0 notes**
@@ -434,6 +435,29 @@ _Update this section when each milestone is finished: set its status, the date, 
 - **Not done:**
   - **UI click-through:** the disk filled up (≈3 GB free) while building a second target dir, which was then removed. Run `npm run app` (restart Vite first: there is a new route folder) and check the screens above. A copy of the M11 dev data is at `.dev/m12`.
   - `cargo fmt` also reformatted some untouched files (`examples/import_master.rs`, `domain/items.rs`, `domain/mod.rs`, `domain/purchasing.rs`, `tests/bank_accounts.rs`, `tests/inventory.rs`, `tests/orders.rs`). The changes are formatting only.
+
+**M15 notes (receipts as orders + edit anytime, 2026-11-03)**
+- **User decisions:**
+  - The Booking module is now the DR and invoice screen. A client order starts as a DR or invoice with client, items, qty, price and lot; there is no booking and no requested → approved stage. A receipt is **New → Delivered** (or Cancelled, or Void).
+  - Old bookings are hidden completely (no screen, no tab). Their DRs, invoices, receivables and payments keep working: payments allocate to DRs and invoices, never to bookings.
+  - **Every document is editable at any time**: DRs and invoices in any status (client, type DR↔invoice, number, lines, prices, lots, location, dates, also after delivery, cancelled or void), stock documents, receiving reports, cancelled POs, payments (also void ones, the method too) and posted payroll weeks. Only these checks stay: stock can't go below zero (per lot and location), and a delivered receipt's total can't go below what is paid on it. Dropped on purpose: "a payment stays with its client", "a delivered receipt can't change type", "a booking line on a DR can't be removed".
+  - From defaults to the **Office** for a new receipt (`LocationInfo.is_office`, the seeded `derived_id("location","office")`).
+- **Schema v15:** `delivery_receipts.client_ref`; `dr_lines.price_rule`, `dr_lines.notes`. No backfill: old lines read their price rule from their booking line (`COALESCE(l.price_rule, bl.price_rule)`). `DrStatus` is now `new | delivered | cancelled`; the strings `requested` and `approved` on old rows read as New (new rows store `new`). `approved_at` / `approved_by` stay in the schema, unused. `bookings`, `booking_lines`, `bookings.bd_request_id` stay in schema and registry (additive), nothing reads or writes them; series `BK` is gone from Settings → Number formats.
+- **Code:**
+  - `domain/bookings.rs` and `commands/bookings.rs` are deleted. `PriceSource` moved to `pricing.rs`.
+  - `delivery.rs`: `create` / `update` / `deliver` / `cancel` / `void` / `restore`, `number_plan`, `check_update`, `check_restore`. Commands in `commands/delivery.rs`: `save_receipt` (one command for enter and edit; claims the typed number or an automatic one first), `deliver_dr`, `set_dr_number`, `cancel_dr`, `void_dr`, `restore_dr`, `receipt_lots`, `receipt_number_modes`. The input types are `DrInput` / `DrLineInput` (`ReceiptInput` is purchasing's).
+  - **Lots:** optional while a receipt is New, required to deliver or edit a delivered one. Stock is checked only when delivered.
+  - **Numbers:** automatic series give the number when the receipt is entered (a cancelled one skips a number). Switching type frees the number and a delivered receipt needs the new booklet number in the same save.
+  - **Restore:** cancelled → New; void → Delivered (lots and stock re-checked). Also `inventory::update/restore` (type fixed: it is its own number series), `purchasing::update_receipt/restore_receipt`, `payments::restore`.
+  - **Payroll:** an edit to a posted week takes it back to live figures, applies the edit and posts it again in the same write (`hr::unpost_for_edit` / `repost`). If it can't be posted (nobody worked, deductions over pay) the whole edit is refused. Later posted weeks keep their snapshot. The re-post clamps "today" up to the week so a PC clock behind the week can't refuse it.
+  - **Dashboard:** "DRs to deliver" / "Invoices to deliver" link to `/bookings/?status=new` and `/bookings/invoices/?status=new`; the "Bookings to deliver" KPI is gone; new data issue "Payments applied to another client's DR or invoice" (a client change on a paid receipt is allowed).
+- **UI:** `/bookings/` (DRs) and `/bookings/invoices/` with a tab layout; `components/sales/receipt-form.tsx` is the one form (replaces `dr-request.tsx` and the booking form). Accounting keeps Receivables (now also at `/accounting/`), Payments, Checks, Bank accounts. The sidebar shows Booking to Accounting users too. Edit/Restore buttons on stock documents, receiving reports and payments; cancelled POs show Edit; HR attendance and deductions stay open on a posted week. The client page lost its Bookings tab.
+- **Gotchas:**
+  - Old links `/accounting/?id=` and `/accounting/invoices/?id=` (DR pages) no longer exist.
+  - Approve permission is no longer used for receipts: entering needs Booking (or Accounting) create, edit/deliver/number edit, cancel edit, void and restore delete.
+  - The approved-only KPI hint is now "N without a number yet".
+- **Verified:** `cargo test -p sanco-core -p sanco-net` (incl. `sim`), `cargo clippy --workspace`, `npm run build`. A Playwright run against the built UI with a stubbed backend covered entering a DR (Office default, lot choice, number), editing, delivering, and editing a delivered one into an invoice. **Not run on a real PC / Windows yet.**
+- **Linux build deps** (for the app crate and `npm run bindings` on Linux): `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`.
 
 **BD removal notes (2026-10-27)**
 - **User decision:** the Business Development module is no longer needed. Removed: `domain/bd.rs`, `commands/bd.rs` (5 commands), `report_bd` + `reports::bd_conversion`/`BdRow`/`win_rate`, routes `/bd/` and `/reports/bd/`, nav entry, Dashboard "Open requests" KPI, `Module::Bd`, series `BD` (const and Settings → Number formats row), `BookingInfo.bd_request_id`/`bd_no` and the "From request" link, `bookings::insert` (and the `quoted` flags in `prepare`).

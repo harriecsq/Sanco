@@ -93,8 +93,7 @@ pub fn set_company(tx: &mut WriteTx, c: &Company) -> Result<()> {
 // Number formats ------------------------------------------------------------
 
 /// Series shown in Settings → Number formats, with their labels.
-pub const SERIES: [(&str, &str); 9] = [
-    (series::BOOKING, "Bookings"),
+pub const SERIES: [(&str, &str); 8] = [
     (series::DR, "Delivery receipts"),
     (series::INVOICE, "Sales invoices"),
     (series::PAYMENT, "Payments"),

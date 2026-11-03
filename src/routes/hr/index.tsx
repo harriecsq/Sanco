@@ -75,7 +75,7 @@ export default component$(() => {
   });
 
   const d = data.value;
-  const editable = !!d && !d.posted && can(session.user, "hr", "edit");
+  const editable = !!d && can(session.user, "hr", "edit");
 
   return (
     <>
@@ -88,11 +88,10 @@ export default component$(() => {
       {d?.posted && (
         <div class="mb-3">
           <Alert tone="brand">
-            This week's payroll is posted, so attendance is locked.{" "}
+            This week's payroll is posted. A change here posts it again with the new days.{" "}
             <Link class="font-medium underline" href={`/hr/payroll/?week=${d.week}`}>
-              Void the payroll
-            </Link>{" "}
-            to change it.
+              Open the payroll
+            </Link>
           </Alert>
         </div>
       )}

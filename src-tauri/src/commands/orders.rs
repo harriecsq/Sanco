@@ -200,3 +200,29 @@ pub async fn void_po_receipt(
     })
     .await
 }
+
+/// Edits a receiving report (posted or void): stock and received quantities
+/// move by the difference.
+#[tauri::command]
+#[specta::specta]
+pub async fn update_po_receipt(
+    state: State<'_, AppState>,
+    id: String,
+    receipt: ReceiptInput,
+) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Orders, Action::Edit).await?;
+    blocking(move || {
+        db.write(user.actor(), move |tx| {
+            purchasing::update_receipt(tx, &id, &receipt)
+        })
+    })
+    .await
+}
+
+/// Posts a void receiving report again.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_po_receipt(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Orders, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| purchasing::restore_receipt(tx, &id))).await
+}

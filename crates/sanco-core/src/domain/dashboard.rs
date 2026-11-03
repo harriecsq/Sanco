@@ -11,7 +11,6 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::domain::auth::{Action, Module, Perms};
-use crate::domain::bookings::{self, BookingStatus, DeliveryProgress};
 use crate::domain::delivery::{self, DrStatus, ReceiptKind};
 use crate::domain::payments::{self, CheckStatus, PaymentStatus};
 use crate::domain::purchasing::{self, PoStatus};
@@ -141,41 +140,15 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
         issues: Vec::new(),
     };
 
-    if sees(Module::Bookings) {
-        let waiting = bookings::list(conn)?
-            .into_iter()
-            .filter(|b| {
-                b.status == BookingStatus::Confirmed && b.progress != DeliveryProgress::Full
-            })
-            .collect::<Vec<_>>();
-        let no_dr = waiting
-            .iter()
-            .filter(|b| b.progress == DeliveryProgress::None && b.open_drs == 0)
-            .count() as i64;
-        out.kpi(
-            Module::Bookings,
-            "bookings_to_deliver",
-            "Bookings to deliver",
-            waiting.len() as i64,
-            false,
-            format!("{no_dr} without a DR or invoice yet"),
-            Tone::Normal,
-            "/bookings/?status=to_deliver",
-        );
-    }
-
     let sees_drs = sees(Module::Accounting) || sees(Module::Bookings);
     if sees_drs {
         let all = delivery::list(conn)?;
         for kind in [ReceiptKind::Dr, ReceiptKind::Invoice] {
             let drs: Vec<_> = all.iter().filter(|d| d.kind == kind).collect();
-            let requested = drs
+            let to_deliver = drs.iter().filter(|d| d.status == DrStatus::New).count() as i64;
+            let no_number = drs
                 .iter()
-                .filter(|d| d.status == DrStatus::Requested)
-                .count() as i64;
-            let approved = drs
-                .iter()
-                .filter(|d| d.status == DrStatus::Approved)
+                .filter(|d| d.status == DrStatus::New && d.no.is_none())
                 .count() as i64;
             let (key, title, clash_key, clash_title, route) = match kind {
                 ReceiptKind::Dr => (
@@ -183,32 +156,25 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
                     "DRs to deliver",
                     "dr_clash",
                     "DR numbers used twice",
-                    "/accounting/",
+                    "/bookings/",
                 ),
                 ReceiptKind::Invoice => (
                     "invoices_open",
                     "Invoices to deliver",
                     "invoice_clash",
                     "Invoice numbers used twice",
-                    "/accounting/invoices/",
+                    "/bookings/invoices/",
                 ),
             };
             out.kpi(
-                Module::Accounting,
+                Module::Bookings,
                 key,
                 title,
-                requested + approved,
+                to_deliver,
                 false,
-                format!("{requested} to approve · {approved} approved"),
+                format!("{no_number} without a number yet"),
                 Tone::Normal,
-                &format!(
-                    "{route}?status={}",
-                    if requested > 0 {
-                        "requested"
-                    } else {
-                        "approved"
-                    }
-                ),
+                &format!("{route}?status=new"),
             );
             let clashes: Vec<String> = drs
                 .iter()
@@ -283,6 +249,29 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
             "DRs and invoices paid more than their total",
             overpaid,
             "/accounting/receivables/?bucket=credit",
+        );
+
+        let mismatched: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT n.no, COALESCE(r.vat, 0)
+                 FROM payment_allocations a
+                 JOIN payments p ON p.id = a.payment_id AND p._deleted = 0
+                 JOIN delivery_receipts r ON r.id = a.dr_id AND r._deleted = 0
+                 LEFT JOIN v_receipt_no n ON n.dr_id = r.id
+                 WHERE a._deleted = 0 AND COALESCE(a.amount_c, 0) <> 0
+                   AND p.client_id IS NOT r.client_id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(ReceiptKind::from_vat(r.get::<_, i64>(1)? != 0)
+                    .label(r.get::<_, Option<String>>(0)?.as_deref()))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        out.issue(
+            "payment_other_client",
+            "Payments applied to another client's DR or invoice",
+            mismatched,
+            "/accounting/payments/",
         );
 
         let pays = payments::list(conn, today)?;

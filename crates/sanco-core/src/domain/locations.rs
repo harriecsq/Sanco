@@ -20,6 +20,13 @@ pub struct LocationInfo {
     pub notes: Option<String>,
     pub sort: i64,
     pub active: bool,
+    /// The seeded Office: new DRs and invoices take their stock from it first.
+    pub is_office: bool,
+}
+
+/// Id of the seeded Office location.
+pub fn office_id() -> String {
+    ids::derived_id("location", "office")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,9 +44,12 @@ pub fn list(conn: &Connection) -> Result<Vec<LocationInfo>> {
         "SELECT id, name, notes, COALESCE(sort, 0), COALESCE(active, 1) FROM locations
          WHERE _deleted = 0 ORDER BY sort, name COLLATE NOCASE, id",
     )?;
+    let office = office_id();
     let rows = stmt.query_map([], |r| {
+        let id: String = r.get(0)?;
         Ok(LocationInfo {
-            id: r.get(0)?,
+            is_office: id == office,
+            id,
             name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
             notes: r.get(2)?,
             sort: r.get(3)?,
@@ -54,7 +64,11 @@ pub fn list(conn: &Connection) -> Result<Vec<LocationInfo>> {
 pub fn seed(tx: &mut WriteTx) -> Result<()> {
     let def = registry::table(LOCATIONS)?;
     for (key, name, sort) in [("office", "Office", 1), ("warehouse", "Warehouse", 2)] {
-        let id = ids::derived_id("location", key);
+        let id = if key == "office" {
+            office_id()
+        } else {
+            ids::derived_id("location", key)
+        };
         if def.load(tx.conn(), &id)?.is_none() {
             tx.insert(
                 LOCATIONS,

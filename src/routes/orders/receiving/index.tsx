@@ -1,8 +1,9 @@
-import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
+import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
 import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
   type LocationInfo,
+  type PoDetail,
   type ReceiptDetail,
   type ReceiptInfo,
   type SupplierChoice,
@@ -14,7 +15,7 @@ import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { OfflineBadge } from "~/components/sales/sales";
-import { ORDER_TABLES } from "~/components/orders/orders";
+import { ORDER_TABLES, ReceiveModal, receiveFormOf, type ReceiveForm } from "~/components/orders/orders";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
@@ -141,6 +142,9 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
   const reason = useSignal("");
   const voidError = useSignal("");
   const busy = useSignal(false);
+  const editOpen = useSignal(false);
+  const po = useSignal<PoDetail | null>(null);
+  const form = useStore<ReceiveForm>({ location_id: "", date: "", notes: "", rows: [] });
 
   useLiveLoad(
     ORDER_TABLES,
@@ -201,6 +205,42 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
             Void
           </button>
         )}
+        {r.voided && can(session.user, "orders", "delete") && (
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={async () => {
+              try {
+                unwrap(await commands.restorePoReceipt(id));
+                error.value = "";
+              } catch (e) {
+                error.value = errorText(e);
+              }
+            }}
+          >
+            Restore
+          </button>
+        )}
+        {can(session.user, "orders", "edit") && (
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={async () => {
+              try {
+                const p = unwrap(await commands.getPo(r.po_id));
+                const cur = detail.value;
+                if (!p || !cur) return;
+                po.value = p;
+                Object.assign(form, receiveFormOf(cur, p));
+                editOpen.value = true;
+              } catch (e) {
+                error.value = errorText(e);
+              }
+            }}
+          >
+            Edit
+          </button>
+        )}
       </PageHeader>
       {error.value && <Alert>{error.value}</Alert>}
       <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -245,9 +285,10 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
               ))}
             </tbody>
           </table>
-          {r.voided && <p class={[hint, "px-3 py-2"]}>Void: these goods don't count as received or in stock.</p>}
+          {r.voided && <p class={[hint, "px-3 py-2"]}>Void: these goods don't count as received or in stock. It can be edited and restored.</p>}
         </section>
       </div>
+      {po.value && <ReceiveModal open={editOpen} detail={po.value} form={form} editId={id} />}
       <Modal open={voidOpen} title={`Void ${r.no ?? "this report"}?`}>
         <form
           class="space-y-3"

@@ -206,7 +206,8 @@ fn payroll_matches_the_payslip() {
     assert!(!p.can_post);
     assert!(invalid(post(&a.db, &actor, W1)).contains("already posted"));
 
-    // Attendance is locked until the payroll is voided.
+    // Attendance of a posted week can still be changed: the payroll is
+    // posted again with the new days.
     let (e2, d) = (e.clone(), hr::week_days(W1)[0].clone());
     let set = |status| {
         let (e2, d) = (e2.clone(), d.clone());
@@ -214,16 +215,17 @@ fn payroll_matches_the_payslip() {
             hr::set_attendance(tx, &e2, &d, status, "sick")
         })
     };
-    assert!(invalid(set(A)).contains("posted"));
+    set(A).unwrap();
+    let p = payroll(&a.db, W1);
+    assert_eq!(p.status, PayrollStatus::Posted);
+    assert_eq!(p.rows[0].days, 5);
+    assert_eq!(p.rows[0].absent, 1);
+    assert_eq!(balance(&a.db, &loan), 191_400 - 47_850);
+    // Voiding still hands the deductions back.
     a.db.write(actor.clone(), |tx| hr::void_payroll(tx, W1))
         .unwrap();
     assert_eq!(balance(&a.db, &loan), 191_400);
-    set(A).unwrap();
-    // Re-posted with 5 days.
     post(&a.db, &actor, W1).unwrap();
-    let p = payroll(&a.db, W1);
-    assert_eq!(p.rows[0].days, 5);
-    assert_eq!(p.rows[0].absent, 1);
     assert_eq!(balance(&a.db, &loan), 191_400 - 47_850);
 }
 
@@ -420,4 +422,47 @@ fn debts_with_deductions_are_kept() {
 #[test]
 fn staff_roles_do_not_get_hr() {
     assert!(!Perms::staff().can(Module::Hr, Action::View));
+}
+
+#[test]
+fn posted_weeks_can_be_edited_and_are_posted_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let e = add_employee(&a.db, &actor, "Aquilino");
+    let d = add_debt(&a.db, &actor, debt(&e, DebtKind::Vale, 100_000, W1, 4));
+    full_week(&a.db, &actor, &e, W1);
+    post(&a.db, &actor, W1).unwrap();
+    let p = payroll(&a.db, W1);
+    assert_eq!(p.status, PayrollStatus::Posted);
+    assert_eq!((p.rows[0].days, charges(&a.db, W1, &d)), (6, 25_000));
+
+    // Attendance of a posted week can be changed: the payroll follows.
+    mark(&a.db, &actor, &e, W1, [P, P, P, P, P, A]);
+    let p = payroll(&a.db, W1);
+    assert_eq!(p.status, PayrollStatus::Posted);
+    assert_eq!(p.rows[0].days, 5);
+    assert_eq!(p.rows[0].gross_c, 5 * 76_000);
+
+    // So can a deduction.
+    a.db.write(actor.clone(), {
+        let (d, w) = (d.clone(), W1.to_string());
+        move |tx| hr::set_debt_charge(tx, &d, &w, Some(10_000))
+    })
+    .unwrap();
+    assert_eq!(payroll(&a.db, W1).status, PayrollStatus::Posted);
+    assert_eq!(charges(&a.db, W1, &d), 10_000);
+
+    // An edit that leaves the week unpostable is refused and changes nothing.
+    let days = hr::week_days(W1);
+    let (e2, days2) = (e.clone(), days.clone());
+    let msg = invalid(a.db.write(actor.clone(), move |tx| {
+        for day in &days2 {
+            hr::set_attendance(tx, &e2, day, A, "")?;
+        }
+        Ok(())
+    }));
+    assert!(msg.contains("nobody worked"), "{msg}");
+    let p = payroll(&a.db, W1);
+    assert_eq!((p.status, p.rows[0].days), (PayrollStatus::Posted, 5));
 }

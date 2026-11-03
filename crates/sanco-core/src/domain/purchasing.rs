@@ -586,9 +586,6 @@ pub fn create(tx: &mut WriteTx, input: &PoInput, res: &Reservation, costs: bool)
 pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool) -> Result<()> {
     let id = input.id.clone().unwrap_or_default();
     let old = existing(tx.conn(), &id)?;
-    if old.status == PoStatus::Cancelled {
-        return Err(Error::Invalid("this purchase order is cancelled".into()));
-    }
     let p = prepare(tx.conn(), input, costs, Some(&old))?;
     tx.update(
         PURCHASE_ORDERS,
@@ -950,13 +947,32 @@ struct ReceiptRow {
     qty: i64,
 }
 
+/// Checks a receiving report. `own`: the report being edited, whose own
+/// lines don't count against what is left to receive, and which may be
+/// saved on a PO in any status.
 fn prepare_receipt(
     conn: &Connection,
     input: &ReceiptInput,
     today: &str,
+    own: Option<&str>,
 ) -> Result<PreparedReceipt> {
     let old = existing(conn, &input.po_id)?;
+    let own_qty: HashMap<String, i64> = match own {
+        Some(rid) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT l.po_line_id, SUM(COALESCE(l.qty, 0)) FROM po_receipt_lines l
+                 JOIN po_receipts r ON r.id = l.receipt_id AND r._deleted = 0
+                                    AND r.status = 'posted'
+                 WHERE l._deleted = 0 AND l.receipt_id = ?1 AND l.po_line_id IS NOT NULL
+                 GROUP BY l.po_line_id",
+            )?;
+            let rows = stmt.query_map([rid], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        }
+        None => HashMap::new(),
+    };
     match old.status {
+        _ if own.is_some() => {}
         s if s.is_open() => {}
         PoStatus::Draft => {
             return Err(Error::Invalid(
@@ -1009,7 +1025,7 @@ fn prepare_receipt(
         )?;
         let sum = taken.entry(line.po_line_id.as_str()).or_default();
         *sum += line.qty;
-        let left = ordered - received;
+        let left = ordered - received + own_qty.get(&line.po_line_id).copied().unwrap_or(0);
         if *sum > left {
             return Err(Error::Invalid(format!(
                 "only {} of {code} left to receive (ordered {ordered}, received {received}); raise the PO quantity first",
@@ -1033,7 +1049,7 @@ fn prepare_receipt(
 /// Checks a receiving report as [`receive`] would, without writing. Call it
 /// before reserving a number.
 pub fn validate_receipt(conn: &Connection, input: &ReceiptInput, today: &str) -> Result<()> {
-    prepare_receipt(conn, input, today).map(drop)
+    prepare_receipt(conn, input, today, None).map(drop)
 }
 
 /// Posts a receiving report with the number reserved for it (`res.ref_id`
@@ -1046,7 +1062,7 @@ pub fn receive(tx: &mut WriteTx, input: &ReceiptInput, res: &Reservation) -> Res
         ));
     }
     let today = manila_date_string(tx.now_ms());
-    let p = prepare_receipt(tx.conn(), input, &today)?;
+    let p = prepare_receipt(tx.conn(), input, &today, None)?;
     let id = tx.insert(
         PO_RECEIPTS,
         json!({
@@ -1121,6 +1137,147 @@ pub fn void_receipt(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
             "voided_at": now,
             "voided_by": user,
             "void_reason": reason,
+        }),
+    )
+    .map(drop)
+}
+
+/// Checks an edit of a receiving report as [`update_receipt`] would, without
+/// writing.
+pub fn check_update_receipt(
+    conn: &Connection,
+    id: &str,
+    input: &ReceiptInput,
+    today: &str,
+) -> Result<()> {
+    let (po, status): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT po_id, status FROM po_receipts WHERE id = ?1 AND _deleted = 0",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::Invalid("that receiving report no longer exists".into()))?;
+    if po.as_deref() != Some(input.po_id.as_str()) {
+        return Err(Error::Invalid(
+            "a receiving report stays with its purchase order".into(),
+        ));
+    }
+    let p = prepare_receipt(conn, input, today, Some(id))?;
+    if status.as_deref() == Some("void") {
+        return Ok(());
+    }
+    // Net of what the report did before and what it does now.
+    let month = lots::month_of(&p.date).to_string();
+    let mut net: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    for e in inventory::doc_effect(conn, id)? {
+        *net.entry((e.item_id, e.location_id, e.lot_id)).or_default() -= e.qty;
+    }
+    for l in &p.lines {
+        *net.entry((
+            l.item.clone(),
+            input.location_id.clone(),
+            Some(lots::lot_id(&l.item, &month)),
+        ))
+        .or_default() += l.qty;
+    }
+    let effects: Vec<Effect> = net
+        .into_iter()
+        .map(|((item_id, location_id, lot_id), qty)| Effect {
+            item_id,
+            location_id,
+            lot_id,
+            qty,
+        })
+        .collect();
+    inventory::check_not_negative(conn, &effects, "")
+}
+
+/// Edits a receiving report, posted or void: date, location, notes and
+/// lines. Its number stays. Stock and received quantities move by the
+/// difference.
+pub fn update_receipt(tx: &mut WriteTx, id: &str, input: &ReceiptInput) -> Result<()> {
+    let today = manila_date_string(tx.now_ms());
+    check_update_receipt(tx.conn(), id, input, &today)?;
+    let p = prepare_receipt(tx.conn(), input, &today, Some(id))?;
+    tx.update(
+        PO_RECEIPTS,
+        id,
+        json!({
+            "date": p.date,
+            "location_id": input.location_id,
+            "notes": text_opt(&input.notes),
+        }),
+    )?;
+    for line in crate::domain::line_ids(tx, PO_RECEIPT_LINES, "receipt_id", id)? {
+        tx.delete(PO_RECEIPT_LINES, &line)?;
+    }
+    let month = lots::month_of(&p.date).to_string();
+    for (i, l) in p.lines.into_iter().enumerate() {
+        let lot_id = lots::receive(tx, &l.item, &month, &l.details)?;
+        tx.insert(
+            PO_RECEIPT_LINES,
+            json!({
+                "receipt_id": id,
+                "line_no": i as i64 + 1,
+                "po_line_id": l.po_line,
+                "item_id": l.item,
+                "qty": l.qty,
+                "lot_id": lot_id,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+/// Checks that a void receiving report can be posted again, without writing.
+pub fn check_restore_receipt(conn: &Connection, id: &str) -> Result<()> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM po_receipts WHERE id = ?1 AND _deleted = 0",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::Invalid("that receiving report no longer exists".into()))?;
+    if status.as_deref() != Some("void") {
+        return Err(Error::Invalid("that receiving report isn't void".into()));
+    }
+    // It adds stock and received quantity back; the PO must still have the
+    // lines and room for them.
+    let over: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE(i.code, '?') FROM po_receipt_lines rl
+             JOIN po_lines pl ON pl.id = rl.po_line_id AND pl._deleted = 0
+             LEFT JOIN v_po_received v ON v.po_line_id = pl.id
+             LEFT JOIN items i ON i.id = pl.item_id
+             WHERE rl._deleted = 0 AND rl.receipt_id = ?1
+             GROUP BY pl.id
+             HAVING COALESCE(v.qty, 0) + SUM(COALESCE(rl.qty, 0)) > COALESCE(pl.qty, 0)
+             LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(code) = over {
+        return Err(Error::Invalid(format!(
+            "can't restore: {code} would be received more than ordered; raise the PO quantity first"
+        )));
+    }
+    Ok(())
+}
+
+/// Posts a void receiving report again.
+pub fn restore_receipt(tx: &mut WriteTx, id: &str) -> Result<()> {
+    check_restore_receipt(tx.conn(), id)?;
+    tx.update(
+        PO_RECEIPTS,
+        id,
+        json!({
+            "status": "posted",
+            "voided_at": null,
+            "voided_by": null,
+            "void_reason": null,
         }),
     )
     .map(drop)

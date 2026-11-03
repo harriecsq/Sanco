@@ -15,7 +15,6 @@ import {
 } from "@builder.io/qwik-city";
 import {
   commands,
-  type BookingInfo,
   type ClientBalance,
   type ClientInfo,
   type DrInfo,
@@ -48,14 +47,11 @@ import {
   type RateForm,
 } from "~/components/rates/rates";
 import {
-  BOOKING_STATUS,
   DR_STATUS,
   DrNo,
   DrStatusBadge,
-  PROGRESS_LABEL,
   RECEIPT,
   receiptHref,
-  StatusBadge,
 } from "~/components/sales/sales";
 import {
   METHOD_LABEL,
@@ -277,7 +273,7 @@ const ClientFormModal = component$<{
               checked={form.active}
               onChange$={(_, el) => (form.active = el.checked)}
             />
-            Active (shown in pickers for new bookings)
+            Active (shown in pickers for new DRs and invoices)
           </label>
         )}
         <div class="flex justify-end gap-2 pt-2">
@@ -502,98 +498,12 @@ const BalanceList = component$<{ b: ClientBalance; unpaidHref?: string }>(({ b, 
   );
 });
 
-type DetailTab = "bookings" | "drs" | "invoices" | "payments" | "rates";
+type DetailTab = "drs" | "invoices" | "payments" | "rates";
 
 /** Rows per page in a tab. */
 const PAGE = 30;
 
 const dayOf = (d: DrInfo) => d.delivered_date ?? d.date;
-
-const BookingsTab = component$<{ rows: BookingInfo[] }>((props) => {
-  const loc = useLocation();
-  const shown = useComputed$(() => {
-    const f = filtersOf(loc.url, ["q", "from", "to", "status"]);
-    const q = f.q.toLowerCase();
-    return props.rows.filter(
-      (b) =>
-        (!q ||
-          [b.no, b.client_ref, b.summary, b.notes].some((v) => v?.toLowerCase().includes(q))) &&
-        (!f.from || b.date >= f.from) &&
-        (!f.to || b.date <= f.to) &&
-        (!f.status ||
-          (f.status === "to_deliver"
-            ? b.status === "confirmed" && b.progress !== "full"
-            : b.status === f.status)),
-    );
-  });
-  const pg = usePage(shown, PAGE);
-  const total = shown.value.reduce((s, b) => s + (b.status === "cancelled" ? 0 : b.totals.gross_c), 0);
-  return (
-    <>
-      <FilterBar
-        search="Search number, PO, items"
-        dates
-        selects={[
-          {
-            key: "status",
-            label: "Statuses",
-            options: [
-              ...(["draft", "confirmed", "closed", "cancelled"] as const).map((s) => ({
-                value: s,
-                label: BOOKING_STATUS[s].label,
-              })),
-              { value: "to_deliver", label: "Still to deliver" },
-            ],
-          },
-        ]}
-      >
-        <span class={hint}>
-          {shown.value.length} booking(s) · {formatPeso(total)}
-        </span>
-      </FilterBar>
-      <section class={[card, "overflow-x-auto"]}>
-        {shown.value.length === 0 ? (
-          <Empty>{props.rows.length ? "No bookings match." : "No bookings yet."}</Empty>
-        ) : (
-          <table class={table}>
-            <thead>
-              <tr>
-                <th class={th}>Number</th>
-                <th class={th}>Date</th>
-                <th class={th}>Items</th>
-                <th class={[th, "text-right"]}>Gross</th>
-                <th class={th}>Delivery</th>
-                <th class={th}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pg.value.rows.map((b) => (
-                <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
-                      {b.no ?? "—"}
-                    </Link>
-                    {b.client_ref && <span class={[hint, "block"]}>{b.client_ref}</span>}
-                  </td>
-                  <td class={[td, "whitespace-nowrap"]}>{formatDay(b.date)}</td>
-                  <td class={td}>{b.summary}</td>
-                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
-                  <td class={[td, "whitespace-nowrap"]}>
-                    {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
-                  </td>
-                  <td class={td}>
-                    <StatusBadge s={BOOKING_STATUS[b.status]} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <Pager of={pg} />
-      </section>
-    </>
-  );
-});
 
 /** The client's DRs or invoices. */
 const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
@@ -605,7 +515,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
     return props.rows.filter(
       (d) =>
         (!q ||
-          [d.no, d.booking_no, d.summary, d.received_by, d.notes].some((v) =>
+          [d.no, d.client_ref, d.summary, d.received_by, d.notes].some((v) =>
             v?.toLowerCase().includes(q),
           )) &&
         (!f.from || dayOf(d) >= f.from) &&
@@ -625,7 +535,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
   return (
     <>
       <FilterBar
-        search={`Search ${k.name} no., booking, items`}
+        search={`Search ${k.name} no., PO, items`}
         dates
         selects={[
           {
@@ -633,7 +543,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
             label: "Statuses",
             options: [
               { value: "unpaid", label: "Unpaid" },
-              ...(["requested", "approved", "delivered", "cancelled"] as const).map((s) => ({
+              ...(["new", "delivered", "cancelled"] as const).map((s) => ({
                 value: s,
                 label: DR_STATUS[s].label,
               })),
@@ -656,7 +566,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
               <tr>
                 <th class={th}>{k.title} no.</th>
                 <th class={th}>Date</th>
-                <th class={th}>Booking</th>
+                <th class={th}>Client's PO</th>
                 <th class={th}>Items</th>
                 <th class={[th, "text-right"]}>Gross</th>
                 <th class={[th, "text-right"]}>Balance</th>
@@ -672,7 +582,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
                     </Link>
                   </td>
                   <td class={[td, "whitespace-nowrap"]}>{formatDay(dayOf(d))}</td>
-                  <td class={[td, "whitespace-nowrap"]}>{d.booking_no ?? "—"}</td>
+                  <td class={[td, "whitespace-nowrap"]}>{d.client_ref ?? "—"}</td>
                   <td class={td}>{d.summary}</td>
                   <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
                   <td class={[td, "text-right tabular-nums"]}>
@@ -797,7 +707,6 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const client = useSignal<ClientInfo | null>(null);
   const missing = useSignal(false);
   const rates = useSignal<RateInfo[]>([]);
-  const bookings = useSignal<BookingInfo[]>([]);
   const drs = useSignal<DrInfo[]>([]);
   const drOnly = useComputed$(() => drs.value.filter((d) => d.kind === "dr"));
   const invoices = useComputed$(() => drs.value.filter((d) => d.kind === "invoice"));
@@ -821,8 +730,6 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
       "item_costs",
       "item_cost_charges",
       "settings",
-      "bookings",
-      "booking_lines",
       "delivery_receipts",
       "dr_lines",
       "payments",
@@ -835,9 +742,6 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         missing.value = !c;
         rates.value = unwrap(await commands.listRates({ client_id: id, item_id: null }));
         const user = session.user;
-        if (can(user, "bookings")) {
-          bookings.value = unwrap(await commands.listBookings()).filter((b) => b.client_id === id);
-        }
         if (can(user, "bookings") || can(user, "accounting")) {
           drs.value = unwrap(await commands.listDrs()).filter((d) => d.client_id === id);
         }
@@ -855,7 +759,6 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
   const tabs = useComputed$(() => {
     const user = session.user;
     const all: { key: DetailTab; label: string; count: number; show: boolean }[] = [
-      { key: "bookings", label: "Bookings", count: bookings.value.length, show: can(user, "bookings") },
       {
         key: "drs",
         label: "Delivery receipts",
@@ -987,7 +890,6 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         </div>
         <div class="min-w-0">
           <TabNav label="Client records" tabs={tabs.value.nav} />
-          {tabs.value.current === "bookings" && <BookingsTab rows={bookings.value} />}
           {tabs.value.current === "drs" && <DrsTab kind="dr" rows={drOnly.value} />}
           {tabs.value.current === "invoices" && (
             <DrsTab kind="invoice" rows={invoices.value} />

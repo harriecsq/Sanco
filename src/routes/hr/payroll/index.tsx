@@ -104,7 +104,8 @@ export default component$(() => {
 
   const p = data.value;
   const draft = !!p && p.status !== "posted";
-  const canEdit = can(session.user, "hr", "edit") && draft;
+  // A posted week can be edited too: it is posted again with the change.
+  const canEdit = can(session.user, "hr", "edit") && !!p;
   const canApprove = can(session.user, "hr", "approve");
   const worked = p?.rows.filter((r) => r.worked) ?? [];
   const sum = (f: (r: PayrollRow) => number) => worked.reduce((s, r) => s + f(r), 0);

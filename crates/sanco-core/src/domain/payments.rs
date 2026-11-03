@@ -297,9 +297,11 @@ struct Current {
     method: PayMethod,
     replaces: Option<String>,
     bank_account: Option<String>,
+    void: bool,
 }
 
-fn current(conn: &Connection, id: &str) -> Result<Current> {
+/// A live payment as it is now, void or not.
+fn current_any(conn: &Connection, id: &str) -> Result<Current> {
     type Row = (
         Option<String>,
         Option<String>,
@@ -316,14 +318,21 @@ fn current(conn: &Connection, id: &str) -> Result<Current> {
         .optional()?;
     let (method, status, replaces, bank_account) =
         row.ok_or_else(|| Error::Invalid("that payment no longer exists".into()))?;
-    if status.as_deref() == Some("void") {
-        return Err(Error::Invalid("this payment is void".into()));
-    }
     Ok(Current {
         method: PayMethod::parse(method.as_deref()),
         replaces,
         bank_account,
+        void: status.as_deref() == Some("void"),
     })
+}
+
+/// A live posted payment as it is now.
+fn current(conn: &Connection, id: &str) -> Result<Current> {
+    let cur = current_any(conn, id)?;
+    if cur.void {
+        return Err(Error::Invalid("this payment is void".into()));
+    }
+    Ok(cur)
 }
 
 /// A check `replaces` may name: the same client's, posted, a check, on hand
@@ -380,7 +389,7 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     let cur = input
         .id
         .as_deref()
-        .map(|id| current(conn, id))
+        .map(|id| current_any(conn, id))
         .transpose()?;
     let client: Option<i64> = conn
         .query_row(
@@ -392,15 +401,6 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     if client.is_none() {
         return Err(Error::Invalid("choose the client who paid".into()));
     }
-    if let (Some(id), Some(_)) = (&input.id, &cur) {
-        let owner: Option<String> =
-            conn.query_row("SELECT client_id FROM payments WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?;
-        if owner.as_deref() != Some(input.client_id.as_str()) {
-            return Err(Error::Invalid("a payment stays with its client".into()));
-        }
-    }
     let date = require_date(&input.date, "payment date")?;
     if date.as_str() > today {
         return Err(Error::Invalid(
@@ -409,11 +409,6 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     }
     if input.amount_c <= 0 {
         return Err(Error::Invalid("enter the amount received".into()));
-    }
-    if cur.as_ref().is_some_and(|c| c.method != input.method) {
-        return Err(Error::Invalid(
-            "the payment method can't change; void the payment and record it again".into(),
-        ));
     }
     let check = match (input.method, &input.check) {
         (PayMethod::Check, Some(c)) => Some((
@@ -599,16 +594,102 @@ pub fn create(tx: &mut WriteTx, input: &PaymentInput, res: &Reservation) -> Resu
     Ok(id)
 }
 
-/// Edits a posted payment: date, amount, details and allocations.
+/// Edits a payment, posted or void: method, date, amount, details and
+/// allocations. A new method clears the details of the old one.
 pub fn update(tx: &mut WriteTx, input: &PaymentInput) -> Result<()> {
     let id = input
         .id
         .clone()
         .ok_or_else(|| Error::Invalid("which payment?".into()))?;
     let today = manila_date_string(tx.now_ms());
+    let cur = current_any(tx.conn(), &id)?;
     let p = prepare(tx.conn(), input, &today)?;
-    tx.update(PAYMENTS, &id, fields(input, &p))?;
+    let mut data = fields(input, &p);
+    data["client_id"] = json!(input.client_id);
+    if cur.method != input.method {
+        data["method"] = json!(input.method.as_str());
+        // Whatever the old method recorded no longer applies.
+        data["check_status"] = json!(null);
+        data["deposited_date"] = json!(null);
+        data["deposit_account"] = json!(null);
+        data["cleared_date"] = json!(null);
+        data["bounced_date"] = json!(null);
+        data["bounce_reason"] = json!(null);
+        if input.method != PayMethod::BankTransfer {
+            data["bank_account_id"] = json!(null);
+        }
+        if input.method == PayMethod::Check {
+            data["check_status"] = json!(CheckStatus::OnHand.as_str());
+        }
+    }
+    tx.update(PAYMENTS, &id, data)?;
     write_allocations(tx, &id, &p.allocations)
+}
+
+/// Checks that a void payment can count again, without writing.
+pub fn check_restore(conn: &Connection, id: &str) -> Result<()> {
+    if !current_any(conn, id)?.void {
+        return Err(Error::Invalid("this payment isn't void".into()));
+    }
+    // Each DR it paid must have room for it again.
+    let mut stmt = conn.prepare(
+        "SELECT a.dr_id, a.amount_c, t.gross_c, t.status, n.no, COALESCE(r.vat, 0)
+         FROM payment_allocations a
+         JOIN v_dr_totals t ON t.dr_id = a.dr_id
+         JOIN delivery_receipts r ON r.id = a.dr_id
+         LEFT JOIN v_receipt_no n ON n.dr_id = a.dr_id
+         WHERE a.payment_id = ?1 AND a._deleted = 0 AND COALESCE(a.amount_c, 0) > 0",
+    )?;
+    type AllocRow = (String, i64, i64, Option<String>, Option<String>, i64);
+    let rows: Vec<AllocRow> = stmt
+        .query_map([id], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    for (dr, amount, gross, status, no, vat) in rows {
+        let name = ReceiptKind::from_vat(vat != 0).label(no.as_deref());
+        if status.as_deref() != Some("delivered") {
+            return Err(Error::Invalid(format!(
+                "can't restore: {name} isn't delivered; edit the allocations first"
+            )));
+        }
+        let paid_other: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(amount_c), 0) FROM v_allocations
+             WHERE dr_id = ?1 AND payment_id <> ?2",
+            (&dr, id),
+            |r| r.get(0),
+        )?;
+        if amount > gross - paid_other {
+            return Err(Error::Invalid(format!(
+                "can't restore: {name} has only {} left to pay; edit the allocations first",
+                peso((gross - paid_other).max(0))
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Posts a void payment again: it counts, and its DRs are paid again.
+pub fn restore(tx: &mut WriteTx, id: &str) -> Result<()> {
+    check_restore(tx.conn(), id)?;
+    tx.update(
+        PAYMENTS,
+        id,
+        json!({
+            "status": "posted",
+            "voided_at": null,
+            "voided_by": null,
+            "void_reason": null,
+        }),
+    )
+    .map(drop)
 }
 
 /// Voids a payment: it no longer counts, and the DRs it paid owe again.

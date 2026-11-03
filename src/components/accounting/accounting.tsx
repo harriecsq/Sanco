@@ -307,7 +307,6 @@ export const PaymentFormModal = component$<{
             <select
               class={input}
               required
-              disabled={!!form.id}
               onChange$={(_, el) => {
                 form.client_id = el.value;
                 form.replaces_id = "";
@@ -337,7 +336,6 @@ export const PaymentFormModal = component$<{
           <Field label="Method">
             <select
               class={input}
-              disabled={!!form.id}
               onChange$={(_, el) => (form.method = el.value as PayMethod)}
             >
               {(Object.keys(METHOD_LABEL) as PayMethod[]).map((m) => (

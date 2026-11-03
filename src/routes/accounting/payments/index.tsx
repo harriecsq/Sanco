@@ -315,7 +315,23 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
               Record replacement
             </button>
           )}
-        {p.status === "posted" && canEdit && (
+        {p.status === "void" && can(user, "accounting", "delete") && (
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={async () => {
+              try {
+                unwrap(await commands.restorePayment(id));
+                error.value = "";
+              } catch (e) {
+                error.value = errorText(e);
+              }
+            }}
+          >
+            Restore
+          </button>
+        )}
+        {canEdit && (
           <button
             q:slot="actions"
             class={btnPrimary}
@@ -438,7 +454,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
           {voidError.value && <Alert>{voidError.value}</Alert>}
           <p class="text-sm">
             The payment stops counting and the DRs and invoices it paid owe again, on every PC. It stays in the list, marked
-            void. This can't be undone.
+            void, and can be restored.
           </p>
           <Field label="Reason">
             <input class={input} required value={reason.value} onInput$={(_, el) => (reason.value = el.value)} />

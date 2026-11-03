@@ -1,18 +1,14 @@
 mod common;
 
 use common::{TestPeer, pull};
-use sanco_core::domain::bookings::{
-    self, BookingAction, BookingInput, BookingLineInput, BookingStatus, DeliveryProgress,
-    PriceSource,
-};
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::delivery::{
-    self, DeliverInput, DrLineInput, DrRequestInput, DrStatus, ReceiptKind,
+    self, DeliverInput, DrInput, DrLineInput, DrStatus, ReceiptKind,
 };
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
 use sanco_core::domain::lots;
-use sanco_core::domain::pricing::{self, RateInput};
+use sanco_core::domain::pricing::{self, PriceSource, RateInput};
 use sanco_core::domain::settings;
 use sanco_core::domain::users::{self, NewUser};
 use sanco_core::ids::derived_id;
@@ -132,25 +128,164 @@ fn receive_on(db: &Db, actor: &Actor, date: &str, item: &str, expiry: Option<&st
         .unwrap();
 }
 
-/// The lot a DR line takes, from the expiry the test names: the September
-/// lot expires 2026-12-31, the October one 2027-03-31. No expiry on an item
-/// that tracks one means no lot chosen.
-fn lot_of(db: &Db, booking_line: &str, expiry: Option<&str>) -> Option<String> {
-    let (item, tracks): (String, i64) = db
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT l.item_id, COALESCE(i.tracks_expiry, 0) FROM booking_lines l
-                 JOIN items i ON i.id = l.item_id WHERE l.id = ?1",
-                [booking_line],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?)
-        })
-        .unwrap();
-    match expiry {
-        None if tracks != 0 => None,
-        Some("2026-12-31") => Some(lots::lot_id(&item, "2026-09")),
-        _ => Some(lots::lot_id(&item, lots::month_of(TODAY))),
+/// The lot an item arrived in during `month` (`YYYY-MM`).
+fn lot(item: &str, month: &str) -> Option<String> {
+    Some(lots::lot_id(item, month))
+}
+
+/// This month's lot (what `receive` makes).
+fn lot_now(item: &str) -> Option<String> {
+    lot(item, lots::month_of(TODAY))
+}
+
+fn line(item: &str, qty: i64, price_c: Option<i64>, lot_id: Option<String>) -> DrLineInput {
+    DrLineInput {
+        id: None,
+        item_id: item.into(),
+        qty,
+        price_c,
+        lot_id,
+        notes: String::new(),
     }
+}
+
+/// A receipt of `kind` for the client, from the warehouse, dated today.
+fn input(client: &str, kind: ReceiptKind, lines: Vec<DrLineInput>) -> DrInput {
+    DrInput {
+        client_id: client.into(),
+        kind,
+        date: TODAY.into(),
+        from_location_id: warehouse(),
+        client_ref: "PO-77".into(),
+        deliver_to: String::new(),
+        notes: String::new(),
+        lines,
+    }
+}
+
+/// Enters a new receipt as the app does: checked first, then its typed
+/// number (`no`) is claimed with `peers`, then written.
+fn enter_with(
+    db: &Db,
+    actor: &Actor,
+    peers: &[&dyn NumberPeer],
+    input: DrInput,
+    no: Option<&str>,
+) -> Result<String> {
+    db.read(|c| delivery::validate(c, &input))?;
+    let id = db.new_id().unwrap();
+    let res = match no {
+        Some(no) => Some(numbering::reserve_exact(
+            db,
+            peers,
+            input.kind.series(),
+            no,
+            &id,
+        )?),
+        None => None,
+    };
+    let new_id = id.clone();
+    db.write(actor.clone(), move |tx| {
+        delivery::create(tx, &new_id, &input, res.as_ref())
+    })
+}
+
+fn enter(db: &Db, actor: &Actor, input: DrInput, no: Option<&str>) -> Result<String> {
+    enter_with(db, actor, &[], input, no)
+}
+
+/// The receipt as an edit input.
+fn as_input(db: &Db, id: &str) -> DrInput {
+    let d = db.read(|c| delivery::get(c, id)).unwrap().unwrap();
+    DrInput {
+        client_id: d.dr.client_id.clone().unwrap(),
+        kind: d.dr.kind,
+        date: d.dr.date.clone(),
+        from_location_id: d.dr.from_location_id.clone().unwrap(),
+        client_ref: d.dr.client_ref.clone().unwrap_or_default(),
+        deliver_to: d.dr.deliver_to.clone().unwrap_or_default(),
+        notes: d.dr.notes.clone().unwrap_or_default(),
+        lines: d
+            .lines
+            .iter()
+            .map(|l| DrLineInput {
+                id: Some(l.id.clone()),
+                item_id: l.item_id.clone(),
+                qty: l.qty,
+                price_c: Some(l.price_c),
+                lot_id: l.lot_id.clone(),
+                notes: l.notes.clone().unwrap_or_default(),
+            })
+            .collect(),
+    }
+}
+
+/// Saves an edit as the app does (a typed number is claimed first).
+fn save(
+    db: &Db,
+    actor: &Actor,
+    id: &str,
+    input: DrInput,
+    done: Option<DeliverInput>,
+    no: Option<&str>,
+) -> Result<()> {
+    let today = sanco_core::time::manila_date_string(db.now_ms());
+    db.read(|c| delivery::check_update(c, id, &input, done.as_ref(), no.is_some(), &today))?;
+    let plan = db.read(|c| delivery::number_plan(c, Some(id), input.kind))?;
+    let res = match no {
+        Some(no) => Some(numbering::reserve_exact(db, &[], plan.series, no, id)?),
+        None => None,
+    };
+    let id = id.to_string();
+    db.write(actor.clone(), move |tx| {
+        delivery::update(tx, &id, &input, done.as_ref(), res.as_ref())
+    })
+}
+
+/// Marks a receipt delivered on `date`, giving it `no` if typed.
+fn deliver(db: &Db, actor: &Actor, id: &str, date: &str, no: Option<&str>) -> Result<()> {
+    let input = DeliverInput {
+        date: date.into(),
+        received_by: "Store clerk".into(),
+    };
+    db.read(|c| delivery::check_deliver(c, id, &input, TODAY))?;
+    let res = match no {
+        Some(no) => Some(numbering::reserve_exact(
+            db,
+            &[],
+            db.read(|c| delivery::number_series(c, id))?,
+            no,
+            id,
+        )?),
+        None => None,
+    };
+    let id = id.to_string();
+    db.write(actor.clone(), move |tx| {
+        delivery::deliver(tx, &id, &input, res.as_ref())
+    })
+}
+
+fn act(
+    db: &Db,
+    actor: &Actor,
+    f: impl FnOnce(&mut sanco_core::repo::WriteTx) -> Result<()> + Send + 'static,
+) -> Result<()> {
+    db.write(actor.clone(), f)
+}
+
+fn dr(db: &Db, id: &str) -> delivery::DrInfo {
+    db.read(|c| delivery::get(c, id)).unwrap().unwrap().dr
+}
+
+fn lines_of(db: &Db, id: &str) -> Vec<delivery::DrLine> {
+    db.read(|c| delivery::get(c, id)).unwrap().unwrap().lines
+}
+
+fn typed(db: &Db, actor: &Actor, id: &str, no: &str) -> Result<()> {
+    let series = db.read(|c| delivery::number_series(c, id))?;
+    let res = numbering::reserve_exact(db, &[], series, no, id)?;
+    let id = id.to_string();
+    db.write(actor.clone(), move |tx| delivery::set_number(tx, &id, &res))
 }
 
 fn on_hand(db: &Db, item: &str) -> i64 {
@@ -161,115 +296,6 @@ fn on_hand(db: &Db, item: &str) -> i64 {
         .sum()
 }
 
-fn booking_line(item: &str, qty: i64, price_c: Option<i64>) -> BookingLineInput {
-    BookingLineInput {
-        id: None,
-        item_id: item.into(),
-        qty,
-        price_c,
-        notes: String::new(),
-    }
-}
-
-fn booking_input(client: &str, lines: Vec<BookingLineInput>) -> BookingInput {
-    BookingInput {
-        id: None,
-        client_id: client.into(),
-        date: TODAY.into(),
-        vat: true,
-        client_ref: "PO-77".into(),
-        deliver_to: String::new(),
-        notes: String::new(),
-        lines,
-    }
-}
-
-fn create_booking(db: &Db, actor: &Actor, input: BookingInput) -> String {
-    db.read(|c| bookings::validate(c, &input)).unwrap();
-    let id = db.new_id().unwrap();
-    let res = numbering::reserve(db, &[], series::BOOKING, &id).unwrap();
-    db.write(actor.clone(), move |tx| bookings::create(tx, &input, &res))
-        .unwrap()
-}
-
-fn set_status(db: &Db, actor: &Actor, id: &str, action: BookingAction) -> Result<()> {
-    let id = id.to_string();
-    db.write(actor.clone(), move |tx| {
-        bookings::set_status(tx, &id, action, "")
-    })
-}
-
-fn booking(db: &Db, id: &str) -> bookings::BookingDetail {
-    db.read(|c| bookings::get(c, id)).unwrap().unwrap()
-}
-
-fn request_dr(
-    db: &Db,
-    actor: &Actor,
-    booking_id: &str,
-    lines: Vec<(String, Option<&str>, i64)>,
-) -> Result<String> {
-    let input = DrRequestInput {
-        booking_id: booking_id.into(),
-        kind: None,
-        date: TODAY.into(),
-        from_location_id: warehouse(),
-        deliver_to: String::new(),
-        notes: String::new(),
-        lines: lines
-            .into_iter()
-            .map(|(booking_line_id, expiry, qty)| DrLineInput {
-                id: None,
-                lot_id: lot_of(db, &booking_line_id, expiry),
-                booking_line_id,
-                qty,
-            })
-            .collect(),
-    };
-    db.write(actor.clone(), move |tx| delivery::request(tx, &input))
-}
-
-/// Approves with a typed DR number (`None`: no number yet).
-fn approve(
-    db: &Db,
-    actor: &Actor,
-    peers: &[&dyn NumberPeer],
-    id: &str,
-    no: Option<&str>,
-) -> Result<()> {
-    let res = match no {
-        Some(no) => Some(numbering::reserve_exact(
-            db,
-            peers,
-            db.read(|c| delivery::number_series(c, id))?,
-            no,
-            id,
-        )?),
-        None => None,
-    };
-    let id = id.to_string();
-    db.write(actor.clone(), move |tx| {
-        delivery::approve(tx, &id, res.as_ref())
-    })
-}
-
-fn deliver(db: &Db, actor: &Actor, id: &str, date: &str) -> Result<()> {
-    let (id, input) = (
-        id.to_string(),
-        DeliverInput {
-            date: date.into(),
-            received_by: "Store clerk".into(),
-        },
-    );
-    db.write(actor.clone(), move |tx| {
-        delivery::deliver(tx, &id, &input, None)
-    })
-}
-
-fn dr(db: &Db, id: &str) -> delivery::DrInfo {
-    db.read(|c| delivery::get(c, id)).unwrap().unwrap().dr
-}
-
 fn invalid<T: std::fmt::Debug>(r: Result<T>) -> String {
     match r {
         Err(Error::Invalid(msg)) => msg,
@@ -278,7 +304,7 @@ fn invalid<T: std::fmt::Debug>(r: Result<T>) -> String {
 }
 
 #[test]
-fn booking_to_delivered_dr() {
+fn receipt_from_entry_to_delivered() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
@@ -289,132 +315,64 @@ fn booking_to_delivered_dr() {
     receive(&a.db, &actor, &tape, None, 100);
     let client = add_client(&a.db, &actor, "Mercury Drug Cubao", None);
 
-    // Gloves at a typed ₱120, tape at the item default ₱125.
-    let bk_id = create_booking(
+    // Gloves at a typed ₱120, tape at the item default ₱125. The order
+    // starts as a receipt: no booking, no approval.
+    let id = enter(
         &a.db,
         &actor,
-        booking_input(
+        input(
             &client,
+            ReceiptKind::Invoice,
             vec![
-                booking_line(&glv, 30, Some(12_000)),
-                booking_line(&tape, 20, None),
+                line(&glv, 25, Some(12_000), lot_now(&glv)),
+                line(&tape, 20, None, lot_now(&tape)),
             ],
         ),
-    );
-    let det = booking(&a.db, &bk_id);
-    assert_eq!(det.booking.no.as_deref(), Some("BK-2026-0001"));
-    assert_eq!(det.booking.status, BookingStatus::Draft);
-    assert_eq!(det.lines.len(), 2);
+        None,
+    )
+    .unwrap();
+    let d = dr(&a.db, &id);
+    assert_eq!(d.status, DrStatus::New);
+    assert_eq!((d.kind, d.no.clone()), (ReceiptKind::Invoice, None));
+    assert_eq!(d.client_ref.as_deref(), Some("PO-77"));
+    assert_eq!(d.booking_id, None);
+    let ls = lines_of(&a.db, &id);
     assert_eq!(
-        (det.lines[0].price_c, det.lines[0].price_rule),
+        (ls[0].price_c, ls[0].price_rule),
         (12_000, PriceSource::Custom)
     );
     assert_eq!(
-        (det.lines[1].price_c, det.lines[1].price_rule),
+        (ls[1].price_c, ls[1].price_rule),
         (12_500, PriceSource::ItemDefault)
     );
-    let net = 30 * 12_000 + 20 * 12_500;
-    assert_eq!(det.booking.totals.net_c, net);
-    // The price typed is final: no VAT on top, even for a Sales Invoice.
-    assert_eq!(det.booking.totals.vat_c, 0);
-    assert_eq!(det.booking.totals.gross_c, net);
-
-    // No DRs before it is confirmed.
-    let gl = det.lines[0].id.clone();
-    let tl = det.lines[1].id.clone();
-    let msg = invalid(request_dr(
-        &a.db,
-        &actor,
-        &bk_id,
-        vec![(gl.clone(), Some("2027-03-31"), 5)],
-    ));
-    assert!(msg.contains("confirmed"), "{msg}");
-    set_status(&a.db, &actor, &bk_id, BookingAction::Confirm).unwrap();
-    // A confirmed booking stays editable.
-    let det = booking(&a.db, &bk_id);
-    let mut edit = booking_input(&client, vec![]);
-    edit.id = Some(bk_id.clone());
-    edit.client_ref = "PO-78".into();
-    edit.lines = det
-        .lines
-        .iter()
-        .map(|l| BookingLineInput {
-            id: Some(l.id.clone()),
-            item_id: l.item_id.clone(),
-            qty: l.qty,
-            price_c: Some(l.price_c),
-            notes: String::new(),
-        })
-        .collect();
-    a.db.write(actor.clone(), move |tx| bookings::update(tx, &edit))
-        .unwrap();
+    // The price typed is final: no VAT on top, even for an invoice.
+    let net = 25 * 12_000 + 20 * 12_500;
     assert_eq!(
-        booking(&a.db, &bk_id).booking.client_ref.as_deref(),
-        Some("PO-78")
+        (d.totals.net_c, d.totals.vat_c, d.totals.gross_c),
+        (net, 0, net)
     );
+    // Entering moves no stock.
+    assert_eq!(on_hand(&a.db, &glv), 60);
 
-    // DR 1: 25 gloves from the 2027 lot and all the tape.
-    let msg = invalid(request_dr(
-        &a.db,
-        &actor,
-        &bk_id,
-        vec![(gl.clone(), None, 5)],
-    ));
-    assert!(msg.contains("lot"), "{msg}");
-    let msg = invalid(request_dr(
-        &a.db,
-        &actor,
-        &bk_id,
-        vec![(gl.clone(), Some("2026-12-31"), 15)],
-    ));
-    assert!(msg.contains("not enough GLV"), "{msg}");
-    let dr1 = request_dr(
-        &a.db,
-        &actor,
-        &bk_id,
-        vec![(gl.clone(), Some("2027-03-31"), 25), (tl.clone(), None, 20)],
-    )
-    .unwrap();
-    assert_eq!(dr(&a.db, &dr1).no, None);
-    // Only 5 gloves are left to request.
-    let msg = invalid(request_dr(
-        &a.db,
-        &actor,
-        &bk_id,
-        vec![(gl.clone(), Some("2026-12-31"), 6)],
-    ));
-    assert!(msg.contains("only 5 box of GLV"), "{msg}");
-    let det = booking(&a.db, &bk_id);
-    assert_eq!((det.lines[0].pending, det.lines[0].remaining), (25, 5));
-    assert_eq!(det.booking.open_drs, 1);
-    // A booking with DRs can't be cancelled or closed while one is open.
-    invalid(set_status(&a.db, &actor, &bk_id, BookingAction::Cancel));
-    invalid(set_status(&a.db, &actor, &bk_id, BookingAction::Close));
-
-    // Approve without a number; delivering then needs one.
-    invalid(deliver(&a.db, &actor, &dr1, TODAY));
-    approve(&a.db, &actor, &[], &dr1, None).unwrap();
-    assert!(invalid(deliver(&a.db, &actor, &dr1, TODAY)).contains("invoice number"));
-    assert!(invalid(deliver(&a.db, &actor, &dr1, "2026-10-22")).contains("future"));
-    let res = numbering::reserve_exact(&a.db, &[], series::INVOICE, " 0012345 ", &dr1).unwrap();
+    // Delivering needs the number, the lots, and a date that isn't future.
+    assert!(invalid(deliver(&a.db, &actor, &id, TODAY, None)).contains("invoice number"));
+    assert!(invalid(deliver(&a.db, &actor, &id, "2026-10-22", Some("12345"))).contains("future"));
+    let res = numbering::reserve_exact(&a.db, &[], series::INVOICE, " 0012345 ", &id).unwrap();
     assert!(res.manual);
-    let id = dr1.clone();
-    a.db.write(actor.clone(), move |tx| delivery::set_number(tx, &id, &res))
-        .unwrap();
-    // A typo is corrected in place; the old text is kept.
-    let res = numbering::reserve_exact(&a.db, &[], series::INVOICE, "0012346", &dr1).unwrap();
-    let id = dr1.clone();
-    a.db.write(actor.clone(), move |tx| delivery::set_number(tx, &id, &res))
-        .unwrap();
-    assert_eq!(dr(&a.db, &dr1).no.as_deref(), Some("0012346"));
+    let rid = id.clone();
+    a.db.write(actor.clone(), move |tx| {
+        delivery::set_number(tx, &rid, &res)
+    })
+    .unwrap();
+    // A typo is corrected in place.
+    typed(&a.db, &actor, &id, "0012346").unwrap();
+    assert_eq!(dr(&a.db, &id).no.as_deref(), Some("0012346"));
     a.clock.advance(60_000);
-    deliver(&a.db, &actor, &dr1, TODAY).unwrap();
-
-    let d = dr(&a.db, &dr1);
+    deliver(&a.db, &actor, &id, TODAY, None).unwrap();
+    let d = dr(&a.db, &id);
     assert_eq!(d.status, DrStatus::Delivered);
     assert!(d.no_manual && d.no_confirmed && !d.no_clash);
     assert_eq!(d.received_by.as_deref(), Some("Store clerk"));
-    assert_eq!(d.totals.net_c, 25 * 12_000 + 20 * 12_500);
     assert_eq!(on_hand(&a.db, &glv), 35);
     assert_eq!(on_hand(&a.db, &tape), 80);
     let moves = a.db.read(|c| inventory::item_moves(c, &glv)).unwrap();
@@ -423,60 +381,93 @@ fn booking_to_delivered_dr() {
         (moves[0].qty, moves[0].no.as_deref()),
         (-25, Some("0012346"))
     );
+    assert_eq!(
+        deliver(&a.db, &actor, &id, TODAY, None).map_err(|e| e.to_string()),
+        Err("this invoice is already delivered".to_string())
+    );
 
-    // DR 2 reuses the number: refused.
-    let dr2 = request_dr(
+    // A second receipt can't reuse the number, nor type a bad one.
+    let second = enter(
         &a.db,
         &actor,
-        &bk_id,
-        vec![(gl.clone(), Some("2026-12-31"), 5)],
+        input(
+            &client,
+            ReceiptKind::Invoice,
+            vec![line(&glv, 15, None, lot(&glv, "2026-09"))],
+        ),
+        Some("12346"),
+    );
+    assert!(invalid(second).contains("already used"));
+    let bad = enter(
+        &a.db,
+        &actor,
+        input(
+            &client,
+            ReceiptKind::Invoice,
+            vec![line(&glv, 1, None, lot_now(&glv))],
+        ),
+        Some("12-3"),
+    );
+    invalid(bad);
+    // It can be entered with the lot still open; the stock is checked when
+    // it is delivered (the September lot holds 10, not 15).
+    let second = enter(
+        &a.db,
+        &actor,
+        input(
+            &client,
+            ReceiptKind::Invoice,
+            vec![line(&glv, 15, None, lot(&glv, "2026-09"))],
+        ),
+        Some("0012347"),
     )
     .unwrap();
-    let msg = invalid(approve(&a.db, &actor, &[], &dr2, Some("12346")));
-    assert!(msg.contains("already used"), "{msg}");
-    invalid(approve(&a.db, &actor, &[], &dr2, Some("12-3")));
-    approve(&a.db, &actor, &[], &dr2, Some("0012347")).unwrap();
-    deliver(&a.db, &actor, &dr2, TODAY).unwrap();
-    let det = booking(&a.db, &bk_id);
-    assert_eq!(det.booking.progress, DeliveryProgress::Full);
-    assert_eq!(det.drs.len(), 2);
+    assert!(invalid(deliver(&a.db, &actor, &second, TODAY, None)).contains("not enough GLV"));
+    let mut open = as_input(&a.db, &second);
+    open.lines[0].lot_id = None;
+    save(&a.db, &actor, &second, open, None, None).unwrap();
+    assert!(invalid(deliver(&a.db, &actor, &second, TODAY, None)).contains("choose the lot"));
+    // A lot of another item is refused.
+    let mut wrong = as_input(&a.db, &second);
+    wrong.lines[0].lot_id = lot_now(&tape);
+    assert!(invalid(save(&a.db, &actor, &second, wrong, None, None)).contains("doesn't hold GLV"));
+    let mut fixed = as_input(&a.db, &second);
+    fixed.lines[0].qty = 10;
+    fixed.lines[0].lot_id = lot(&glv, "2026-09");
+    save(&a.db, &actor, &second, fixed, None, None).unwrap();
+    deliver(&a.db, &actor, &second, TODAY, None).unwrap();
+    assert_eq!(on_hand(&a.db, &glv), 25);
 
-    // Voiding a delivered DR puts its stock back; cancelling is for open ones.
-    invalid(a.db.write(actor.clone(), {
-        let id = dr2.clone();
+    // Voiding puts the stock back; cancelling is for new ones.
+    invalid(act(&a.db, &actor, {
+        let id = second.clone();
         move |tx| delivery::cancel(tx, &id, "")
     }));
-    invalid(a.db.write(actor.clone(), {
-        let id = dr2.clone();
+    invalid(act(&a.db, &actor, {
+        let id = second.clone();
         move |tx| delivery::void(tx, &id, " ")
     }));
-    a.db.write(actor.clone(), {
-        let id = dr2.clone();
+    act(&a.db, &actor, {
+        let id = second.clone();
         move |tx| delivery::void(tx, &id, "wrong lot")
     })
     .unwrap();
-    assert!(dr(&a.db, &dr2).voided);
+    assert!(dr(&a.db, &second).voided);
     assert_eq!(on_hand(&a.db, &glv), 35);
-    let det = booking(&a.db, &bk_id);
-    assert_eq!(det.booking.progress, DeliveryProgress::Partial);
-    assert_eq!(det.lines[0].remaining, 5);
-
-    set_status(&a.db, &actor, &bk_id, BookingAction::Close).unwrap();
-    assert_eq!(booking(&a.db, &bk_id).booking.status, BookingStatus::Closed);
 
     // Used master data can't be deleted.
-    invalid(a.db.write(actor.clone(), {
+    invalid(act(&a.db, &actor, {
         let id = glv.clone();
         move |tx| items::delete(tx, &id)
     }));
-    invalid(a.db.write(actor.clone(), {
+    invalid(act(&a.db, &actor, {
         let id = client.clone();
         move |tx| clients::delete(tx, &id)
     }));
 }
 
 #[test]
-fn booking_prices_follow_resolution_and_keep_their_rule() {
+fn receipt_prices_follow_resolution_and_keep_their_rule() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
@@ -495,21 +486,22 @@ fn booking_prices_follow_resolution_and_keep_their_rule() {
     a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate))
         .unwrap();
 
-    let id = create_booking(
+    let id = enter(
         &a.db,
         &actor,
-        booking_input(
+        input(
             &client,
+            ReceiptKind::Dr,
             vec![
-                booking_line(&glv, 2, None),
-                booking_line(&tape, 3, None),
-                booking_line(&mask, 4, Some(9_000)),
+                line(&glv, 2, None, None),
+                line(&tape, 3, None, None),
+                line(&mask, 4, Some(9_000), None),
             ],
         ),
-    );
-    let det = booking(&a.db, &id);
-    let got: Vec<_> = det
-        .lines
+        None,
+    )
+    .unwrap();
+    let got: Vec<_> = lines_of(&a.db, &id)
         .iter()
         .map(|l| (l.price_c, l.price_rule))
         .collect();
@@ -521,11 +513,23 @@ fn booking_prices_follow_resolution_and_keep_their_rule() {
             (9_000, PriceSource::Custom),
         ]
     );
-    assert!(det.lines[2].below_cost);
-    assert_eq!(det.booking.no.as_deref(), Some("BK-2026-0001"));
+    // Below cost shows on the detail (₱100 cost).
+    assert!(lines_of(&a.db, &id)[2].below_cost);
+    // No price and nothing to work it out from is refused.
+    let none = a.db.read(|c| {
+        delivery::validate(
+            c,
+            &input(
+                &client,
+                ReceiptKind::Dr,
+                vec![line("missing", 1, None, None)],
+            ),
+        )
+    });
+    invalid(none);
 
-    // The rate changes; re-saving the draft with the same prices keeps
-    // each line's rule, and a removed line goes away.
+    // The rate changes; re-saving with the same prices keeps each line's
+    // rule, and a removed line goes away.
     let rate = RateInput {
         client_id: client.clone(),
         item_id: glv.clone(),
@@ -535,56 +539,29 @@ fn booking_prices_follow_resolution_and_keep_their_rule() {
     };
     a.db.write(actor.clone(), move |tx| pricing::save_rate(tx, &rate))
         .unwrap();
-    let mut edit = booking_input(&client, vec![]);
-    edit.id = Some(id.clone());
-    edit.vat = false;
-    edit.lines = det.lines[..2]
-        .iter()
-        .map(|l| BookingLineInput {
-            id: Some(l.id.clone()),
-            item_id: l.item_id.clone(),
-            qty: l.qty,
-            price_c: Some(l.price_c),
-            notes: String::new(),
-        })
-        .collect();
-    a.db.write(actor.clone(), move |tx| bookings::update(tx, &edit))
-        .unwrap();
-    let det = booking(&a.db, &id);
-    assert_eq!(det.lines.len(), 2);
+    let mut edit = as_input(&a.db, &id);
+    edit.lines.truncate(2);
+    save(&a.db, &actor, &id, edit, None, None).unwrap();
+    let ls = lines_of(&a.db, &id);
+    assert_eq!(ls.len(), 2);
     assert_eq!(
-        (det.lines[0].price_c, det.lines[0].price_rule),
+        (ls[0].price_c, ls[0].price_rule),
         (15_000, PriceSource::Manual)
     );
-    assert_eq!(det.booking.totals.vat_c, 0);
-    assert_eq!(det.booking.totals.gross_c, 2 * 15_000 + 3 * 20_000);
-
-    // Drafts can be deleted; confirmed bookings only cancelled.
-    set_status(&a.db, &actor, &id, BookingAction::Confirm).unwrap();
-    invalid(a.db.write(actor.clone(), {
-        let id = id.clone();
-        move |tx| bookings::delete(tx, &id)
-    }));
-    set_status(&a.db, &actor, &id, BookingAction::BackToDraft).unwrap();
-    a.db.write(actor.clone(), {
-        let id = id.clone();
-        move |tx| bookings::delete(tx, &id)
-    })
-    .unwrap();
-    assert!(a.db.read(|c| bookings::get(c, &id)).unwrap().is_none());
+    // Blank price on an edited line takes the new rate.
+    let mut edit = as_input(&a.db, &id);
+    edit.lines[0].price_c = None;
+    save(&a.db, &actor, &id, edit, None, None).unwrap();
+    assert_eq!(lines_of(&a.db, &id)[0].price_c, 16_000);
+    assert_eq!(dr(&a.db, &id).totals.gross_c, 2 * 16_000 + 3 * 20_000);
 }
 
 #[test]
-fn automatic_dr_numbers_after_switching_mode() {
+fn automatic_receipt_numbers_after_switching_mode() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
     assert!(a.db.read(|c| numbering::is_manual(c, series::DR)).unwrap());
-    assert!(
-        !a.db
-            .read(|c| numbering::is_manual(c, series::BOOKING))
-            .unwrap()
-    );
     invalid(a.db.write(actor.clone(), |tx| {
         settings::set_number_mode(tx, series::BOOKING, true)
     }));
@@ -597,39 +574,34 @@ fn automatic_dr_numbers_after_switching_mode() {
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &tape, None, 10);
     let client = add_client(&a.db, &actor, "Watsons", None);
-    let mut input = booking_input(&client, vec![booking_line(&tape, 4, None)]);
-    input.vat = false;
-    let bk = create_booking(&a.db, &actor, input);
-    set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
-    let line = booking(&a.db, &bk).lines[0].id.clone();
-    let id = request_dr(&a.db, &actor, &bk, vec![(line, None, 4)]).unwrap();
-    assert_eq!(dr(&a.db, &id).kind, ReceiptKind::Dr);
+    let inp = input(
+        &client,
+        ReceiptKind::Dr,
+        vec![line(&tape, 4, None, lot_now(&tape))],
+    );
+    // Given when it is entered.
+    let id = a.db.new_id().unwrap();
     let res = numbering::reserve(&a.db, &[], series::DR, &id).unwrap();
-    let dr_id = id.clone();
+    let (rid, inp2) = (id.clone(), inp.clone());
     a.db.write(actor.clone(), move |tx| {
-        delivery::approve(tx, &dr_id, Some(&res))
+        delivery::create(tx, &rid, &inp2, Some(&res))
     })
     .unwrap();
     let d = dr(&a.db, &id);
     assert_eq!(d.no.as_deref(), Some("DR-2026-0001"));
     assert!(!d.no_manual);
+    deliver(&a.db, &actor, &id, TODAY, None).unwrap();
+    assert_eq!(dr(&a.db, &id).status, DrStatus::Delivered);
 }
 
 #[test]
-fn offline_typed_dr_numbers_are_flagged_not_renumbered() {
+fn offline_typed_receipt_numbers_are_flagged_not_renumbered() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &tape, None, 100);
     let client = add_client(&a.db, &actor, "Watsons", None);
-    let bk = create_booking(
-        &a.db,
-        &actor,
-        booking_input(&client, vec![booking_line(&tape, 50, None)]),
-    );
-    set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
-    let line = booking(&a.db, &bk).lines[0].id.clone();
 
     let b = TestPeer::new(dir.path(), "b", 2);
     pull(&b.db, &a.db, 100);
@@ -648,23 +620,23 @@ fn offline_typed_dr_numbers_are_flagged_not_renumbered() {
     let ben = Actor::user(ben);
 
     // Both PCs, offline from each other, type booklet number 500.
-    let da = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 10)]).unwrap();
-    approve(&a.db, &actor, &[&Down], &da, Some("500")).unwrap();
+    let mk = || {
+        input(
+            &client,
+            ReceiptKind::Invoice,
+            vec![line(&tape, 10, None, lot_now(&tape))],
+        )
+    };
+    let da = enter_with(&a.db, &actor, &[&Down], mk(), Some("500")).unwrap();
     b.clock.advance(1_000);
-    let db_ = request_dr(&b.db, &ben, &bk, vec![(line.clone(), None, 10)]).unwrap();
-    approve(&b.db, &ben, &[&Down], &db_, Some("500")).unwrap();
+    let db_ = enter_with(&b.db, &ben, &[&Down], mk(), Some("500")).unwrap();
     assert!(!dr(&a.db, &da).no_confirmed);
 
     pull(&a.db, &b.db, 100);
     pull(&b.db, &a.db, 100);
-    // Nobody renumbers a typed number; B (the later one) flags it.
+    // Nobody renumbers a typed number; both show the clash.
     assert!(
         numbering::resolve_clashes(&a.db, &[&b.db])
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        numbering::resolve_clashes(&b.db, &[&a.db])
             .unwrap()
             .is_empty()
     );
@@ -706,7 +678,7 @@ fn offline_typed_dr_numbers_are_flagged_not_renumbered() {
 }
 
 #[test]
-fn dr_lines_stay_editable_even_after_delivery() {
+fn receipts_can_be_edited_in_any_status() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
@@ -716,92 +688,61 @@ fn dr_lines_stay_editable_even_after_delivery() {
     receive_on(&a.db, &actor, "2026-09-15", &glv, Some("2026-12-31"), 10);
     receive(&a.db, &actor, &tape, None, 100);
     let client = add_client(&a.db, &actor, "Watsons", None);
-    let bk = create_booking(
+    let other = add_client(&a.db, &actor, "Mercury", None);
+    let oct = lot_now(&glv);
+    let sep = lot(&glv, "2026-09");
+
+    let id = enter(
         &a.db,
         &actor,
-        booking_input(
+        input(
             &client,
-            vec![booking_line(&glv, 60, None), booking_line(&tape, 30, None)],
+            ReceiptKind::Dr,
+            vec![line(&glv, 20, None, oct.clone())],
         ),
-    );
-    set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
-    let det = booking(&a.db, &bk);
-    let (gl, tl) = (det.lines[0].id.clone(), det.lines[1].id.clone());
-    let id = request_dr(
-        &a.db,
-        &actor,
-        &bk,
-        vec![(gl.clone(), Some("2027-03-31"), 20)],
-    )
-    .unwrap();
-
-    let edit = |lines: Vec<(Option<String>, String, Option<&str>, i64)>| DrRequestInput {
-        booking_id: bk.clone(),
-        kind: None,
-        date: TODAY.into(),
-        from_location_id: warehouse(),
-        deliver_to: "Makati".into(),
-        notes: String::new(),
-        lines: lines
-            .into_iter()
-            .map(|(id, booking_line_id, expiry, qty)| DrLineInput {
-                id,
-                lot_id: lot_of(&a.db, &booking_line_id, expiry),
-                booking_line_id,
-                qty,
-            })
-            .collect(),
-    };
-    let save = |input: DrRequestInput, done: Option<DeliverInput>| {
-        let id = id.clone();
-        a.db.write(actor.clone(), move |tx| {
-            delivery::update(tx, &id, &input, done.as_ref())
-        })
-    };
-    let line_id = |n: usize| {
-        a.db.read(|c| delivery::get(c, &id)).unwrap().unwrap().lines[n]
-            .id
-            .clone()
-    };
-
-    // Open DR: change qty and lot, add lines. Its own qty doesn't count
-    // against what's left on the booking.
-    let first = line_id(0);
-    save(
-        edit(vec![
-            (Some(first.clone()), gl.clone(), Some("2026-12-31"), 10),
-            (None, gl.clone(), Some("2027-03-31"), 30),
-            (None, tl.clone(), None, 30),
-        ]),
         None,
     )
     .unwrap();
-    let det = a.db.read(|c| delivery::get(c, &id)).unwrap().unwrap();
-    assert_eq!(det.lines.len(), 3);
-    assert_eq!(det.lines[0].id, first, "kept lines keep their id");
-    assert_eq!(det.dr.deliver_to.as_deref(), Some("Makati"));
-    let msg = invalid(save(
-        edit(vec![(None, gl.clone(), Some("2027-03-31"), 61)]),
-        None,
-    ));
-    assert!(msg.contains("only 60"), "{msg}");
 
-    approve(&a.db, &actor, &[], &id, Some("700")).unwrap();
-    deliver(&a.db, &actor, &id, TODAY).unwrap();
+    // New: change the quantity and lot, add a line, change the header and
+    // the client.
+    let first = lines_of(&a.db, &id)[0].id.clone();
+    let mut edit = as_input(&a.db, &id);
+    edit.client_id = other.clone();
+    edit.deliver_to = "Makati".into();
+    edit.lines[0].qty = 10;
+    edit.lines[0].lot_id = sep.clone();
+    edit.lines.push(line(&glv, 30, None, oct.clone()));
+    edit.lines
+        .push(line(&tape, 30, Some(10_000), lot_now(&tape)));
+    save(&a.db, &actor, &id, edit, None, None).unwrap();
+    let d = dr(&a.db, &id);
+    assert_eq!(d.client_id.as_deref(), Some(other.as_str()));
+    assert_eq!(d.deliver_to.as_deref(), Some("Makati"));
+    let ls = lines_of(&a.db, &id);
+    assert_eq!(ls.len(), 3);
+    assert_eq!(ls[0].id, first, "kept lines keep their id");
+
+    deliver(&a.db, &actor, &id, TODAY, Some("700")).unwrap();
     assert_eq!(on_hand(&a.db, &glv), 20);
     assert_eq!(on_hand(&a.db, &tape), 70);
 
-    // Delivered DR: fewer gloves and no tape: that stock comes back.
-    let (l0, l1) = (line_id(0), line_id(1));
+    // Delivered: fewer gloves and no tape: that stock comes back. The
+    // delivery date and receiver change too.
+    let ls = lines_of(&a.db, &id);
+    let mut edit = as_input(&a.db, &id);
+    edit.lines.truncate(2);
+    edit.lines[1].qty = 25;
     save(
-        edit(vec![
-            (Some(l0), gl.clone(), Some("2026-12-31"), 10),
-            (Some(l1.clone()), gl.clone(), Some("2027-03-31"), 25),
-        ]),
+        &a.db,
+        &actor,
+        &id,
+        edit,
         Some(DeliverInput {
             date: "2026-10-20".into(),
             received_by: "Liza".into(),
         }),
+        None,
     )
     .unwrap();
     assert_eq!(on_hand(&a.db, &glv), 25);
@@ -812,69 +753,109 @@ fn dr_lines_stay_editable_even_after_delivery() {
         (d.delivered_date.as_deref(), d.received_by.as_deref()),
         (Some("2026-10-20"), Some("Liza"))
     );
-    // The 2027 lot has 25 left plus the DR's own 25: 51 is too many.
-    let msg = invalid(save(
-        edit(vec![(Some(l1.clone()), gl.clone(), Some("2027-03-31"), 51)]),
-        None,
-    ));
-    assert!(msg.contains("not enough GLV"), "{msg}");
-    save(
-        edit(vec![(Some(l1), gl.clone(), Some("2027-03-31"), 40)]),
+    // The October lot has 25 left plus the receipt's own 25: 51 is too many.
+    let mut edit = as_input(&a.db, &id);
+    edit.lines[1].qty = 51;
+    assert!(invalid(save(&a.db, &actor, &id, edit, None, None)).contains("not enough GLV"));
+    // A delivered receipt keeps a lot on every line.
+    let mut edit = as_input(&a.db, &id);
+    edit.lines[1].lot_id = None;
+    assert!(invalid(save(&a.db, &actor, &id, edit, None, None)).contains("choose the lot"));
+
+    // Delivered: switch to an invoice. That frees DR 700, so the invoice
+    // number is needed in the same save.
+    let mut edit = as_input(&a.db, &id);
+    edit.kind = ReceiptKind::Invoice;
+    assert!(invalid(save(&a.db, &actor, &id, edit.clone(), None, None)).contains("invoice number"));
+    save(&a.db, &actor, &id, edit, None, Some("900")).unwrap();
+    let d = dr(&a.db, &id);
+    assert_eq!(
+        (d.kind, d.no.as_deref(), d.no_series.as_str()),
+        (ReceiptKind::Invoice, Some("900"), "SI")
+    );
+    assert_eq!(d.status, DrStatus::Delivered);
+
+    // Voided: still editable, no stock effect; restoring takes the stock
+    // out again.
+    act(&a.db, &actor, {
+        let id = id.clone();
+        move |tx| delivery::void(tx, &id, "wrong client")
+    })
+    .unwrap();
+    assert_eq!(on_hand(&a.db, &glv), 60);
+    let mut edit = as_input(&a.db, &id);
+    edit.notes = "re-entered".into();
+    edit.lines[1].qty = 5;
+    save(&a.db, &actor, &id, edit, None, None).unwrap();
+    assert_eq!(on_hand(&a.db, &glv), 60);
+    act(&a.db, &actor, {
+        let id = id.clone();
+        move |tx| delivery::restore(tx, &id)
+    })
+    .unwrap();
+    let d = dr(&a.db, &id);
+    assert_eq!((d.status, d.voided), (DrStatus::Delivered, false));
+    assert_eq!(on_hand(&a.db, &glv), 45);
+    assert_eq!(on_hand(&a.db, &tape), 100);
+    let _ = ls;
+
+    // Cancelled: editable and restorable to New. A restore that would take
+    // the stock below zero is refused.
+    let c = enter(
+        &a.db,
+        &actor,
+        input(
+            &client,
+            ReceiptKind::Dr,
+            vec![line(&tape, 40, None, lot_now(&tape))],
+        ),
         None,
     )
     .unwrap();
-    assert_eq!(on_hand(&a.db, &glv), 20);
-
-    // A booking line on a DR can't be removed from the booking.
-    let det = booking(&a.db, &bk);
-    let mut b = booking_input(&client, vec![]);
-    b.id = Some(bk.clone());
-    b.lines = vec![BookingLineInput {
-        id: Some(tl.clone()),
-        item_id: tape.clone(),
-        qty: det.lines[1].qty,
-        price_c: Some(det.lines[1].price_c),
-        notes: String::new(),
-    }];
-    let msg = invalid(a.db.write(actor.clone(), move |tx| bookings::update(tx, &b)));
-    assert!(msg.contains("GLV is on a DR"), "{msg}");
-}
-
-/// The receipt as an edit input, of another type.
-fn as_kind(db: &Db, id: &str, kind: ReceiptKind) -> DrRequestInput {
-    let d = db.read(|c| delivery::get(c, id)).unwrap().unwrap();
-    DrRequestInput {
-        booking_id: d.dr.booking_id.clone().unwrap(),
-        kind: Some(kind),
-        date: d.dr.date.clone(),
-        from_location_id: d.dr.from_location_id.clone().unwrap(),
-        deliver_to: String::new(),
-        notes: String::new(),
-        lines: d
-            .lines
-            .iter()
-            .map(|l| DrLineInput {
-                id: Some(l.id.clone()),
-                booking_line_id: l.booking_line_id.clone().unwrap(),
-                lot_id: l.lot_id.clone(),
-                qty: l.qty,
-            })
-            .collect(),
-    }
-}
-
-fn switch(db: &Db, actor: &Actor, id: &str, kind: ReceiptKind) -> Result<()> {
-    let (id, input) = (id.to_string(), as_kind(db, id, kind));
-    db.write(actor.clone(), move |tx| {
-        delivery::update(tx, &id, &input, None)
+    act(&a.db, &actor, {
+        let id = c.clone();
+        move |tx| delivery::cancel(tx, &id, "client changed mind")
     })
-}
-
-fn typed(db: &Db, actor: &Actor, id: &str, no: &str) -> Result<()> {
-    let series = db.read(|c| delivery::number_series(c, id))?;
-    let res = numbering::reserve_exact(db, &[], series, no, id)?;
-    let id = id.to_string();
-    db.write(actor.clone(), move |tx| delivery::set_number(tx, &id, &res))
+    .unwrap();
+    assert_eq!(dr(&a.db, &c).status, DrStatus::Cancelled);
+    invalid(deliver(&a.db, &actor, &c, TODAY, Some("1")));
+    let mut edit = as_input(&a.db, &c);
+    edit.lines[0].qty = 41;
+    save(&a.db, &actor, &c, edit, None, None).unwrap();
+    act(&a.db, &actor, {
+        let id = c.clone();
+        move |tx| delivery::restore(tx, &id)
+    })
+    .unwrap();
+    assert_eq!(dr(&a.db, &c).status, DrStatus::New);
+    invalid(act(&a.db, &actor, {
+        let id = c.clone();
+        move |tx| delivery::restore(tx, &id)
+    }));
+    // Void with too little stock left: restore is refused.
+    deliver(&a.db, &actor, &c, TODAY, Some("1")).unwrap();
+    act(&a.db, &actor, {
+        let id = c.clone();
+        move |tx| delivery::void(tx, &id, "returned")
+    })
+    .unwrap();
+    let t = enter(
+        &a.db,
+        &actor,
+        input(
+            &client,
+            ReceiptKind::Dr,
+            vec![line(&tape, 90, None, lot_now(&tape))],
+        ),
+        None,
+    )
+    .unwrap();
+    deliver(&a.db, &actor, &t, TODAY, Some("2")).unwrap();
+    let msg = invalid(act(&a.db, &actor, {
+        let id = c.clone();
+        move |tx| delivery::restore(tx, &id)
+    }));
+    assert!(msg.contains("not enough TAPE"), "{msg}");
 }
 
 #[test]
@@ -885,42 +866,28 @@ fn receipts_are_drs_or_invoices() {
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &tape, None, 20);
     let client = add_client(&a.db, &actor, "Watsons", None);
-    let bk = create_booking(
-        &a.db,
-        &actor,
-        booking_input(&client, vec![booking_line(&tape, 10, None)]),
-    );
-    set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
-    let line = booking(&a.db, &bk).lines[0].id.clone();
+    let mk = |kind, qty| input(&client, kind, vec![line(&tape, qty, None, lot_now(&tape))]);
 
-    // The booking asks for a Sales Invoice: an invoice by default. 2 × ₱125,
-    // no VAT added on top.
-    let inv = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 2)]).unwrap();
+    // 2 × ₱125, no VAT added on top, either way.
+    let inv = enter(&a.db, &actor, mk(ReceiptKind::Invoice, 2), None).unwrap();
     let d = dr(&a.db, &inv);
     assert_eq!(
         (d.kind, d.vat, d.no_series.as_str()),
         (ReceiptKind::Invoice, true, "SI")
     );
     assert_eq!((d.totals.net_c, d.totals.gross_c), (25_000, 25_000));
-    // Picked as a DR: no VAT.
-    let mut input = as_kind(&a.db, &inv, ReceiptKind::Dr);
-    input.lines[0].id = None;
-    let drid =
-        a.db.write(actor.clone(), move |tx| delivery::request(tx, &input))
-            .unwrap();
+    let drid = enter(&a.db, &actor, mk(ReceiptKind::Dr, 2), None).unwrap();
     let d = dr(&a.db, &drid);
     assert_eq!(
         (d.kind, d.vat, d.no_series.as_str()),
         (ReceiptKind::Dr, false, "DR")
     );
-    assert_eq!(d.totals.gross_c, 25_000);
     assert!(
         a.db.read(|c| numbering::is_manual(c, series::INVOICE))
             .unwrap()
     );
 
     // Each booklet has its own numbers: DR 700 and invoice 700 don't clash.
-    approve(&a.db, &actor, &[], &inv, None).unwrap();
     typed(&a.db, &actor, &inv, "700").unwrap();
     typed(&a.db, &actor, &drid, "700").unwrap();
     for id in [&inv, &drid] {
@@ -939,40 +906,38 @@ fn receipts_are_drs_or_invoices() {
     assert_eq!(series_of(&inv), json!("SI"));
     assert_eq!(series_of(&drid), json!("DR"));
 
-    // Switching type before delivery frees the number.
-    switch(&a.db, &actor, &inv, ReceiptKind::Dr).unwrap();
+    // Switching type frees the number.
+    let mut sw = as_input(&a.db, &inv);
+    sw.kind = ReceiptKind::Dr;
+    save(&a.db, &actor, &inv, sw, None, None).unwrap();
     let d = dr(&a.db, &inv);
     assert_eq!(
         (d.kind, d.no.as_deref(), d.totals.gross_c),
         (ReceiptKind::Dr, None, 25_000)
     );
-    assert_eq!(d.status, DrStatus::Approved);
+    assert_eq!(d.status, DrStatus::New);
     // Invoice 700 can go on another invoice now.
-    let other = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 1)]).unwrap();
-    typed(&a.db, &actor, &other, "700").unwrap();
+    let other = enter(&a.db, &actor, mk(ReceiptKind::Invoice, 1), Some("700")).unwrap();
     assert!(!dr(&a.db, &other).no_clash);
     // DR 700 is still taken by the other DR.
     assert!(invalid(typed(&a.db, &actor, &inv, "700")).contains("already used"));
     // Back to an invoice: it takes a new invoice number in the same row.
-    switch(&a.db, &actor, &inv, ReceiptKind::Invoice).unwrap();
+    let mut sw = as_input(&a.db, &inv);
+    sw.kind = ReceiptKind::Invoice;
+    save(&a.db, &actor, &inv, sw, None, None).unwrap();
     assert_eq!(dr(&a.db, &inv).no, None);
     typed(&a.db, &actor, &inv, "701").unwrap();
     assert_eq!(dr(&a.db, &inv).no.as_deref(), Some("701"));
-    assert_eq!(dr(&a.db, &inv).totals.gross_c, 25_000);
 
-    // Delivered: the type is fixed.
-    deliver(&a.db, &actor, &inv, TODAY).unwrap();
-    let msg = invalid(switch(&a.db, &actor, &inv, ReceiptKind::Dr));
-    assert!(msg.contains("can't change type"), "{msg}");
-    approve(&a.db, &actor, &[], &drid, None).unwrap();
-    deliver(&a.db, &actor, &drid, TODAY).unwrap();
+    deliver(&a.db, &actor, &inv, TODAY, None).unwrap();
+    deliver(&a.db, &actor, &drid, TODAY, None).unwrap();
 
     // Receivables tell them apart.
     let cb =
         a.db.read(|c| sanco_core::domain::receivables::client_balance(c, &client, TODAY))
             .unwrap();
     assert_eq!((cb.open_drs, cb.open_invoices), (1, 1));
-    assert_eq!(cb.outstanding_c, 28_000 + 25_000);
+    assert_eq!(cb.outstanding_c, 25_000 + 25_000);
     let mut kinds: Vec<_> =
         a.db.read(|c| sanco_core::domain::receivables::client_drs(c, &client, TODAY))
             .unwrap()
@@ -1007,14 +972,17 @@ fn invoices_from_before_m12_keep_their_dr_number() {
     let tape = add_item(&a.db, &actor, "TAPE", false);
     receive(&a.db, &actor, &tape, None, 20);
     let client = add_client(&a.db, &actor, "Watsons", None);
-    let bk = create_booking(
+    let old = enter(
         &a.db,
         &actor,
-        booking_input(&client, vec![booking_line(&tape, 10, None)]),
-    );
-    set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
-    let line = booking(&a.db, &bk).lines[0].id.clone();
-    let old = request_dr(&a.db, &actor, &bk, vec![(line, None, 2)]).unwrap();
+        input(
+            &client,
+            ReceiptKind::Invoice,
+            vec![line(&tape, 2, None, lot_now(&tape))],
+        ),
+        None,
+    )
+    .unwrap();
     // A VAT DR numbered from the DR booklet before M12.
     let res = numbering::reserve_exact(&a.db, &[], series::DR, "300", &old).unwrap();
     a.db.write(actor.clone(), move |tx| {
@@ -1028,7 +996,58 @@ fn invoices_from_before_m12_keep_their_dr_number() {
     typed(&a.db, &actor, &old, "301").unwrap();
     assert_eq!(dr(&a.db, &old).no.as_deref(), Some("301"));
     // As a DR it keeps that number.
-    switch(&a.db, &actor, &old, ReceiptKind::Dr).unwrap();
+    let mut sw = as_input(&a.db, &old);
+    sw.kind = ReceiptKind::Dr;
+    save(&a.db, &actor, &old, sw, None, None).unwrap();
     let d = dr(&a.db, &old);
     assert_eq!((d.kind, d.no.as_deref()), (ReceiptKind::Dr, Some("301")));
+}
+
+#[test]
+fn receipts_from_before_this_change_read_as_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let tape = add_item(&a.db, &actor, "TAPE", false);
+    receive(&a.db, &actor, &tape, None, 20);
+    let client = add_client(&a.db, &actor, "Watsons", None);
+    let id = enter(
+        &a.db,
+        &actor,
+        input(
+            &client,
+            ReceiptKind::Dr,
+            vec![line(&tape, 2, None, lot_now(&tape))],
+        ),
+        Some("5"),
+    )
+    .unwrap();
+    // Requested and approved were the two steps before delivery.
+    for status in ["requested", "approved"] {
+        let rid = id.clone();
+        a.db.write(actor.clone(), move |tx| {
+            tx.update("delivery_receipts", &rid, json!({ "status": status }))
+                .map(drop)
+        })
+        .unwrap();
+        assert_eq!(dr(&a.db, &id).status, DrStatus::New);
+        assert_eq!(
+            a.db.read(|c| sanco_core::domain::dashboard::summary(
+                c,
+                &sanco_core::domain::auth::Perms {
+                    admin: true,
+                    ..Default::default()
+                },
+                TODAY
+            ))
+            .unwrap()
+            .kpis
+            .iter()
+            .find(|k| k.key == "drs_open")
+            .unwrap()
+            .value,
+            1
+        );
+    }
+    deliver(&a.db, &actor, &id, TODAY, None).unwrap();
 }

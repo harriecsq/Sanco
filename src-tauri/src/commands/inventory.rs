@@ -94,6 +94,26 @@ pub async fn post_stock_doc(
     blocking(move || db.write(user.actor(), move |tx| inventory::create(tx, &doc, &res))).await
 }
 
+/// Edits a stock document (posted or void): stock moves by the difference.
+#[tauri::command]
+#[specta::specta]
+pub async fn update_stock_doc(
+    state: State<'_, AppState>,
+    id: String,
+    doc: StockDocInput,
+) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Inventory, Action::Edit).await?;
+    blocking(move || db.write(user.actor(), move |tx| inventory::update(tx, &id, &doc))).await
+}
+
+/// Posts a void stock document again.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_stock_doc(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Inventory, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| inventory::restore(tx, &id))).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn void_stock_doc(

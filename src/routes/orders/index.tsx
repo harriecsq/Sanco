@@ -367,7 +367,7 @@ const PoView = component$<{ id: string }>(({ id }) => {
             Reopen
           </button>
         )}
-        {p.status !== "cancelled" && canEdit && (
+        {canEdit && (
           <button
             q:slot="actions"
             class={btnSecondary}

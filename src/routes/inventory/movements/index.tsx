@@ -1,4 +1,4 @@
-import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
+import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
 import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
@@ -12,7 +12,7 @@ import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
-import { KIND_LABEL } from "~/components/inventory/stock-doc-form";
+import { KIND_LABEL, StockDocModal, blankDoc, docFormOf, type DocForm } from "~/components/inventory/stock-doc-form";
 import { Pager, usePage } from "~/components/ui/pager";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
@@ -162,6 +162,8 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
   const reason = useSignal("");
   const voidError = useSignal("");
   const busy = useSignal(false);
+  const editOpen = useSignal(false);
+  const form = useStore<DocForm>(blankDoc("receipt"));
 
   useLiveLoad(
     ["stock_docs", "stock_doc_lines", "po_receipts", "lots", "items", "locations", "doc_numbers", "users"],
@@ -224,6 +226,35 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
             Void
           </button>
         )}
+        {d.voided && can(session.user, "inventory", "delete") && (
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={async () => {
+              try {
+                unwrap(await commands.restoreStockDoc(id));
+                error.value = "";
+              } catch (e) {
+                error.value = errorText(e);
+              }
+            }}
+          >
+            Restore
+          </button>
+        )}
+        {(d.kind === "receipt" || d.kind === "adjustment" || d.kind === "transfer") &&
+          can(session.user, "inventory", "edit") && (
+            <button
+              q:slot="actions"
+              class={btnSecondary}
+              onClick$={() => {
+                Object.assign(form, docFormOf(det));
+                editOpen.value = true;
+              }}
+            >
+              Edit
+            </button>
+          )}
       </PageHeader>
       {error.value && <Alert>{error.value}</Alert>}
       <div class="mb-4 space-y-2">
@@ -272,6 +303,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
         </section>
       </div>
 
+      <StockDocModal open={editOpen} form={form} editId={id} />
       <Modal open={voidOpen} title={`Void ${d.no ?? "document"}?`}>
         <form
           class="space-y-3"
@@ -292,7 +324,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
           {voidError.value && <Alert>{voidError.value}</Alert>}
           <p class="text-sm">
             Its stock movements stop counting on every PC. The document stays in the list, marked
-            void. This can't be undone; enter it again if needed.
+            void. It can be edited and restored later.
           </p>
           <Field label="Reason">
             <input

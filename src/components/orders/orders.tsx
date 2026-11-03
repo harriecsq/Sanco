@@ -4,6 +4,7 @@ import {
   type Choice,
   type LocationInfo,
   type PoDetail,
+  type ReceiptDetail,
   type PoStatus,
   type ReceiveProgress,
   type SupplierChoice,
@@ -580,13 +581,39 @@ export const receiveForm = (d: PoDetail): ReceiveForm => ({
     })),
 });
 
-/** Receive goods of a PO into one location. The date picks each item's lot. */
+/** The form that edits a receiving report: its own lines, plus a blank
+ *  row for each other line of the PO that still has something to come. */
+export const receiveFormOf = (r: ReceiptDetail, po: PoDetail): ReceiveForm => ({
+  location_id: r.receipt.location_id ?? "",
+  date: r.receipt.date,
+  notes: r.receipt.notes ?? "",
+  rows: po.lines.flatMap((l) => {
+    const own = r.lines.filter((x) => x.po_line_id === l.id);
+    if (own.length === 0 && l.remaining <= 0) return [];
+    if (own.length === 0)
+      return [{ key: newKey(), po_line_id: l.id, qty: "", expiry: "", serial_from: "", serial_to: "" }];
+    return own.map((x) => ({
+      key: newKey(),
+      po_line_id: l.id,
+      qty: String(x.qty),
+      expiry: x.expiry ?? "",
+      serial_from: x.serial_from ?? "",
+      serial_to: x.serial_to ?? "",
+    }));
+  }),
+});
+
+/**
+ * Receive goods of a PO into one location. The date picks each item's lot.
+ * With `editId`, edits that receiving report instead (posted or void).
+ */
 export const ReceiveModal = component$<{
   open: Signal<boolean>;
   detail: PoDetail;
   form: ReceiveForm;
+  editId?: string;
   saved$?: QRL<(id: string) => void>;
-}>(({ open, detail, form, saved$ }) => {
+}>(({ open, detail, form, editId, saved$ }) => {
   const locations = useSignal<LocationInfo[]>([]);
   const error = useSignal("");
   const busy = useSignal(false);
@@ -619,15 +646,20 @@ export const ReceiveModal = component$<{
             serial_to: r.serial_to,
           };
         });
-      const id = unwrap(
-        await commands.receivePo({
-          po_id: detail.po.id,
-          date: form.date,
-          location_id: form.location_id,
-          notes: form.notes,
-          lines,
-        }),
-      );
+      const receipt = {
+        po_id: detail.po.id,
+        date: form.date,
+        location_id: form.location_id,
+        notes: form.notes,
+        lines,
+      };
+      let id: string;
+      if (editId) {
+        unwrap(await commands.updatePoReceipt(editId, receipt));
+        id = editId;
+      } else {
+        id = unwrap(await commands.receivePo(receipt));
+      }
       busy.value = false;
       open.value = false;
       if (saved$) await saved$(id);
@@ -639,7 +671,7 @@ export const ReceiveModal = component$<{
   });
 
   return (
-    <Modal open={open} title={`Receive goods · PO ${detail.po.no ?? ""}`} wide>
+    <Modal open={open} title={editId ? `Edit receiving report · PO ${detail.po.no ?? ""}` : `Receive goods · PO ${detail.po.no ?? ""}`} wide>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
         <div class="grid gap-3 sm:grid-cols-2">

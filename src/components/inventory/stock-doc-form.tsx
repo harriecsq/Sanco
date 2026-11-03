@@ -3,6 +3,7 @@ import {
   commands,
   type ItemStock,
   type LocationInfo,
+  type StockDocDetail,
   type StockKind,
   type StockLineInput,
   type StockLot,
@@ -70,6 +71,25 @@ export const blankDoc = (
   lines: [blankLine(opts.item_id)],
 });
 
+/** The form that edits a stock document as it is now. */
+export const docFormOf = (det: StockDocDetail): DocForm => ({
+  kind: det.doc.kind,
+  date: det.doc.date,
+  location_id: det.doc.location_id ?? "",
+  to_location_id: det.doc.to_location_id ?? "",
+  reason: det.doc.reason ?? "",
+  notes: det.doc.notes ?? "",
+  lines: det.lines.map((l) => ({
+    key: nextKey++,
+    item_id: l.item_id,
+    lot_id: l.lot_id ?? "",
+    expiry: l.expiry ?? "",
+    serial_from: l.serial_from ?? "",
+    serial_to: l.serial_to ?? "",
+    qty: String(l.qty),
+  })),
+});
+
 /** Qwik input typings lack `list`; this links an input to a datalist. */
 const datalist = (id: string) => ({ list: id }) as Record<string, string>;
 
@@ -97,12 +117,14 @@ const lotsAt = (d: Data, form: DocForm, item: string) => {
 
 const lotLabel = (l: StockLot) => `${lotText(l)} · ${formatQty(l.qty, l.unit)}`;
 
-/** Receive, adjust or transfer stock. */
+/** Receive, adjust or transfer stock. With `editId`, edits that document
+ *  instead (posted or void): stock moves by the difference. */
 export const StockDocModal = component$<{
   open: Signal<boolean>;
   form: DocForm;
+  editId?: string;
   saved$?: QRL<(id: string) => void>;
-}>(({ open, form, saved$ }) => {
+}>(({ open, form, editId, saved$ }) => {
   const data = useSignal<Data>({ items: [], lots: [], locations: [] });
   const error = useSignal("");
   const busy = useSignal(false);
@@ -147,17 +169,22 @@ export const StockDocModal = component$<{
             serial_to: kind === "receipt" ? l.serial_to : null,
           };
         });
-      const id = unwrap(
-        await commands.postStockDoc({
-          kind,
-          date: form.date,
-          location_id: fromOf(d, form),
-          to_location_id: kind === "transfer" ? form.to_location_id || null : null,
-          reason: kind === "adjustment" ? form.reason : "",
-          notes: form.notes,
-          lines,
-        }),
-      );
+      const doc = {
+        kind,
+        date: form.date,
+        location_id: fromOf(d, form),
+        to_location_id: kind === "transfer" ? form.to_location_id || null : null,
+        reason: kind === "adjustment" ? form.reason : "",
+        notes: form.notes,
+        lines,
+      };
+      let id: string;
+      if (editId) {
+        unwrap(await commands.updateStockDoc(editId, doc));
+        id = editId;
+      } else {
+        id = unwrap(await commands.postStockDoc(doc));
+      }
       open.value = false;
       if (saved$) await saved$(id);
     } catch (e) {
@@ -178,7 +205,7 @@ export const StockDocModal = component$<{
   );
 
   return (
-    <Modal open={open} title={`New ${KIND_LABEL[kind].toLowerCase()}`} wide>
+    <Modal open={open} title={editId ? `Edit ${KIND_LABEL[kind].toLowerCase()}` : `New ${KIND_LABEL[kind].toLowerCase()}`} wide>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
         <div class="grid gap-3 sm:grid-cols-3">
@@ -268,7 +295,7 @@ export const StockDocModal = component$<{
                     : kind === "transfer"
                       ? parseCount(line.qty)
                       : null;
-                if (q != null && line.lot_id) after = kind === "adjustment" ? onHand + q : onHand - q;
+                if (!editId && q != null && line.lot_id) after = kind === "adjustment" ? onHand + q : onHand - q;
               } catch {
                 after = null;
               }
@@ -319,6 +346,11 @@ export const StockDocModal = component$<{
                         <option value="" selected={!line.lot_id}>
                           {!item || available.length ? "Choose a lot…" : "None here"}
                         </option>
+                        {line.lot_id && !available.some((l) => l.lot_id === line.lot_id) && (
+                          <option value={line.lot_id} selected>
+                            Current lot
+                          </option>
+                        )}
                         {available.map((l) => (
                           <option key={l.lot_id ?? ""} value={l.lot_id ?? ""} selected={l.lot_id === line.lot_id}>
                             {lotLabel(l)}
@@ -388,15 +420,17 @@ export const StockDocModal = component$<{
             onInput$={(_, el) => (form.notes = el.value)}
           />
         </Field>
-        <p class={hint}>
-          Posted documents can't be edited. To correct one, void it and enter it again.
-        </p>
+        {editId && (
+          <p class={hint}>
+            Stock moves by the difference. The type and number stay; stock can't go below zero.
+          </p>
+        )}
         <div class="flex justify-end gap-2">
           <button type="button" class={btnSecondary} onClick$={() => (open.value = false)}>
             Cancel
           </button>
           <button class={btnPrimary} disabled={busy.value}>
-            Post
+            {editId ? "Save" : "Post"}
           </button>
         </div>
       </form>

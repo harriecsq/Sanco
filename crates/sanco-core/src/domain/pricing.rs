@@ -540,3 +540,52 @@ mod tests {
         );
     }
 }
+
+/// Where a document line's price came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSource {
+    /// The client's manual rate.
+    Manual,
+    /// Landed cost at the client's margin tier.
+    ClientTier,
+    /// Landed cost at the item's default margin.
+    ItemDefault,
+    /// The price quoted on a Business Development request (a removed
+    /// module; only older bookings have it).
+    Quoted,
+    /// Typed in.
+    Custom,
+}
+
+impl PriceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PriceSource::Manual => "manual",
+            PriceSource::ClientTier => "client_tier",
+            PriceSource::ItemDefault => "item_default",
+            PriceSource::Quoted => "quoted",
+            PriceSource::Custom => "custom",
+        }
+    }
+
+    pub fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("manual") => PriceSource::Manual,
+            Some("client_tier") => PriceSource::ClientTier,
+            Some("item_default") => PriceSource::ItemDefault,
+            Some("quoted") => PriceSource::Quoted,
+            _ => PriceSource::Custom,
+        }
+    }
+
+    pub fn from_rule(rule: PriceRule) -> Self {
+        match rule {
+            PriceRule::Manual => PriceSource::Manual,
+            PriceRule::ClientTier => PriceSource::ClientTier,
+            PriceRule::ItemDefault => PriceSource::ItemDefault,
+            PriceRule::None => PriceSource::Custom,
+        }
+    }
+}

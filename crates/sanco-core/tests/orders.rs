@@ -730,3 +730,306 @@ fn two_offline_pcs_receive_the_same_po_line() {
         assert!(db.read(|c| conflicts::list(c, true)).unwrap().is_empty());
     }
 }
+
+fn stock_doc(
+    kind: StockKind,
+    location: String,
+    to: Option<String>,
+    lines: Vec<(&str, Option<String>, i64)>,
+) -> StockDocInput {
+    StockDocInput {
+        kind,
+        date: TODAY.into(),
+        location_id: location,
+        to_location_id: to,
+        reason: "count".into(),
+        notes: String::new(),
+        lines: lines
+            .into_iter()
+            .map(|(item, lot, qty)| StockLineInput {
+                item_id: item.into(),
+                lot_id: lot,
+                qty,
+                expiry: None,
+                serial_from: None,
+                serial_to: None,
+            })
+            .collect(),
+    }
+}
+
+fn post_doc(db: &Db, actor: &Actor, input: StockDocInput, series: &str) -> String {
+    let id = db.new_id().unwrap();
+    let res = numbering::reserve(db, &[], series, &id).unwrap();
+    db.write(actor.clone(), move |tx| inventory::create(tx, &input, &res))
+        .unwrap()
+}
+
+fn qty_at(db: &Db, item: &str, location: &str) -> i64 {
+    lots(db, item)
+        .into_iter()
+        .filter(|l| l.0 == location)
+        .map(|l| l.2)
+        .sum()
+}
+
+#[test]
+fn stock_documents_can_be_edited_and_restored() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let sup = add_supplier(&a.db, &actor);
+    let tape = add_item(&a.db, &actor, "TAPE", &sup, false);
+    let lot = lots::lot_id(&tape, lots::month_of(TODAY));
+
+    let receipt_id = post_doc(
+        &a.db,
+        &actor,
+        stock_doc(
+            StockKind::Receipt,
+            warehouse(),
+            None,
+            vec![(&tape, None, 10)],
+        ),
+        series::STOCK_RECEIPT,
+    );
+    assert_eq!(qty_at(&a.db, &tape, &warehouse()), 10);
+
+    // A posted receipt can be raised, and its stock follows.
+    let edit = stock_doc(
+        StockKind::Receipt,
+        warehouse(),
+        None,
+        vec![(&tape, None, 20)],
+    );
+    a.db.write(actor.clone(), {
+        let (id, edit) = (receipt_id.clone(), edit);
+        move |tx| inventory::update(tx, &id, &edit)
+    })
+    .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &warehouse()), 20);
+
+    // A transfer of 15 can be edited down, but not above what's there.
+    let transfer = post_doc(
+        &a.db,
+        &actor,
+        stock_doc(
+            StockKind::Transfer,
+            warehouse(),
+            Some(office()),
+            vec![(&tape, Some(lot.clone()), 15)],
+        ),
+        series::TRANSFER,
+    );
+    assert_eq!(qty_at(&a.db, &tape, &office()), 15);
+    let mut edit = stock_doc(
+        StockKind::Transfer,
+        warehouse(),
+        Some(office()),
+        vec![(&tape, Some(lot.clone()), 25)],
+    );
+    let msg = invalid(a.db.write(actor.clone(), {
+        let (id, edit) = (transfer.clone(), edit.clone());
+        move |tx| inventory::update(tx, &id, &edit)
+    }));
+    assert!(msg.contains("not enough TAPE"), "{msg}");
+    edit.lines[0].qty = 5;
+    a.db.write(actor.clone(), {
+        let (id, edit) = (transfer.clone(), edit.clone());
+        move |tx| inventory::update(tx, &id, &edit)
+    })
+    .unwrap();
+    assert_eq!(
+        (
+            qty_at(&a.db, &tape, &warehouse()),
+            qty_at(&a.db, &tape, &office())
+        ),
+        (15, 5)
+    );
+    // The type is fixed: it is numbered from its own series.
+    let as_adjustment = stock_doc(
+        StockKind::Adjustment,
+        warehouse(),
+        None,
+        vec![(&tape, Some(lot.clone()), -1)],
+    );
+    let msg = invalid(a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::update(tx, &id, &as_adjustment)
+    }));
+    assert!(msg.contains("can't change its type"), "{msg}");
+
+    // Lowering the receipt below what was moved out of the warehouse is
+    // refused (15 on hand, the receipt added 20).
+    let edit = stock_doc(
+        StockKind::Receipt,
+        warehouse(),
+        None,
+        vec![(&tape, None, 4)],
+    );
+    let msg = invalid(a.db.write(actor.clone(), {
+        let (id, edit) = (receipt_id.clone(), edit);
+        move |tx| inventory::update(tx, &id, &edit)
+    }));
+    assert!(msg.contains("not enough TAPE"), "{msg}");
+
+    // Void, edit while void (no stock effect), restore.
+    a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::void(tx, &id, "mistake")
+    })
+    .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &office()), 0);
+    let edit = stock_doc(
+        StockKind::Transfer,
+        warehouse(),
+        Some(office()),
+        vec![(&tape, Some(lot.clone()), 8)],
+    );
+    a.db.write(actor.clone(), {
+        let (id, edit) = (transfer.clone(), edit);
+        move |tx| inventory::update(tx, &id, &edit)
+    })
+    .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &office()), 0);
+    a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::restore(tx, &id)
+    })
+    .unwrap();
+    assert_eq!(
+        (
+            qty_at(&a.db, &tape, &warehouse()),
+            qty_at(&a.db, &tape, &office())
+        ),
+        (12, 8)
+    );
+    // Not void: nothing to restore.
+    invalid(a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::restore(tx, &id)
+    }));
+    // A void receipt that was used can't be restored over a shortfall.
+    a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::void(tx, &id, "again")
+    })
+    .unwrap();
+    a.db.write(actor.clone(), {
+        let id = receipt_id.clone();
+        move |tx| inventory::void(tx, &id, "wrong count")
+    })
+    .unwrap();
+    invalid(a.db.write(actor.clone(), {
+        let id = transfer.clone();
+        move |tx| inventory::restore(tx, &id)
+    }));
+}
+
+#[test]
+fn receiving_reports_and_cancelled_pos_stay_editable() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let sup = add_supplier(&a.db, &actor);
+    let tape = add_item(&a.db, &actor, "TAPE", &sup, false);
+    let po = create_po(
+        &a.db,
+        &actor,
+        po_input(&sup, vec![po_line(&tape, 10, Some(300))]),
+    )
+    .unwrap();
+    status(&a.db, &actor, &po, PoAction::Order).unwrap();
+    let tl = detail(&a.db, &po).lines[0].id.clone();
+    let r = receive(
+        &a.db,
+        &actor,
+        receipt(&po, &warehouse(), vec![(&tl, None, 6)]),
+    )
+    .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &warehouse()), 6);
+
+    let edit = |loc: String, qty: i64| receipt(&po, &loc, vec![(&tl, None, qty)]);
+    let save = |input: ReceiptInput| {
+        a.db.write(actor.clone(), {
+            let id = r.clone();
+            move |tx| purchasing::update_receipt(tx, &id, &input)
+        })
+    };
+    // Up to everything ordered (its own 6 don't count against what's left).
+    save(edit(warehouse(), 10)).unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &warehouse()), 10);
+    assert_eq!(detail(&a.db, &po).lines[0].received, 10);
+    assert!(invalid(save(edit(warehouse(), 11))).contains("only 10 of TAPE"));
+    // Another location moves the stock.
+    save(edit(office(), 10)).unwrap();
+    assert_eq!(
+        (
+            qty_at(&a.db, &tape, &warehouse()),
+            qty_at(&a.db, &tape, &office())
+        ),
+        (0, 10)
+    );
+    // Stock that was used can't be edited away.
+    let lot = lots::lot_id(&tape, lots::month_of(TODAY));
+    post_doc(
+        &a.db,
+        &actor,
+        stock_doc(
+            StockKind::Adjustment,
+            office(),
+            None,
+            vec![(&tape, Some(lot), -8)],
+        ),
+        series::ADJUSTMENT,
+    );
+    let mut adj = receipt(&po, &office(), vec![(&tl, None, 5)]);
+    adj.date = TODAY.into();
+    assert!(invalid(save(adj)).contains("not enough TAPE"));
+    // Voided: editable without a stock effect, then restored.
+    a.db.write(actor.clone(), {
+        let id = r.clone();
+        move |tx| purchasing::void_receipt(tx, &id, "wrong")
+    })
+    .unwrap_err();
+    // (voiding needs the stock the adjustment used)
+    post_doc(
+        &a.db,
+        &actor,
+        stock_doc(StockKind::Receipt, office(), None, vec![(&tape, None, 8)]),
+        series::STOCK_RECEIPT,
+    );
+    a.db.write(actor.clone(), {
+        let id = r.clone();
+        move |tx| purchasing::void_receipt(tx, &id, "wrong")
+    })
+    .unwrap();
+    assert_eq!(detail(&a.db, &po).lines[0].received, 0);
+    save(edit(office(), 4)).unwrap();
+    assert_eq!(detail(&a.db, &po).lines[0].received, 0);
+    a.db.write(actor.clone(), {
+        let id = r.clone();
+        move |tx| purchasing::restore_receipt(tx, &id)
+    })
+    .unwrap();
+    assert_eq!(detail(&a.db, &po).lines[0].received, 4);
+    invalid(a.db.write(actor.clone(), {
+        let id = r.clone();
+        move |tx| purchasing::restore_receipt(tx, &id)
+    }));
+
+    // A cancelled PO can be edited.
+    let po2 = create_po(
+        &a.db,
+        &actor,
+        po_input(&sup, vec![po_line(&tape, 5, Some(300))]),
+    )
+    .unwrap();
+    status(&a.db, &actor, &po2, PoAction::Cancel).unwrap();
+    let mut input = as_input(&detail(&a.db, &po2));
+    input.lines[0].qty = 7;
+    input.supplier_ref = "PI-78".into();
+    update_po(&a.db, &actor, input, true).unwrap();
+    assert_eq!(detail(&a.db, &po2).lines[0].qty, 7);
+    assert_eq!(detail(&a.db, &po2).po.status, PoStatus::Cancelled);
+}

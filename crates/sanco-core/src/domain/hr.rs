@@ -29,7 +29,7 @@ use crate::domain::{date_opt, peso, require_date, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids::derived_id;
 use crate::repo::WriteTx;
-use crate::time::{add_days, days_between, manila_day_start_ms, parse_date};
+use crate::time::{add_days, days_between, manila_date_string, manila_day_start_ms, parse_date};
 
 pub const EMPLOYEES: &str = "employees";
 pub const ATTENDANCE: &str = "attendance";
@@ -596,6 +596,32 @@ fn posted(conn: &Connection, week: &str) -> Result<bool> {
     )?)
 }
 
+/// Before an edit of a posted week: takes the payroll back to live
+/// figures. Returns whether it was posted, for [`repost`].
+fn unpost_for_edit(tx: &mut WriteTx, week: &str) -> Result<bool> {
+    if !posted(tx.conn(), week)? {
+        return Ok(false);
+    }
+    tx.update(PAYROLLS, &payroll_id(week), json!({ "status": "voided" }))?;
+    Ok(true)
+}
+
+/// After the edit: posts the week again with the new figures. Fails (and so
+/// refuses the edit) if the week can't be posted, e.g. deductions would
+/// exceed someone's pay.
+fn repost(tx: &mut WriteTx, week: &str, was_posted: bool) -> Result<()> {
+    if !was_posted {
+        return Ok(());
+    }
+    // It was posted, so it is not too early to post it again, whatever this
+    // PC's clock says.
+    let mut today = manila_date_string(tx.now_ms());
+    if today.as_str() < week {
+        today = week.to_string();
+    }
+    post_payroll(tx, week, &today)
+}
+
 /// Balance before `week`: everything not deducted in other weeks.
 fn balance_outside(d: &DebtRow, paid: &BTreeMap<String, BTreeMap<String, i64>>, week: &str) -> i64 {
     let other: i64 = paid
@@ -768,11 +794,7 @@ pub fn set_debt_charge(
     amount_c: Option<i64>,
 ) -> Result<()> {
     let week = require_week(week)?;
-    if posted(tx.conn(), &week)? {
-        return Err(Error::Invalid(
-            "this week's payroll is posted; void it to change deductions".into(),
-        ));
-    }
+    let was_posted = unpost_for_edit(tx, &week)?;
     let debt = load_debts(tx.conn(), None)?
         .into_iter()
         .find(|d| d.id == debt_id)
@@ -792,7 +814,8 @@ pub fn set_debt_charge(
         DEBT_OVERRIDES,
         &id,
         json!({ "debt_id": debt_id, "week": week, "amount_c": amount_c }),
-    )
+    )?;
+    repost(tx, &week, was_posted)
 }
 
 // Attendance -----------------------------------------------------------------
@@ -901,15 +924,10 @@ pub fn attendance_week(conn: &Connection, week: &str) -> Result<AttendanceWeek> 
     })
 }
 
-fn check_day(conn: &Connection, date: &str) -> Result<String> {
+fn check_day(_conn: &Connection, date: &str) -> Result<String> {
     let date = require_date(date, "date")?;
     if weekday(&date) == Some(6) {
         return Err(Error::Invalid("attendance is Monday to Saturday".into()));
-    }
-    if posted(conn, &week_of(&date).unwrap_or_default())? {
-        return Err(Error::Invalid(
-            "that week's payroll is posted; void it to change attendance".into(),
-        ));
     }
     Ok(date)
 }
@@ -954,7 +972,10 @@ pub fn set_attendance(
 ) -> Result<()> {
     let date = check_day(tx.conn(), date)?;
     require_employee(tx.conn(), employee_id)?;
-    put_mark(tx, employee_id, &date, status, text_opt(note))
+    let week = week_of(&date).unwrap_or_default();
+    let was_posted = unpost_for_edit(tx, &week)?;
+    put_mark(tx, employee_id, &date, status, text_opt(note))?;
+    repost(tx, &week, was_posted)
 }
 
 /// Marks a day for every active employee: all of them (a holiday), or only
@@ -967,6 +988,8 @@ pub fn mark_day(
     only_unmarked: bool,
 ) -> Result<()> {
     let date = check_day(tx.conn(), date)?;
+    let week = week_of(&date).unwrap_or_default();
+    let was_posted = unpost_for_edit(tx, &week)?;
     let marks = marks(tx.conn(), &date, &date)?;
     let employees: Vec<String> = list_employees(tx.conn())?
         .into_iter()
@@ -980,7 +1003,7 @@ pub fn mark_day(
         }
         put_mark(tx, &e, &date, Some(status), text_opt(note))?;
     }
-    Ok(())
+    repost(tx, &week, was_posted)
 }
 
 // Payroll --------------------------------------------------------------------

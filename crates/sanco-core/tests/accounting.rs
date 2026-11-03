@@ -1,10 +1,9 @@
 mod common;
 
 use common::{T0, TestPeer, pull};
-use sanco_core::domain::bookings::{self, BookingAction, BookingInput, BookingLineInput};
 use sanco_core::domain::clients::{self, ClientInput};
 use sanco_core::domain::conflicts;
-use sanco_core::domain::delivery::{self, DeliverInput, DrLineInput, DrRequestInput};
+use sanco_core::domain::delivery::{self, DeliverInput, DrInput, DrLineInput, ReceiptKind};
 use sanco_core::domain::inventory::{self, StockDocInput, StockKind, StockLineInput};
 use sanco_core::domain::items::{self, CostSheetInput, ItemInput};
 use sanco_core::domain::lots;
@@ -123,95 +122,51 @@ fn add_item(db: &Db, actor: &Actor, code: &str) -> String {
     id
 }
 
-/// A confirmed VAT booking of `qty` × the item; returns (booking, line).
-fn booking(
-    db: &Db,
-    actor: &Actor,
-    client: &str,
-    item: &str,
-    qty: i64,
+/// What the tests order: an item for a client at a price.
+struct Order {
+    client: String,
+    item: String,
     price_c: Option<i64>,
-) -> (String, String) {
-    let input = BookingInput {
-        id: None,
-        client_id: client.into(),
-        date: "2026-07-01".into(),
-        vat: true,
-        client_ref: String::new(),
-        deliver_to: String::new(),
-        notes: String::new(),
-        lines: vec![BookingLineInput {
-            id: None,
-            item_id: item.into(),
-            qty,
-            price_c,
-            notes: String::new(),
-        }],
-    };
-    let id = db.new_id().unwrap();
-    let res = numbering::reserve(db, &[], series::BOOKING, &id).unwrap();
-    let id = db
-        .write(actor.clone(), move |tx| bookings::create(tx, &input, &res))
-        .unwrap();
-    let bid = id.clone();
-    db.write(actor.clone(), move |tx| {
-        bookings::set_status(tx, &bid, BookingAction::Confirm, "")
-    })
-    .unwrap();
-    let line = db.read(|c| bookings::get(c, &id)).unwrap().unwrap().lines[0]
-        .id
-        .clone();
-    (id, line)
 }
 
-fn dr_input(
-    db: &Db,
-    booking: &str,
-    line: &str,
-    qty: i64,
-    line_id: Option<String>,
-) -> DrRequestInput {
-    DrRequestInput {
-        booking_id: booking.into(),
-        kind: None,
+fn order(client: &str, item: &str, price_c: Option<i64>) -> Order {
+    Order {
+        client: client.into(),
+        item: item.into(),
+        price_c,
+    }
+}
+
+/// An invoice of `qty` of the order's item, on 2026-07-01. `line_id`: the
+/// line being edited.
+fn receipt_input(order: &Order, qty: i64, line_id: Option<String>) -> DrInput {
+    DrInput {
+        client_id: order.client.clone(),
+        kind: ReceiptKind::Invoice,
         date: "2026-07-01".into(),
         from_location_id: warehouse(),
+        client_ref: String::new(),
         deliver_to: String::new(),
         notes: String::new(),
         lines: vec![DrLineInput {
             id: line_id,
-            booking_line_id: line.into(),
-            lot_id: lot_of(db, line),
+            item_id: order.item.clone(),
             qty,
+            price_c: order.price_c,
+            lot_id: Some(lots::lot_id(&order.item, lots::month_of(TODAY))),
+            notes: String::new(),
         }],
     }
 }
 
-/// Requests, approves (typed number `no`) and delivers a DR on `date`.
-fn delivered_dr(
-    db: &Db,
-    actor: &Actor,
-    booking: &str,
-    line: &str,
-    qty: i64,
-    no: &str,
-    date: &str,
-) -> String {
-    let input = dr_input(db, booking, line, qty, None);
-    let id = db
-        .write(actor.clone(), move |tx| delivery::request(tx, &input))
-        .unwrap();
-    let res = numbering::reserve_exact(
-        db,
-        &[],
-        db.read(|c| delivery::number_series(c, &id)).unwrap(),
-        no,
-        &id,
-    )
-    .unwrap();
-    let rid = id.clone();
+/// Enters (typed number `no`) and delivers an invoice on `date`.
+fn delivered_dr(db: &Db, actor: &Actor, order: &Order, qty: i64, no: &str, date: &str) -> String {
+    let input = receipt_input(order, qty, None);
+    let id = db.new_id().unwrap();
+    let res = numbering::reserve_exact(db, &[], ReceiptKind::Invoice.series(), no, &id).unwrap();
+    let new_id = id.clone();
     db.write(actor.clone(), move |tx| {
-        delivery::approve(tx, &rid, Some(&res))
+        delivery::create(tx, &new_id, &input, Some(&res))
     })
     .unwrap();
     let (rid, input) = (
@@ -317,12 +272,12 @@ fn checks_payments_and_receivables() {
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
-    let (bk, line) = booking(&a.db, &actor, &client, &tape, 10, Some(14_000));
+    let bk = order(&client, &tape, Some(14_000));
 
     // 4 × ₱140 = ₱560 (the typed price is final, no VAT on top), delivered Aug 1 (30 days' terms: due Aug
     // 31, 51 days overdue). 6 more today: ₱840, not due.
-    let dr1 = delivered_dr(&a.db, &actor, &bk, &line, 4, "101", "2026-08-01");
-    let dr2 = delivered_dr(&a.db, &actor, &bk, &line, 6, "102", TODAY);
+    let dr1 = delivered_dr(&a.db, &actor, &bk, 4, "101", "2026-08-01");
+    let dr2 = delivered_dr(&a.db, &actor, &bk, 6, "102", TODAY);
     let d1 = a.db.read(|c| delivery::get(c, &dr1)).unwrap().unwrap().dr;
     assert_eq!(d1.totals.gross_c, 56_000);
     assert_eq!(d1.balance_c, 56_000);
@@ -407,10 +362,10 @@ fn checks_payments_and_receivables() {
             .lines[0]
             .id
             .clone();
-    let (id, input) = (dr1.clone(), dr_input(&a.db, &bk, &line, 3, Some(dl)));
+    let (id, input) = (dr1.clone(), receipt_input(&bk, 3, Some(dl)));
     assert!(
         invalid(a.db.write(actor.clone(), move |tx| delivery::update(
-            tx, &id, &input, None
+            tx, &id, &input, None, None
         )))
         .contains("can't go below")
     );
@@ -526,8 +481,9 @@ fn checks_payments_and_receivables() {
     assert_eq!(row["amount_c"], serde_json::Value::Null);
     assert_eq!(row["_deleted"], serde_json::json!(0));
     let mut wrong = cash.clone();
-    wrong.method = PayMethod::BankTransfer;
-    assert!(invalid(pay_update(&a.db, &actor, wrong)).contains("method can't change"));
+    // The method can change now; a check then needs its details.
+    wrong.method = PayMethod::Check;
+    assert!(invalid(pay_update(&a.db, &actor, wrong)).contains("check's details"));
 
     // DR 102 has nothing applied now, so it can be voided.
     let id = dr2.clone();
@@ -561,8 +517,8 @@ fn invoice_price_is_final_and_matches_receivables() {
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
     // 3 × ₱33.33 = ₱99.99 on a Sales Invoice: no VAT is added on top.
-    let (bk, line) = booking(&a.db, &actor, &client, &tape, 3, Some(3_333));
-    let dr = delivered_dr(&a.db, &actor, &bk, &line, 3, "7", TODAY);
+    let bk = order(&client, &tape, Some(3_333));
+    let dr = delivered_dr(&a.db, &actor, &bk, 3, "7", TODAY);
     let d = a.db.read(|c| delivery::get(c, &dr)).unwrap().unwrap().dr;
     assert_eq!(
         (d.totals.net_c, d.totals.vat_c, d.totals.gross_c),
@@ -581,8 +537,8 @@ fn offline_payments_for_the_same_dr_show_as_overpaid() {
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
-    let (bk, line) = booking(&a.db, &actor, &client, &tape, 4, Some(14_000));
-    let dr = delivered_dr(&a.db, &actor, &bk, &line, 4, "101", TODAY);
+    let bk = order(&client, &tape, Some(14_000));
+    let dr = delivered_dr(&a.db, &actor, &bk, 4, "101", TODAY);
     let b = TestPeer::new(dir.path(), "b", 2);
     pull(&b.db, &a.db, 100);
 
@@ -626,16 +582,92 @@ fn offline_payments_for_the_same_dr_show_as_overpaid() {
     assert_eq!(nos, ["PAY-2026-0001", "PAY-2026-0002"]);
 }
 
-/// The lot of this month of a booking line's item.
-fn lot_of(db: &Db, booking_line: &str) -> Option<String> {
-    let item: String = db
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT item_id FROM booking_lines WHERE id = ?1",
-                [booking_line],
-                |r| r.get(0),
-            )?)
-        })
+#[test]
+fn payments_edit_in_any_status_and_void_ones_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let tape = add_item(&a.db, &actor, "TAPE");
+    let client = add_client(&a.db, &actor, "Watsons");
+    let other = add_client(&a.db, &actor, "Mercury");
+    let bk = order(&client, &tape, Some(10_000));
+    let dr1 = delivered_dr(&a.db, &actor, &bk, 4, "101", "2026-08-01"); // ₱400
+    assert_eq!(balance(&a.db, &dr1), 40_000);
+
+    let id = pay(
+        &a.db,
+        &actor,
+        &[],
+        pay_input(&client, PayMethod::Cash, 40_000, &[(&dr1, 40_000)]),
+    )
+    .unwrap();
+    assert_eq!(balance(&a.db, &dr1), 0);
+
+    // Void, then edit while void (it still doesn't count).
+    let vid = id.clone();
+    a.db.write(actor.clone(), move |tx| payments::void(tx, &vid, "wrong"))
         .unwrap();
-    Some(lots::lot_id(&item, lots::month_of(TODAY)))
+    assert_eq!(balance(&a.db, &dr1), 40_000);
+    let mut edit = pay_input(&client, PayMethod::Cash, 30_000, &[(&dr1, 30_000)]);
+    edit.id = Some(id.clone());
+    pay_update(&a.db, &actor, edit).unwrap();
+    assert_eq!(balance(&a.db, &dr1), 40_000);
+    assert_eq!(payment(&a.db, &id).amount_c, 30_000);
+
+    // Restoring counts it again.
+    let rid = id.clone();
+    a.db.write(actor.clone(), move |tx| payments::restore(tx, &rid))
+        .unwrap();
+    assert_eq!(balance(&a.db, &dr1), 10_000);
+    invalid(a.db.write(actor.clone(), {
+        let rid = id.clone();
+        move |tx| payments::restore(tx, &rid)
+    }));
+
+    // The method changes: cash becomes a check, with its details.
+    let mut edit = pay_input(&client, PayMethod::Check, 30_000, &[(&dr1, 30_000)]);
+    edit.id = Some(id.clone());
+    pay_update(&a.db, &actor, edit).unwrap();
+    let p = payment(&a.db, &id);
+    assert_eq!(p.method, PayMethod::Check);
+    assert_eq!(
+        p.check.as_ref().map(|c| c.status),
+        Some(CheckStatus::OnHand)
+    );
+    // And back to cash: the check details go.
+    let mut edit = pay_input(&client, PayMethod::Cash, 30_000, &[(&dr1, 30_000)]);
+    edit.id = Some(id.clone());
+    pay_update(&a.db, &actor, edit).unwrap();
+    let p = payment(&a.db, &id);
+    assert_eq!((p.method, p.check.is_none()), (PayMethod::Cash, true));
+
+    // A payment can move to another client once it has no allocations.
+    let mut edit = pay_input(&other, PayMethod::Cash, 30_000, &[]);
+    edit.id = Some(id.clone());
+    pay_update(&a.db, &actor, edit).unwrap();
+    assert_eq!(
+        payment(&a.db, &id).client_id.as_deref(),
+        Some(other.as_str())
+    );
+    assert_eq!(balance(&a.db, &dr1), 40_000);
+
+    // A void payment can't be restored over a receipt that was paid since.
+    let mut back = pay_input(&client, PayMethod::Cash, 30_000, &[(&dr1, 30_000)]);
+    back.id = Some(id.clone());
+    pay_update(&a.db, &actor, back).unwrap();
+    let vid = id.clone();
+    a.db.write(actor.clone(), move |tx| payments::void(tx, &vid, "again"))
+        .unwrap();
+    pay(
+        &a.db,
+        &actor,
+        &[],
+        pay_input(&client, PayMethod::Cash, 40_000, &[(&dr1, 40_000)]),
+    )
+    .unwrap();
+    let msg = invalid(a.db.write(actor.clone(), {
+        let rid = id.clone();
+        move |tx| payments::restore(tx, &rid)
+    }));
+    assert!(msg.contains("left to pay"), "{msg}");
 }
