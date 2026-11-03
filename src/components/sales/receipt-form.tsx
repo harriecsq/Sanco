@@ -125,7 +125,7 @@ const lotLabel = (l: StockLot) => `${lotText(l)} · ${formatQty(l.qty, l.unit)}`
 
 /**
  * Enters a DR or invoice (without `dr`) or edits one (with it), in any
- * status: also after delivery, and when cancelled or void.
+ * status: also after delivery, and when void.
  */
 export const ReceiptFormModal = component$<{
   open: Signal<boolean>;
@@ -377,10 +377,10 @@ export const ReceiptFormModal = component$<{
             moves the difference in or out of stock.
           </Alert>
         )}
-        {dr?.dr.status === "cancelled" && (
+        {dr?.dr.status === "void" && (
           <Alert tone="warning">
-            This {k.name} is {dr.dr.voided ? "void" : "cancelled"}. Edits are
-            saved; restore it to put it back in use.
+            This {k.name} is void. Edits are saved; restore it to put it back
+            in use.
           </Alert>
         )}
         {clientChanged && (

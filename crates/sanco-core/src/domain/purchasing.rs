@@ -1,15 +1,17 @@
 //! Purchase orders to suppliers, their TT payments and receiving.
 //!
-//! draft → ordered → shipped → arrived → closed, or cancelled. A PO
-//! (header and lines) stays editable in any status but cancelled; a line
+//! draft → ordered → shipped → arrived → closed. There is no Cancelled
+//! status: a PO that isn't wanted is deleted, in any status, with its TT
+//! payments and receiving reports. A PO (header and lines) stays editable
+//! in any status; a line
 //! that has been received can't be removed, change item or go below what
 //! was received.
 //!
 //! Goods come in through receiving reports (series RR), each into one
 //! location. Its date picks each item's lot, and each line can give that
 //! lot's expiry and serial range. A report is
-//! posted when saved and never edited: a mistake is voided and entered
-//! again, like a stock document. How much of a PO was received is computed
+//! posted when saved; it can be edited, voided (and restored) or deleted
+//! at any time, like a stock document. How much of a PO was received is computed
 //! from the posted reports (`v_po_received`), never stored.
 //!
 //! TT payments are plain rows on the PO, in any currency with their own FX.
@@ -53,7 +55,6 @@ pub enum PoStatus {
     Shipped,
     Arrived,
     Closed,
-    Cancelled,
 }
 
 impl PoStatus {
@@ -64,22 +65,21 @@ impl PoStatus {
             PoStatus::Shipped => "shipped",
             PoStatus::Arrived => "arrived",
             PoStatus::Closed => "closed",
-            PoStatus::Cancelled => "cancelled",
         }
     }
 
+    /// POs cancelled before 1.8 are deleted at start ([`delete_cancelled`]).
     pub fn parse(s: Option<&str>) -> Self {
         match s {
             Some("ordered") => PoStatus::Ordered,
             Some("shipped") => PoStatus::Shipped,
             Some("arrived") => PoStatus::Arrived,
             Some("closed") => PoStatus::Closed,
-            Some("cancelled") => PoStatus::Cancelled,
             _ => PoStatus::Draft,
         }
     }
 
-    /// Ordered and not yet closed or cancelled: goods can be received.
+    /// Ordered and not yet closed: goods can be received.
     pub fn is_open(self) -> bool {
         matches!(
             self,
@@ -105,8 +105,6 @@ pub enum PoAction {
     Close,
     /// closed → back to where it was.
     Reopen,
-    /// → cancelled. Only before anything was received.
-    Cancel,
 }
 
 /// How much of a PO has been received.
@@ -158,8 +156,6 @@ pub struct PoStatusInput {
     pub action: PoAction,
     /// Shipped or arrival date for `ship`/`arrive`; blank = today.
     pub date: String,
-    /// Why a PO is cancelled.
-    pub reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,7 +245,6 @@ pub struct PoInfo {
     pub arrived_date: Option<String>,
     pub closed_at: Option<i64>,
     pub closed_by_name: Option<String>,
-    pub cancel_reason: Option<String>,
 }
 
 impl PoInfo {
@@ -582,7 +577,7 @@ pub fn create(tx: &mut WriteTx, input: &PoInput, res: &Reservation, costs: bool)
     Ok(id)
 }
 
-/// Saves a PO's header and lines (any status but cancelled).
+/// Saves a PO's header and lines (any status).
 pub fn update(tx: &mut WriteTx, input: &PoInput, costs: bool) -> Result<()> {
     let id = input.id.clone().unwrap_or_default();
     let old = existing(tx.conn(), &id)?;
@@ -664,20 +659,6 @@ pub fn set_status(tx: &mut WriteTx, id: &str, input: &PoStatusInput) -> Result<(
             };
             json!({ "status": back.as_str(), "closed_at": null, "closed_by": null })
         }
-        (PoAction::Cancel, s) if s == PoStatus::Draft || s.is_open() => {
-            if received > 0 {
-                return Err(Error::Invalid(
-                    "goods were already received on this PO; void the receiving reports first, or close it"
-                        .into(),
-                ));
-            }
-            json!({
-                "status": PoStatus::Cancelled.as_str(),
-                "closed_at": now,
-                "closed_by": user,
-                "cancel_reason": text_opt(&input.reason),
-            })
-        }
         (_, s) => {
             return Err(Error::Invalid(format!(
                 "this purchase order is {}; it can't be changed that way",
@@ -688,30 +669,56 @@ pub fn set_status(tx: &mut WriteTx, id: &str, input: &PoStatusInput) -> Result<(
     tx.update(PURCHASE_ORDERS, id, patch).map(drop)
 }
 
-/// Deletes a draft PO without payments. Its number is not given out again.
+/// Deletes a PO in any status, with its TT payments and receiving reports.
+/// Refused if goods it brought in were already used (stock would go below
+/// zero). Its number is not given out again.
 pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
-    let row = tx
-        .get(PURCHASE_ORDERS, id)?
-        .ok_or_else(|| Error::Invalid("that purchase order no longer exists".into()))?;
-    if PoStatus::parse(row["status"].as_str()) != PoStatus::Draft {
+    if tx.get(PURCHASE_ORDERS, id)?.is_none() {
         return Err(Error::Invalid(
-            "only a draft purchase order can be deleted; cancel it instead".into(),
+            "that purchase order no longer exists".into(),
         ));
     }
-    let paid: i64 = tx.conn().query_row(
-        "SELECT COUNT(*) FROM supplier_payments WHERE po_id = ?1 AND _deleted = 0",
-        [id],
-        |r| r.get(0),
-    )?;
-    if paid > 0 {
-        return Err(Error::Invalid(
-            "this purchase order has TT payments; delete them first, or cancel the PO".into(),
-        ));
+    let receipts: Vec<String> = {
+        let mut stmt = tx
+            .conn()
+            .prepare("SELECT id FROM po_receipts WHERE po_id = ?1 AND _deleted = 0")?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let undo = inventory::undo_effect(tx.conn(), &receipts)?;
+    inventory::check_not_negative(tx.conn(), &undo, "can't delete: ")?;
+    for r in receipts {
+        delete_receipt_rows(tx, &r)?;
+    }
+    for p in crate::domain::line_ids(tx, SUPPLIER_PAYMENTS, "po_id", id)? {
+        tx.delete(SUPPLIER_PAYMENTS, &p)?;
     }
     for line in crate::domain::line_ids(tx, PO_LINES, "po_id", id)? {
         tx.delete(PO_LINES, &line)?;
     }
+    numbering::delete_for(tx, id)?;
     tx.delete(PURCHASE_ORDERS, id)
+}
+
+/// Deletes the POs cancelled before 1.8 (there is no Cancelled status any
+/// more), with their payments and void receiving reports. Runs at every
+/// start. One with posted receiving reports (possible only through edits)
+/// is kept and reads as a draft.
+pub fn delete_cancelled(tx: &mut WriteTx) -> Result<()> {
+    let ids: Vec<String> = {
+        let mut stmt = tx.conn().prepare(
+            "SELECT p.id FROM purchase_orders p
+             WHERE p._deleted = 0 AND p.status = 'cancelled'
+               AND NOT EXISTS (SELECT 1 FROM po_receipts r WHERE r.po_id = p.id
+                               AND r._deleted = 0 AND r.status = 'posted')",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    for id in ids {
+        delete(tx, &id)?;
+    }
+    Ok(())
 }
 
 /// Copies the PO's supplier prices, currency and FX into the cost sheets of
@@ -786,7 +793,7 @@ fn copy_to_sheet(
 }
 
 /// The newest supplier price of an item: its first priced line on the
-/// latest placed PO (not a draft, not cancelled).
+/// latest placed PO (not a draft).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SupplierPrice {
@@ -813,7 +820,7 @@ pub fn latest_price(conn: &Connection, item_id: &str) -> Result<Option<SupplierP
              JOIN purchase_orders p ON p.id = l.po_id AND p._deleted = 0
              LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PO' AND n._deleted = 0
              WHERE l.item_id = ?1 AND l._deleted = 0 AND l.price_minor IS NOT NULL
-               AND COALESCE(p.status, 'draft') NOT IN ('draft', 'cancelled')
+               AND COALESCE(p.status, 'draft') <> 'draft'
              ORDER BY p.date DESC, COALESCE(p.ordered_at, 0) DESC, p.id DESC, l.line_no, l.id
              LIMIT 1",
             [item_id],
@@ -984,7 +991,7 @@ fn prepare_receipt(
                 "this purchase order is closed; reopen it first".into(),
             ));
         }
-        _ => return Err(Error::Invalid("this purchase order is cancelled".into())),
+        _ => {}
     }
     let date = require_date(&input.date, "receiving date")?;
     if date.as_str() > today {
@@ -1108,6 +1115,28 @@ pub fn receive(tx: &mut WriteTx, input: &ReceiptInput, res: &Reservation) -> Res
         )?;
     }
     Ok(id)
+}
+
+fn delete_receipt_rows(tx: &mut WriteTx, id: &str) -> Result<()> {
+    for line in crate::domain::line_ids(tx, PO_RECEIPT_LINES, "receipt_id", id)? {
+        tx.delete(PO_RECEIPT_LINES, &line)?;
+    }
+    numbering::delete_for(tx, id)?;
+    tx.delete(PO_RECEIPTS, id)
+}
+
+/// Deletes a receiving report, posted or void: its goods no longer count as
+/// received or in stock. Refused if the stock was already used. Lots it
+/// made stay (they are never deleted).
+pub fn delete_receipt(tx: &mut WriteTx, id: &str) -> Result<()> {
+    if tx.get(PO_RECEIPTS, id)?.is_none() {
+        return Err(Error::Invalid(
+            "that receiving report no longer exists".into(),
+        ));
+    }
+    let undo = inventory::undo_effect(tx.conn(), &[id.to_string()])?;
+    inventory::check_not_negative(tx.conn(), &undo, "can't delete: ")?;
+    delete_receipt_rows(tx, id)
 }
 
 /// Voids a posted receiving report: its goods no longer count as received
@@ -1298,7 +1327,7 @@ const PO_SELECT: &str = "
     SELECT p.id, n.no, COALESCE(n.confirmed, 1), p.supplier_id, sn.no, s.name, p.date,
            COALESCE(p.currency, 'PHP'), p.fx_rate, p.expected_date, p.status, p.supplier_ref,
            p.notes, p.created_at, uc.display_name, p.ordered_at, uo.display_name,
-           p.shipped_date, p.arrived_date, p.closed_at, ul.display_name, p.cancel_reason
+           p.shipped_date, p.arrived_date, p.closed_at, ul.display_name
     FROM purchase_orders p
     LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PO' AND n._deleted = 0
     LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -1332,7 +1361,6 @@ fn po_from_row(r: &rusqlite::Row) -> rusqlite::Result<PoInfo> {
         arrived_date: r.get(18)?,
         closed_at: r.get(19)?,
         closed_by_name: r.get(20)?,
-        cancel_reason: r.get(21)?,
         total_minor: None,
         total_php_c: None,
         paid_minor: None,

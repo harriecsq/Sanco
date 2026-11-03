@@ -150,6 +150,19 @@ pub fn seed_defaults_tx(tx: &mut WriteTx) -> Result<()> {
     charge_types::seed(tx)
 }
 
+/// Runs at every start: the default rows, then deleting the documents
+/// cancelled before 1.8.
 pub fn seed_defaults(db: &Db) -> Result<()> {
-    db.write(Actor::system(), seed_defaults_tx)
+    db.write(Actor::system(), |tx| {
+        seed_defaults_tx(tx)?;
+        delete_cancelled(tx)
+    })
+}
+
+/// Deletes the DRs, invoices and POs cancelled before 1.8 (there is no
+/// Cancelled status any more). Every PC deleting the same row is not a
+/// conflict: deletes always win the merge.
+pub fn delete_cancelled(tx: &mut WriteTx) -> Result<()> {
+    delivery::delete_cancelled(tx)?;
+    purchasing::delete_cancelled(tx)
 }

@@ -25,7 +25,7 @@ _Business Development was removed on 2026-10-27 (user decision); see "BD removal
 2. ~~**Business Development:**~~ (removed 2026-10-27) client requests and inquiries (client or prospect, requested items, qty, quoted rate, follow-up date). Status: open → quoted → won/lost. A won request converts to a Booking.
 3. **Booking:** (changed in M15) the DR and invoice screen: every client order starts as a DR or invoice with client, items, qty, price and lot. Status: new → delivered, or cancelled. The old booking step is gone.
 4. **Accounting:**
-   - **DRs and invoices** moved to Booking in M15 (new → delivered/cancelled, source location per receipt; "delivered" takes stock out).
+   - **DRs and invoices** moved to Booking in M15 (new → delivered, or void after delivery; deleted instead of cancelled since 1.8; source location per receipt; "delivered" takes stock out).
    - **Receivables:** delivered DR totals minus payments, with aging buckets.
    - **Checks received:** bank, check no., check date (PDC if in the future), amount. Status: on hand → deposited → cleared / bounced / replaced.
    - **Payments:** cash, check or bank transfer, allocated to DRs.
@@ -200,6 +200,7 @@ _Update this section when each milestone is finished: set its status, the date, 
 | M13 macOS support | 🟡 **Next.** Merged with HR, Mac build via GitHub Actions pending | 2026-10-31 | See M13 notes below. Branch `macos-support` (`a0bb228` and earlier; `3538159` "mac" left out: it committed `target/` and churned `package-lock.json`) merged into the HR branch as `claude/wonderful-edison-avq5gb`. Release builds (NSIS + universal DMG) run on GitHub Actions from a `v*` tag. Never run on a Mac yet. |
 | M14 Lots | 🟡 Code done, inventory import and release pending | 2026-11-02 | See M14 notes below. Plan: `docs/plans/m14-lots.md`. Boxes removed, lots added. Nothing committed yet; version not bumped (still 1.3.0). Schema **v14**: every PC must update together. |
 | M15 Receipts as orders + edit anytime | 🟡 Code done, UI click-through on a real PC pending | 2026-11-03 | See M15 notes below. DRs and invoices are the client's order (no booking step, no approval); every document is editable in any status. Version **1.7.0**. Schema **v15** (migration `0015_receipts_as_orders`): every PC must update together. |
+| Delete instead of cancel | 🟡 Code done, UI click-through on a real PC pending | 2026-11-03 | See "Delete instead of cancel" notes below. No Cancelled status on DRs, invoices or POs; every document can be deleted in any status. Schema **v16** (migration `0016_no_cancelled`, comments only): every PC must update together. Version **1.8.0**. |
 | HR | ✅ Code done | 2026-10-31 | See `docs/hr-plan.md` (plan + build notes). Commits `27557b0`, `9207142`. Released together with M13 as **1.3.0**. Schema **v13** (migration `0013_hr`): every PC must update together. |
 
 **M0 notes**
@@ -458,6 +459,16 @@ _Update this section when each milestone is finished: set its status, the date, 
   - The approved-only KPI hint is now "N without a number yet".
 - **Verified:** `cargo test -p sanco-core -p sanco-net` (incl. `sim`), `cargo clippy --workspace`, `npm run build`. A Playwright run against the built UI with a stubbed backend covered entering a DR (Office default, lot choice, number), editing, delivering, and editing a delivered one into an invoice. **Not run on a real PC / Windows yet.**
 - **Linux build deps** (for the app crate and `npm run bindings` on Linux): `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`.
+
+**Delete instead of cancel notes (2026-11-03)**
+- **User decisions:** remove the Cancelled status everywhere and delete instead; anything can be deleted. Asked: "anything" means documents only (master data keeps "in use → inactive"), and Void stays alongside Delete.
+- **Deletes** (all `Action::Delete`): `delivery::delete` (`delete_dr`; any status: allocations to it are cleared, so payments become credit; stock comes back through the views), `purchasing::delete` (any status, cascades TT payments and receiving reports; refused if their goods were used), `purchasing::delete_receipt` (`delete_po_receipt`), `inventory::delete` (`delete_stock_doc`), `payments::delete` (`delete_payment`; its allocations are deleted with it). Stock checks use `inventory::undo_effect` (summed per lot over several documents).
+- **Numbers:** `numbering::delete_for` deletes the document's `doc_numbers` rows and claims. A typed DR/SI number can be typed again (clash checks skip deleted rows); an automatic number is not reused (`max_seq` counts deleted rows).
+- **Statuses:** `DrStatus` is `new | delivered | void`; a void receipt now stores `void` and 1.7's `cancelled` + `delivered_at` also reads as Void. `DrInfo.voided` and `cancelled_*` became `voided_at`, `voided_by_name`, `void_reason` (same DB columns `cancelled_at/by`, `cancel_reason`). `PoStatus` lost `cancelled`, `PoAction` lost `cancel`, `PoStatusInput` lost `reason`, `PoInfo` lost `cancel_reason`. Restore is only void → delivered.
+- **Old data:** `domain::delete_cancelled` runs in `seed_defaults` at every start: deletes receipts with status `cancelled` and no `delivered_at`, and cancelled POs without posted receiving reports (those, possible only via edits, are kept and read as drafts). Ordinary replicated deletes, so every PC converges; two PCs deleting the same row is not a conflict (`merge.rs`: no conflict when the loser is deleted). Not done as a migration backfill, because a peer with a newer unsynced edit of the row would not get the delete.
+- **Schema v16** only so 1.7 PCs (which would read `void` as New and could still cancel) can't sync with this build.
+- **UI:** Delete buttons (confirm, then back to the list) on DR/invoice, PO, payment, stock document and receiving report pages. Status filters list New / Delivered / Void for receipts, no Cancelled for POs.
+- **Verified:** `cargo test -p sanco-core -p sanco-net` (incl. `sim`; new tests `documents_are_deleted_in_any_status`, `deleting_a_paid_receipt_frees_its_payment_and_number`, `receipts_cancelled_before_1_8_are_deleted_at_start`), `cargo clippy --workspace`, `npm run build`. **Not clicked through in the app yet.**
 
 **BD removal notes (2026-10-27)**
 - **User decision:** the Business Development module is no longer needed. Removed: `domain/bd.rs`, `commands/bd.rs` (5 commands), `report_bd` + `reports::bd_conversion`/`BdRow`/`win_rate`, routes `/bd/` and `/reports/bd/`, nav entry, Dashboard "Open requests" KPI, `Module::Bd`, series `BD` (const and Settings → Number formats row), `BookingInfo.bd_request_id`/`bd_no` and the "From request" link, `bookings::insert` (and the `quoted` flags in `prepare`).

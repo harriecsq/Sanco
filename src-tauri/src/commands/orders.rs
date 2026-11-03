@@ -82,7 +82,7 @@ pub async fn set_po_status(
     .await
 }
 
-/// Deletes a draft PO without payments.
+/// Deletes a PO in any status, with its TT payments and receiving reports.
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_po(state: State<'_, AppState>, id: String) -> Result<(), String> {
@@ -217,6 +217,14 @@ pub async fn update_po_receipt(
         })
     })
     .await
+}
+
+/// Deletes a receiving report, posted or void.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_po_receipt(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Orders, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| purchasing::delete_receipt(tx, &id))).await
 }
 
 /// Posts a void receiving report again.

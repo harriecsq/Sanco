@@ -27,7 +27,7 @@ import {
   stepsFor,
 } from "~/components/accounting/accounting";
 import { receiptHref, receiptName } from "~/components/sales/sales";
-import { Alert, Badge, Empty, Field, InfoList, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
+import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
 import { btnDanger, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
@@ -213,6 +213,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
   const reason = useSignal("");
   const voidError = useSignal("");
   const busy = useSignal(false);
+  const deleteOpen = useSignal(false);
 
   useLiveLoad(
     MONEY_TABLES,
@@ -331,6 +332,11 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
             Restore
           </button>
         )}
+        {can(user, "accounting", "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+            Delete
+          </button>
+        )}
         {canEdit && (
           <button
             q:slot="actions"
@@ -434,6 +440,20 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
         })}
       />
       <CheckStepModal open={stepOpen} payment={stepPayment} step={step} />
+      <Confirm
+        open={deleteOpen}
+        title={`Delete payment ${p.no ?? ""}?`}
+        onConfirm$={$(async () => {
+          unwrap(await commands.deletePayment(id));
+          await nav("/accounting/payments/");
+        })}
+      >
+        <p>
+          The payment is removed on every PC
+          {p.counts && p.applied_c > 0 && ` and the DRs and invoices it paid owe ${formatPeso(p.applied_c)} again`}. This
+          can't be undone, and its number isn't given out again.
+        </p>
+      </Confirm>
       <Modal open={voidOpen} title="Void payment">
         <form
           class="space-y-3"

@@ -116,7 +116,7 @@ const PoList = component$(() => {
             key: "status",
             label: "Statuses",
             options: [
-              ...(["draft", "ordered", "shipped", "arrived", "closed", "cancelled"] as const).map((s) => ({
+              ...(["draft", "ordered", "shipped", "arrived", "closed"] as const).map((s) => ({
                 value: s,
                 label: PO_STATUS[s].label,
               })),
@@ -154,7 +154,7 @@ const PoList = component$(() => {
                 const open = ["ordered", "shipped", "arrived"].includes(p.status);
                 const late = open && p.progress !== "full" && !!p.expected_date && p.expected_date < today;
                 return (
-                  <tr key={p.id} class={p.status === "cancelled" ? "text-ink-muted" : ""}>
+                  <tr key={p.id}>
                     <td class={[td, "whitespace-nowrap"]}>
                       <Link class="font-medium text-brand-700 hover:underline" href={`/orders/?id=${p.id}`}>
                         {p.no ?? "—"}
@@ -184,7 +184,7 @@ const PoList = component$(() => {
                       )}
                     </td>
                     <td class={[td, "whitespace-nowrap"]}>
-                      {p.status === "draft" || p.status === "cancelled" ? "—" : RECEIVE_LABEL[p.progress]}
+                      {p.status === "draft" ? "—" : RECEIVE_LABEL[p.progress]}
                     </td>
                     <td class={td}>
                       <PoStatusBadge status={p.status} />
@@ -238,11 +238,6 @@ const ACTION_TEXT: Record<PoAction, { title: string; body: string; label: string
     body: "More goods can be received on it again.",
     label: "Reopen",
   },
-  cancel: {
-    title: "Cancel this PO?",
-    body: "It stays in the list, marked cancelled. Only POs with nothing received can be cancelled.",
-    label: "Cancel PO",
-  },
 };
 
 const PoView = component$<{ id: string }>(({ id }) => {
@@ -268,7 +263,6 @@ const PoView = component$<{ id: string }>(({ id }) => {
   // treated as constant by the optimizer, so the title would go stale.
   const actionTitle = useComputed$(() => ACTION_TEXT[action.value].title);
   const actionDate = useSignal("");
-  const reason = useSignal("");
   const actionError = useSignal("");
   const busy = useSignal(false);
 
@@ -301,14 +295,13 @@ const PoView = component$<{ id: string }>(({ id }) => {
   const user = session.user;
   const costs = sees(user, "costs");
   const isOpen = p.status === "ordered" || p.status === "shipped" || p.status === "arrived";
-  const receiving = p.status !== "draft" && p.status !== "cancelled";
+  const receiving = p.status !== "draft";
   const canEdit = can(user, "orders", "edit");
   const canReceive = isOpen && can(user, "orders", "create") && det.lines.some((l) => l.remaining > 0);
   const voidCount = det.receipts.filter((r) => r.voided).length;
 
   const ask = $((a: PoAction) => {
     action.value = a;
-    reason.value = "";
     actionDate.value = todayManila();
     actionError.value = "";
     actionOpen.value = true;
@@ -328,10 +321,6 @@ const PoView = component$<{ id: string }>(({ id }) => {
   if (p.shipped_date) rows.push(["Shipped", formatDay(p.shipped_date)]);
   if (p.arrived_date) rows.push(["Arrived", formatDay(p.arrived_date)]);
   if (p.status === "closed") rows.push(["Closed", `${formatDateTime(p.closed_at)} by ${p.closed_by_name ?? "—"}`]);
-  if (p.status === "cancelled") {
-    rows.push(["Cancelled", `${formatDateTime(p.closed_at)} by ${p.closed_by_name ?? "—"}`]);
-    rows.push(["Reason", p.cancel_reason ?? ""]);
-  }
   const balance = p.total_minor != null && p.paid_minor != null ? p.total_minor - p.paid_minor : null;
 
   return (
@@ -342,14 +331,9 @@ const PoView = component$<{ id: string }>(({ id }) => {
         </Link>
       </p>
       <PageHeader title={`PO ${p.no ?? ""}`} subtitle={p.supplier_name ?? undefined}>
-        {p.status === "draft" && can(user, "orders", "delete") && (
+        {can(user, "orders", "delete") && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
             Delete
-          </button>
-        )}
-        {(p.status === "draft" || isOpen) && p.receipt_count === 0 && canEdit && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => ask("cancel")}>
-            Cancel PO
           </button>
         )}
         {p.status === "ordered" && p.receipt_count === 0 && canEdit && (
@@ -496,7 +480,7 @@ const PoView = component$<{ id: string }>(({ id }) => {
             <section class={[card, "overflow-x-auto"]}>
               <div class="flex items-center justify-between border-b border-line px-4 py-3">
                 <h2 class="font-semibold">TT payments</h2>
-                {p.status !== "cancelled" && can(user, "orders", "create") && (
+                {can(user, "orders", "create") && (
                   <button
                     type="button"
                     class={btnGhost}
@@ -647,13 +631,18 @@ const PoView = component$<{ id: string }>(({ id }) => {
       </Confirm>
       <Confirm
         open={deleteOpen}
-        title={`Delete draft ${p.no ?? ""}?`}
+        title={`Delete PO ${p.no ?? ""}?`}
         onConfirm$={$(async () => {
           unwrap(await commands.deletePo(id));
           await nav("/orders/");
         })}
       >
-        <p>This deletes the draft on every PC. Its number isn't given out again.</p>
+        <p>
+          This deletes the PO on every PC
+          {det.payments.length > 0 && ", with its TT payments"}
+          {det.receipts.length > 0 && ` and its ${det.receipts.length} receiving report(s): their goods leave stock`}
+          . This can't be undone, and its number isn't given out again.
+        </p>
       </Confirm>
       <Modal open={actionOpen} title={actionTitle.value}>
         <form
@@ -667,7 +656,6 @@ const PoView = component$<{ id: string }>(({ id }) => {
                 await commands.setPoStatus(id, {
                   action: action.value,
                   date: actionDate.value,
-                  reason: reason.value,
                 }),
               );
               actionOpen.value = false;
@@ -689,11 +677,6 @@ const PoView = component$<{ id: string }>(({ id }) => {
                 value={actionDate.value}
                 onChange$={(_, el) => (actionDate.value = el.value)}
               />
-            </Field>
-          )}
-          {action.value === "cancel" && (
-            <Field label="Reason">
-              <input class={input} value={reason.value} onInput$={(_, el) => (reason.value = el.value)} />
             </Field>
           )}
           <div class="flex justify-end gap-2">

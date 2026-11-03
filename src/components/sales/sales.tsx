@@ -14,7 +14,7 @@ type Tone = "brand" | "muted" | "danger" | "warning";
 export const DR_STATUS: Record<DrStatus, { label: string; tone: Tone }> = {
   new: { label: "New", tone: "warning" },
   delivered: { label: "Delivered", tone: "brand" },
-  cancelled: { label: "Cancelled", tone: "muted" },
+  void: { label: "Void", tone: "danger" },
 };
 
 /** Words for each receipt type: a DR (no VAT) or an Invoice (VAT). */
@@ -67,13 +67,9 @@ export const StatusBadge = component$<{ s: { label: string; tone: Tone } }>(
   ({ s }) => <Badge tone={s.tone}>{s.label}</Badge>,
 );
 
-export const DrStatusBadge = component$<{ d: DrInfo }>(({ d }) =>
-  d.voided ? (
-    <Badge tone="danger">Void</Badge>
-  ) : (
-    <StatusBadge s={DR_STATUS[d.status]} />
-  ),
-);
+export const DrStatusBadge = component$<{ d: DrInfo }>(({ d }) => (
+  <StatusBadge s={DR_STATUS[d.status]} />
+));
 
 /** "Offline no." badge for numbers given while other PCs were unreachable. */
 export const OfflineBadge = component$<{ show: boolean }>(({ show }) =>

@@ -122,7 +122,6 @@ fn status(db: &Db, actor: &Actor, id: &str, action: PoAction) -> Result<(), Erro
     let input = PoStatusInput {
         action,
         date: String::new(),
-        reason: "Supplier out of stock".into(),
     };
     db.write(actor.clone(), move |tx| {
         purchasing::set_status(tx, &id, &input)
@@ -408,11 +407,6 @@ fn po_payments_and_receiving_into_stock() {
     assert_eq!(d.po.progress, ReceiveProgress::Full);
     assert_eq!(d.po.received_qty, 160);
 
-    // Cancel and back-to-draft are refused once goods came in.
-    assert!(
-        invalid(status(&a.db, &actor, &po, PoAction::Cancel))
-            .starts_with("goods were already received")
-    );
     assert_eq!(
         invalid(status(&a.db, &actor, &po, PoAction::Ship)),
         "this purchase order is arrived; it can't be changed that way"
@@ -642,30 +636,15 @@ fn po_payments_and_receiving_into_stock() {
     );
     let w = warehouse();
     assert!(a.db.read(|c| inventory::location_in_use(c, &w)).unwrap());
-    let p = po.clone();
-    assert!(
-        invalid(a.db.write(actor.clone(), move |tx| purchasing::delete(tx, &p)))
-            .starts_with("only a draft purchase order can be deleted")
-    );
 
-    // A draft with a payment can't be deleted; without one it can.
+    // A PO is deleted with its payments.
     let draft = create_po(&a.db, &actor, po_input(&sup, vec![po_line(&tape, 5, None)])).unwrap();
     let d = detail(&a.db, &draft);
     assert_eq!(d.po.unpriced_lines, 1);
     let mut pay = tt.clone();
     pay.po_id = draft.clone();
-    let tt_draft =
-        a.db.write(actor.clone(), move |tx| purchasing::save_payment(tx, &pay))
-            .unwrap();
-    let p = draft.clone();
-    assert!(
-        invalid(a.db.write(actor.clone(), move |tx| purchasing::delete(tx, &p)))
-            .starts_with("this purchase order has TT payments")
-    );
-    a.db.write(actor.clone(), move |tx| {
-        purchasing::delete_payment(tx, &tt_draft)
-    })
-    .unwrap();
+    a.db.write(actor.clone(), move |tx| purchasing::save_payment(tx, &pay))
+        .unwrap();
     let p = draft.clone();
     a.db.write(actor.clone(), move |tx| purchasing::delete(tx, &p))
         .unwrap();
@@ -1018,18 +997,125 @@ fn receiving_reports_and_cancelled_pos_stay_editable() {
         move |tx| purchasing::restore_receipt(tx, &id)
     }));
 
-    // A cancelled PO can be edited.
+    // A closed PO can be edited.
     let po2 = create_po(
         &a.db,
         &actor,
         po_input(&sup, vec![po_line(&tape, 5, Some(300))]),
     )
     .unwrap();
-    status(&a.db, &actor, &po2, PoAction::Cancel).unwrap();
+    status(&a.db, &actor, &po2, PoAction::Order).unwrap();
+    status(&a.db, &actor, &po2, PoAction::Close).unwrap();
     let mut input = as_input(&detail(&a.db, &po2));
     input.lines[0].qty = 7;
     input.supplier_ref = "PI-78".into();
     update_po(&a.db, &actor, input, true).unwrap();
     assert_eq!(detail(&a.db, &po2).lines[0].qty, 7);
-    assert_eq!(detail(&a.db, &po2).po.status, PoStatus::Cancelled);
+    assert_eq!(detail(&a.db, &po2).po.status, PoStatus::Closed);
+}
+
+fn delete_po(db: &Db, actor: &Actor, id: &str) -> Result<(), Error> {
+    let id = id.to_string();
+    db.write(actor.clone(), move |tx| purchasing::delete(tx, &id))
+}
+
+#[test]
+fn documents_are_deleted_in_any_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let sup = add_supplier(&a.db, &actor);
+    let tape = add_item(&a.db, &actor, "TAPE", &sup, false);
+    let po = create_po(
+        &a.db,
+        &actor,
+        po_input(&sup, vec![po_line(&tape, 10, Some(300))]),
+    )
+    .unwrap();
+    status(&a.db, &actor, &po, PoAction::Order).unwrap();
+    let tl = detail(&a.db, &po).lines[0].id.clone();
+    let rr = receive(
+        &a.db,
+        &actor,
+        receipt(&po, &office(), vec![(&tl, None, 10)]),
+    )
+    .unwrap();
+    let tt = TtInput {
+        id: None,
+        po_id: po.clone(),
+        date: TODAY.into(),
+        currency: "USD".into(),
+        amount_minor: 1_000,
+        fx_rate: "56.00".into(),
+        reference: "TT-9".into(),
+        bank_account_id: None,
+        notes: String::new(),
+    };
+    let tt_id =
+        a.db.write(actor.clone(), move |tx| purchasing::save_payment(tx, &tt))
+            .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &office()), 10);
+
+    // Stock it brought in that was used: refused, nothing changes.
+    let lot = lots::lot_id(&tape, lots::month_of(TODAY));
+    let adj = post_doc(
+        &a.db,
+        &actor,
+        stock_doc(
+            StockKind::Adjustment,
+            office(),
+            None,
+            vec![(&tape, Some(lot), -4)],
+        ),
+        series::ADJUSTMENT,
+    );
+    assert!(invalid(delete_po(&a.db, &actor, &po)).starts_with("can't delete: not enough TAPE"));
+    let r = rr.clone();
+    assert!(
+        invalid(a.db.write(actor.clone(), move |tx| purchasing::delete_receipt(tx, &r)))
+            .starts_with("can't delete: not enough TAPE")
+    );
+    assert_eq!(qty_at(&a.db, &tape, &office()), 6);
+
+    // The adjustment is deleted, then the whole PO with its report and TT.
+    a.db.write(actor.clone(), {
+        let id = adj.clone();
+        move |tx| inventory::delete(tx, &id)
+    })
+    .unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &office()), 10);
+    delete_po(&a.db, &actor, &po).unwrap();
+    assert_eq!(qty_at(&a.db, &tape, &office()), 0);
+    a.db.read(|c| {
+        assert!(purchasing::get(c, &po)?.is_none());
+        assert!(purchasing::get_receipt(c, &rr)?.is_none());
+        assert!(!purchasing::list_payments(c)?.iter().any(|t| t.id == tt_id));
+        assert!(inventory::get_doc(c, &adj)?.is_none());
+        Ok(())
+    })
+    .unwrap();
+    assert!(invalid(delete_po(&a.db, &actor, &po)).contains("no longer exists"));
+
+    // A void stock document is deleted too.
+    let rec = post_doc(
+        &a.db,
+        &actor,
+        stock_doc(StockKind::Receipt, office(), None, vec![(&tape, None, 3)]),
+        series::STOCK_RECEIPT,
+    );
+    a.db.write(actor.clone(), {
+        let id = rec.clone();
+        move |tx| inventory::void(tx, &id, "wrong")
+    })
+    .unwrap();
+    a.db.write(actor.clone(), {
+        let id = rec.clone();
+        move |tx| inventory::delete(tx, &id)
+    })
+    .unwrap();
+    assert!(
+        a.db.read(|c| inventory::get_doc(c, &rec))
+            .unwrap()
+            .is_none()
+    );
 }

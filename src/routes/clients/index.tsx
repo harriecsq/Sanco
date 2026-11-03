@@ -523,11 +523,9 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
         (!f.status ||
           (f.status === "unpaid"
             ? d.status === "delivered" && d.balance_c > 0
-            : f.status === "void"
-              ? d.voided
-              : f.status === "no_number"
-                ? !d.no && d.status !== "cancelled"
-                : d.status === f.status && !d.voided)),
+            : f.status === "no_number"
+              ? !d.no && d.status !== "void"
+              : d.status === f.status)),
     );
   });
   const pg = usePage(shown, PAGE);
@@ -543,11 +541,10 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
             label: "Statuses",
             options: [
               { value: "unpaid", label: "Unpaid" },
-              ...(["new", "delivered", "cancelled"] as const).map((s) => ({
+              ...(["new", "delivered", "void"] as const).map((s) => ({
                 value: s,
                 label: DR_STATUS[s].label,
               })),
-              { value: "void", label: "Void" },
               { value: "no_number", label: `No ${k.name} no. yet` },
             ],
           },
@@ -575,7 +572,7 @@ const DrsTab = component$<{ rows: DrInfo[]; kind: ReceiptKind }>((props) => {
             </thead>
             <tbody>
               {pg.value.rows.map((d) => (
-                <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                <tr key={d.id} class={d.status === "void" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
                       <DrNo d={d} />

@@ -1,5 +1,5 @@
 import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
-import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
+import { Link, useLocation, useNavigate, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
   type LocationInfo,
@@ -14,7 +14,7 @@ import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { KIND_LABEL, StockDocModal, blankDoc, docFormOf, type DocForm } from "~/components/inventory/stock-doc-form";
 import { Pager, usePage } from "~/components/ui/pager";
-import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 /** "Warehouse → Office" for transfers, else the location. */
@@ -155,9 +155,11 @@ const DocList = component$(() => {
 
 const DocDetail = component$<{ id: string }>(({ id }) => {
   const session = useSession();
+  const nav = useNavigate();
   const detail = useSignal<StockDocDetail | null>(null);
   const missing = useSignal(false);
   const error = useSignal("");
+  const deleteOpen = useSignal(false);
   const voidOpen = useSignal(false);
   const reason = useSignal("");
   const voidError = useSignal("");
@@ -242,6 +244,11 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
             Restore
           </button>
         )}
+        {can(session.user, "inventory", "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+            Delete
+          </button>
+        )}
         {(d.kind === "receipt" || d.kind === "adjustment" || d.kind === "transfer") &&
           can(session.user, "inventory", "edit") && (
             <button
@@ -304,6 +311,19 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
       </div>
 
       <StockDocModal open={editOpen} form={form} editId={id} />
+      <Confirm
+        open={deleteOpen}
+        title={`Delete ${d.no ?? "document"}?`}
+        onConfirm$={$(async () => {
+          unwrap(await commands.deleteStockDoc(id));
+          await nav("/inventory/movements/");
+        })}
+      >
+        <p>
+          The document is removed on every PC{!d.voided && " and its stock movements stop counting"}. This can't be
+          undone, and its number isn't given out again.
+        </p>
+      </Confirm>
       <Modal open={voidOpen} title={`Void ${d.no ?? "document"}?`}>
         <form
           class="space-y-3"

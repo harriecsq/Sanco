@@ -419,7 +419,7 @@ pub fn summary(conn: &Connection, perms: &Perms, today: &str) -> Result<Dashboar
         );
         let over: Vec<String> = pos
             .iter()
-            .filter(|p| p.status != PoStatus::Cancelled && p.over_received)
+            .filter(|p| p.over_received)
             .map(|p| p.no.clone().unwrap_or_default())
             .collect();
         out.issue(

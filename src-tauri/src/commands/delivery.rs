@@ -238,16 +238,13 @@ pub async fn set_dr_number(
     blocking(move || db.write(user.actor(), move |tx| delivery::set_number(tx, &id, &res))).await
 }
 
-/// Cancels a DR or invoice that wasn't delivered.
+/// Deletes a DR or invoice in any status. A delivered one's stock comes back
+/// and its payments become the client's credit.
 #[tauri::command]
 #[specta::specta]
-pub async fn cancel_dr(
-    state: State<'_, AppState>,
-    id: String,
-    reason: String,
-) -> Result<(), String> {
-    let (db, user) = sales(&state, Action::Edit).await?;
-    blocking(move || db.write(user.actor(), move |tx| delivery::cancel(tx, &id, &reason))).await
+pub async fn delete_dr(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = sales(&state, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| delivery::delete(tx, &id))).await
 }
 
 /// Voids a delivered DR or invoice: its stock comes back.
@@ -258,7 +255,7 @@ pub async fn void_dr(state: State<'_, AppState>, id: String, reason: String) -> 
     blocking(move || db.write(user.actor(), move |tx| delivery::void(tx, &id, &reason))).await
 }
 
-/// Restores a cancelled one (back to new) or a void one (delivered again).
+/// Restores a void one: delivered again.
 #[tauri::command]
 #[specta::specta]
 pub async fn restore_dr(state: State<'_, AppState>, id: String) -> Result<(), String> {

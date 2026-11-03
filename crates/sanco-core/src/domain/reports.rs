@@ -273,7 +273,7 @@ pub struct SpendRow {
     pub supplier_id: String,
     pub supplier_code: Option<String>,
     pub supplier_name: String,
-    /// POs dated in the range, ordered or later (not drafts or cancelled).
+    /// POs dated in the range, ordered or later (not drafts).
     pub po_count: i64,
     /// Their totals in PHP at each PO's FX.
     pub ordered_php_c: i64,
@@ -290,7 +290,7 @@ pub struct SpendRow {
 pub fn po_spend(conn: &Connection, range: &DateRange) -> Result<Vec<SpendRow>> {
     let mut rows: BTreeMap<String, SpendRow> = BTreeMap::new();
     for po in purchasing::list(conn)? {
-        if matches!(po.status, PoStatus::Draft | PoStatus::Cancelled) || !range.contains(&po.date) {
+        if po.status == PoStatus::Draft || !range.contains(&po.date) {
             continue;
         }
         let r = rows

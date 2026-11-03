@@ -1,8 +1,8 @@
 //! Stock: manual receipts, adjustments and transfers, and what is on hand.
 //!
-//! A stock document is posted when it is saved and never edited. A mistake
-//! is voided and entered again, so two PCs can't edit the same document's
-//! lines concurrently. On-hand stock is never stored: it is the `v_stock`
+//! A stock document is posted when it is saved. It can be edited, voided
+//! (and restored) or deleted at any time; stock moves by the difference.
+//! On-hand stock is never stored: it is the `v_stock`
 //! view over posted documents (later also delivered DRs and PO receipts).
 //!
 //! Saving refuses anything that would take a lot below zero at a location on this PC. PCs that are offline from each other can still
@@ -276,6 +276,28 @@ pub(crate) struct Effect {
     pub location_id: String,
     pub lot_id: Option<String>,
     pub qty: i64,
+}
+
+/// What taking away the documents `doc_ids` (deleting or voiding them) does
+/// to each lot, summed per lot.
+pub(crate) fn undo_effect(conn: &Connection, doc_ids: &[String]) -> Result<Vec<Effect>> {
+    let mut by_lot: BTreeMap<(String, String, Option<String>), i64> = BTreeMap::new();
+    for id in doc_ids {
+        for e in doc_effect(conn, id)? {
+            *by_lot
+                .entry((e.item_id, e.location_id, e.lot_id))
+                .or_default() -= e.qty;
+        }
+    }
+    Ok(by_lot
+        .into_iter()
+        .map(|((item_id, location_id, lot_id), qty)| Effect {
+            item_id,
+            location_id,
+            lot_id,
+            qty,
+        })
+        .collect())
 }
 
 pub(crate) fn live_location(conn: &Connection, id: &str) -> Result<()> {
@@ -612,6 +634,19 @@ pub fn restore(tx: &mut WriteTx, id: &str) -> Result<()> {
         }),
     )
     .map(drop)
+}
+
+/// Deletes a document, posted or void. Refused if the stock it brought in was
+/// already used. Its number is not given out again.
+pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
+    is_void(tx.conn(), id)?;
+    let undo = undo_effect(tx.conn(), &[id.to_string()])?;
+    check_not_negative(tx.conn(), &undo, "can't delete: ")?;
+    for line in crate::domain::line_ids(tx, STOCK_DOC_LINES, "doc_id", id)? {
+        tx.delete(STOCK_DOC_LINES, &line)?;
+    }
+    numbering::delete_for(tx, id)?;
+    tx.delete(STOCK_DOCS, id)
 }
 
 /// Voids a posted document: its stock movements no longer count.

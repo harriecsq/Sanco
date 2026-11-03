@@ -1,16 +1,16 @@
 //! Delivery receipts (DRs) and invoices: the client's order and its delivery.
 //!
 //! Every customer order starts here: a receipt is entered with its client,
-//! items, quantities and prices (New), then marked delivered, or cancelled.
-//! There is no approval step. Delivering takes the stock out
-//! (`v_stock_moves`, kind `delivery`) and creates a receivable. A delivered
-//! receipt is voided (cancelled with `delivered_at` kept), which puts the
+//! items, quantities and prices (New), then marked delivered. There is no
+//! approval step and no Cancelled status: a receipt that isn't wanted is
+//! deleted, in any status. Delivering takes the stock out (`v_stock_moves`,
+//! kind `delivery`) and creates a receivable. A delivered receipt can also be
+//! voided (it stays in the list as Void and can be restored), which puts the
 //! stock back.
 //!
-//! A receipt can be edited in any status, also after delivery or when
-//! cancelled or void. Only integrity checks stay: stock can't go below zero
-//! and a delivered receipt's total can't go below what is paid on it.
-//! A cancelled or void receipt can be restored.
+//! A receipt can be edited in any status, also after delivery or when void.
+//! Only integrity checks stay: stock can't go below zero and a delivered
+//! receipt's total can't go below what is paid on it.
 //!
 //! A receipt is a DR (no VAT) or an Invoice: [`ReceiptKind`], stored as
 //! `vat`. The type can change at any time; the number then follows the new
@@ -55,7 +55,8 @@ pub enum DrStatus {
     /// Entered, not delivered yet.
     New,
     Delivered,
-    Cancelled,
+    /// Was delivered, then voided: its stock came back.
+    Void,
 }
 
 impl DrStatus {
@@ -63,15 +64,18 @@ impl DrStatus {
         match self {
             DrStatus::New => "new",
             DrStatus::Delivered => "delivered",
-            DrStatus::Cancelled => "cancelled",
+            DrStatus::Void => "void",
         }
     }
 
-    /// `requested` and `approved` are the older two steps of New.
+    /// `requested` and `approved` are the older two steps of New. Before
+    /// 1.8 a void receipt was stored as `cancelled` (with `delivered_at`);
+    /// cancelled ones that were never delivered are deleted at start
+    /// ([`delete_cancelled`]).
     pub fn parse(s: Option<&str>) -> Self {
         match s {
             Some("delivered") => DrStatus::Delivered,
-            Some("cancelled") => DrStatus::Cancelled,
+            Some("void" | "cancelled") => DrStatus::Void,
             _ => DrStatus::New,
         }
     }
@@ -199,8 +203,6 @@ pub struct DrInfo {
     pub from_location_id: Option<String>,
     pub from_location_name: Option<String>,
     pub status: DrStatus,
-    /// Cancelled after it was delivered: its stock came back.
-    pub voided: bool,
     pub vat: bool,
     pub vat_bp: i64,
     pub totals: VatAmounts,
@@ -215,9 +217,9 @@ pub struct DrInfo {
     pub delivered_at: Option<i64>,
     pub delivered_by_name: Option<String>,
     pub received_by: Option<String>,
-    pub cancelled_at: Option<i64>,
-    pub cancelled_by_name: Option<String>,
-    pub cancel_reason: Option<String>,
+    pub voided_at: Option<i64>,
+    pub voided_by_name: Option<String>,
+    pub void_reason: Option<String>,
     /// Paid by counting payments (delivered DRs only).
     pub paid_c: i64,
     /// Gross minus paid while delivered, else 0. Negative if overpaid.
@@ -815,9 +817,9 @@ pub fn check_deliver(conn: &Connection, id: &str, input: &DeliverInput, today: &
         DrStatus::Delivered => {
             return Err(Error::Invalid(format!("this {kind} is already delivered")));
         }
-        DrStatus::Cancelled => {
+        DrStatus::Void => {
             return Err(Error::Invalid(format!(
-                "this {kind} is cancelled; restore it first"
+                "this {kind} is void; restore it first"
             )));
         }
     }
@@ -884,28 +886,50 @@ pub fn set_number(tx: &mut WriteTx, id: &str, res: &Reservation) -> Result<()> {
     numbering::assign_or_change(tx, res, DELIVERY_RECEIPTS).map(drop)
 }
 
-/// Cancels a receipt that wasn't delivered.
-pub fn cancel(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
-    let (status, _) = status_of(tx.conn(), id)?;
-    let kind = kind_of(tx.conn(), id)?.name();
-    if !status.is_open() {
-        return Err(Error::Invalid(match status {
-            DrStatus::Delivered => format!("this {kind} was delivered; void it instead"),
-            _ => format!("this {kind} is already cancelled"),
-        }));
+/// Deletes a receipt in any status. A delivered one's stock comes back and
+/// the payments applied to it become the client's credit. A typed number
+/// can be used again.
+pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
+    status_of(tx.conn(), id)?;
+    let allocations: Vec<String> = {
+        let mut stmt = tx.conn().prepare(
+            "SELECT id FROM payment_allocations
+             WHERE dr_id = ?1 AND _deleted = 0 AND amount_c IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    for a in allocations {
+        // Derived ids: cleared, never deleted.
+        tx.update(
+            payments::PAYMENT_ALLOCATIONS,
+            &a,
+            json!({ "amount_c": null }),
+        )?;
     }
-    let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
-    tx.update(
-        DELIVERY_RECEIPTS,
-        id,
-        json!({
-            "status": DrStatus::Cancelled.as_str(),
-            "cancelled_at": now,
-            "cancelled_by": user,
-            "cancel_reason": text_opt(reason),
-        }),
-    )
-    .map(drop)
+    for line in crate::domain::line_ids(tx, DR_LINES, "dr_id", id)? {
+        tx.delete(DR_LINES, &line)?;
+    }
+    numbering::delete_for(tx, id)?;
+    tx.delete(DELIVERY_RECEIPTS, id)
+}
+
+/// Deletes the receipts cancelled before 1.8 that were never delivered
+/// (there is no Cancelled status any more). Runs at every start; PCs
+/// deleting the same row at once is not a conflict.
+pub fn delete_cancelled(tx: &mut WriteTx) -> Result<()> {
+    let ids: Vec<String> = {
+        let mut stmt = tx.conn().prepare(
+            "SELECT id FROM delivery_receipts
+             WHERE _deleted = 0 AND status = 'cancelled' AND delivered_at IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    for id in ids {
+        delete(tx, &id)?;
+    }
+    Ok(())
 }
 
 /// Voids a delivered receipt: its stock comes back. Needs a reason.
@@ -914,7 +938,7 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     let kind = kind_of(tx.conn(), id)?.name();
     if status != DrStatus::Delivered {
         return Err(Error::Invalid(format!(
-            "only a delivered {kind} can be voided; cancel it instead"
+            "only a delivered {kind} can be voided; delete it instead"
         )));
     }
     let paid = receivables::dr_paid(tx.conn(), id)?;
@@ -931,7 +955,7 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
         DELIVERY_RECEIPTS,
         id,
         json!({
-            "status": DrStatus::Cancelled.as_str(),
+            "status": DrStatus::Void.as_str(),
             "cancelled_at": now,
             "cancelled_by": user,
             "cancel_reason": reason,
@@ -940,26 +964,20 @@ pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     .map(drop)
 }
 
-/// Checks that a cancelled or void receipt can be restored, without writing.
+/// Checks that a void receipt can be restored, without writing.
 pub fn check_restore(conn: &Connection, id: &str) -> Result<DrStatus> {
     let cur = current(conn, id)?;
     let kind = cur.kind.name();
-    if cur.status != DrStatus::Cancelled {
-        return Err(Error::Invalid(format!(
-            "this {kind} isn't cancelled or void"
-        )));
+    if cur.status != DrStatus::Void {
+        return Err(Error::Invalid(format!("this {kind} isn't void")));
     }
-    if !cur.was_delivered {
-        return Ok(DrStatus::New);
-    }
-    // A void receipt takes its stock out again.
+    // It takes its stock out again.
     require_lots(&cur.lines)?;
     inventory::check_not_negative(conn, &effects_of(&cur.lines, &cur.location), "")?;
     Ok(DrStatus::Delivered)
 }
 
-/// Restores a cancelled receipt (back to New) or a void one (delivered
-/// again: its stock goes out again).
+/// Restores a void receipt: delivered again, its stock goes out again.
 pub fn restore(tx: &mut WriteTx, id: &str) -> Result<()> {
     let status = check_restore(tx.conn(), id)?;
     tx.update(
@@ -1020,7 +1038,6 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
         date: r.get::<_, Option<String>>(10)?.unwrap_or_default(),
         from_location_id: r.get(11)?,
         from_location_name: r.get(12)?,
-        voided: status == DrStatus::Cancelled && delivered_at.is_some(),
         status,
         vat: r.get::<_, i64>(14)? != 0,
         vat_bp: r.get(15)?,
@@ -1032,9 +1049,9 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
         delivered_at,
         delivered_by_name: r.get(22)?,
         received_by: r.get(23)?,
-        cancelled_at: r.get(24)?,
-        cancelled_by_name: r.get(25)?,
-        cancel_reason: r.get(26)?,
+        voided_at: r.get(24)?,
+        voided_by_name: r.get(25)?,
+        void_reason: r.get(26)?,
         paid_c: 0,
         balance_c: 0,
         due_date: receivables::due_date(r.get::<_, Option<String>>(20)?.as_deref(), r.get(27)?),

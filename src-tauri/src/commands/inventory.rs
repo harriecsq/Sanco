@@ -106,6 +106,14 @@ pub async fn update_stock_doc(
     blocking(move || db.write(user.actor(), move |tx| inventory::update(tx, &id, &doc))).await
 }
 
+/// Deletes a stock document, posted or void.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_stock_doc(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Inventory, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| inventory::delete(tx, &id))).await
+}
+
 /// Posts a void stock document again.
 #[tauri::command]
 #[specta::specta]

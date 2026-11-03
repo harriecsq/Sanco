@@ -596,6 +596,26 @@ pub fn release(tx: &mut WriteTx, ref_id: &str, series: &str) -> Result<()> {
     .map(drop)
 }
 
+/// Frees the numbers of a document that is being deleted. A typed number can
+/// be typed again for another document; an automatic one is never given out
+/// again (`max_seq` still counts the deleted row).
+pub fn delete_for(tx: &mut WriteTx, ref_id: &str) -> Result<()> {
+    let ids: Vec<String> = {
+        let mut stmt = tx
+            .conn()
+            .prepare_cached("SELECT id FROM doc_numbers WHERE ref_id = ?1 AND _deleted = 0")?;
+        let rows = stmt.query_map([ref_id], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    tx.conn()
+        .prepare_cached("DELETE FROM number_claims WHERE ref_id = ?1")?
+        .execute([ref_id])?;
+    for id in ids {
+        tx.delete(DOC_NUMBERS, &id)?;
+    }
+    Ok(())
+}
+
 /// A document's current number in a series.
 pub fn number_of(conn: &Connection, series: &str, ref_id: &str) -> Result<Option<String>> {
     let def = registry::table(DOC_NUMBERS)?;

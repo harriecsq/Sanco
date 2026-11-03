@@ -88,6 +88,14 @@ pub async fn void_payment(
     blocking(move || db.write(user.actor(), move |tx| payments::void(tx, &id, &reason))).await
 }
 
+/// Deletes a payment, posted or void: the DRs it paid owe again.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_payment(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (db, user) = require(&state, Module::Accounting, Action::Delete).await?;
+    blocking(move || db.write(user.actor(), move |tx| payments::delete(tx, &id))).await
+}
+
 /// Posts a void payment again: it counts, and the DRs it paid are paid again.
 #[tauri::command]
 #[specta::specta]

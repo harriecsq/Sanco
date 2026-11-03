@@ -1,0 +1,5 @@
+-- 1.8: there is no Cancelled status any more; documents are deleted instead.
+-- Nothing changes in the schema. The version goes up so that PCs on 1.7
+-- (which still cancel, and read a void receipt's new status 'void' as New)
+-- can't sync with this build. Cancelled DRs, invoices and POs are deleted at
+-- start (`domain::delete_cancelled`) with ordinary, replicated deletes.

@@ -1,5 +1,5 @@
 import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
-import { Link, useLocation, type DocumentHead } from "@builder.io/qwik-city";
+import { Link, useLocation, useNavigate, type DocumentHead } from "@builder.io/qwik-city";
 import {
   commands,
   type LocationInfo,
@@ -16,7 +16,7 @@ import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
 import { OfflineBadge } from "~/components/sales/sales";
 import { ORDER_TABLES, ReceiveModal, receiveFormOf, type ReceiveForm } from "~/components/orders/orders";
-import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
+import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
 import { btnDanger, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
@@ -135,9 +135,11 @@ const ReceiptList = component$(() => {
 
 const ReceiptView = component$<{ id: string }>(({ id }) => {
   const session = useSession();
+  const nav = useNavigate();
   const detail = useSignal<ReceiptDetail | null>(null);
   const missing = useSignal(false);
   const error = useSignal("");
+  const deleteOpen = useSignal(false);
   const voidOpen = useSignal(false);
   const reason = useSignal("");
   const voidError = useSignal("");
@@ -221,6 +223,11 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
             Restore
           </button>
         )}
+        {can(session.user, "orders", "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+            Delete
+          </button>
+        )}
         {can(session.user, "orders", "edit") && (
           <button
             q:slot="actions"
@@ -289,6 +296,19 @@ const ReceiptView = component$<{ id: string }>(({ id }) => {
         </section>
       </div>
       {po.value && <ReceiveModal open={editOpen} detail={po.value} form={form} editId={id} />}
+      <Confirm
+        open={deleteOpen}
+        title={`Delete ${r.no ?? "this report"}?`}
+        onConfirm$={$(async () => {
+          unwrap(await commands.deletePoReceipt(id));
+          await nav("/orders/receiving/");
+        })}
+      >
+        <p>
+          The report is removed on every PC{!r.voided && ": its goods no longer count as received or in stock"}. This
+          can't be undone, and its number isn't given out again.
+        </p>
+      </Confirm>
       <Modal open={voidOpen} title={`Void ${r.no ?? "this report"}?`}>
         <form
           class="space-y-3"

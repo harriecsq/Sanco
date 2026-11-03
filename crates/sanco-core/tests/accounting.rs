@@ -671,3 +671,113 @@ fn payments_edit_in_any_status_and_void_ones_restore() {
     }));
     assert!(msg.contains("left to pay"), "{msg}");
 }
+
+#[test]
+fn deleting_a_paid_receipt_frees_its_payment_and_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let tape = add_item(&a.db, &actor, "TAPE");
+    let client = add_client(&a.db, &actor, "Watsons");
+    let bk = order(&client, &tape, Some(10_000));
+    let stock = |db: &Db| -> i64 {
+        db.read(|c| inventory::item_stock(c, TODAY))
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.item_id == tape)
+            .map(|s| s.on_hand)
+            .sum()
+    };
+    let before = stock(&a.db);
+    let dr1 = delivered_dr(&a.db, &actor, &bk, 4, "101", "2026-08-01"); // ₱400
+    assert_eq!(stock(&a.db), before - 4);
+    let pid = pay(
+        &a.db,
+        &actor,
+        &[],
+        pay_input(&client, PayMethod::Cash, 40_000, &[(&dr1, 40_000)]),
+    )
+    .unwrap();
+    assert_eq!(payment(&a.db, &pid).unapplied_c, 0);
+
+    // Delivered and paid: deleted anyway. Stock comes back, the payment is
+    // the client's credit, and the typed number can be used again.
+    let id = dr1.clone();
+    a.db.write(actor.clone(), move |tx| delivery::delete(tx, &id))
+        .unwrap();
+    assert!(a.db.read(|c| delivery::get(c, &dr1)).unwrap().is_none());
+    assert_eq!(stock(&a.db), before);
+    let p = payment(&a.db, &pid);
+    assert_eq!((p.applied_c, p.unapplied_c), (0, 40_000));
+    let dr2 = delivered_dr(&a.db, &actor, &bk, 1, "101", "2026-08-02");
+    let d = a.db.read(|c| delivery::get(c, &dr2)).unwrap().unwrap().dr;
+    assert_eq!((d.no.as_deref(), d.no_clash), (Some("101"), false));
+
+    // A payment is deleted in any status: the receipt owes again.
+    let pid2 = pay(
+        &a.db,
+        &actor,
+        &[],
+        pay_input(&client, PayMethod::Cash, 10_000, &[(&dr2, 10_000)]),
+    )
+    .unwrap();
+    assert_eq!(balance(&a.db, &dr2), 0);
+    let id = pid2.clone();
+    a.db.write(actor.clone(), move |tx| payments::delete(tx, &id))
+        .unwrap();
+    assert_eq!(balance(&a.db, &dr2), 10_000);
+    let t = today(&a.db);
+    assert!(
+        a.db.read(|c| payments::get(c, &pid2, &t))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn receipts_cancelled_before_1_8_are_deleted_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let tape = add_item(&a.db, &actor, "TAPE");
+    let client = add_client(&a.db, &actor, "Watsons");
+    let bk = order(&client, &tape, Some(10_000));
+    // As 1.7 stored them: cancelled before delivery, and voided (cancelled
+    // with `delivered_at`).
+    let open = a.db.new_id().unwrap();
+    let input = receipt_input(&bk, 1, None);
+    let oid = open.clone();
+    a.db.write(actor.clone(), move |tx| {
+        delivery::create(tx, &oid, &input, None)?;
+        tx.update(
+            delivery::DELIVERY_RECEIPTS,
+            &oid,
+            serde_json::json!({ "status": "cancelled" }),
+        )
+        .map(drop)
+    })
+    .unwrap();
+    let voided = delivered_dr(&a.db, &actor, &bk, 1, "201", "2026-08-01");
+    let vid = voided.clone();
+    a.db.write(actor.clone(), move |tx| {
+        tx.update(
+            delivery::DELIVERY_RECEIPTS,
+            &vid,
+            serde_json::json!({ "status": "cancelled" }),
+        )
+        .map(drop)
+    })
+    .unwrap();
+
+    sanco_core::domain::seed_defaults(&a.db).unwrap();
+    assert!(a.db.read(|c| delivery::get(c, &open)).unwrap().is_none());
+    let v =
+        a.db.read(|c| delivery::get(c, &voided))
+            .unwrap()
+            .unwrap()
+            .dr;
+    assert_eq!(v.status, delivery::DrStatus::Void);
+    // Running again changes nothing.
+    sanco_core::domain::seed_defaults(&a.db).unwrap();
+    assert!(a.db.read(|c| delivery::get(c, &voided)).unwrap().is_some());
+}

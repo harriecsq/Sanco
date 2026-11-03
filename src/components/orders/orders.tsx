@@ -34,7 +34,6 @@ export const PO_STATUS: Record<PoStatus, { label: string; tone: Tone }> = {
   shipped: { label: "Shipped", tone: "brand" },
   arrived: { label: "Arrived", tone: "brand" },
   closed: { label: "Closed", tone: "muted" },
-  cancelled: { label: "Cancelled", tone: "muted" },
 };
 
 export const RECEIVE_LABEL: Record<ReceiveProgress, string> = {

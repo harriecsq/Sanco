@@ -93,13 +93,11 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
         (!f.client || d.client_id === f.client) &&
         (!f.location || d.from_location_id === f.location) &&
         (!f.status ||
-          (f.status === "void"
-            ? d.voided
-            : f.status === "no_number"
-              ? !d.no && d.status !== "cancelled"
-              : f.status === "clash"
-                ? d.no_clash
-                : d.status === f.status && !d.voided)),
+          (f.status === "no_number"
+            ? !d.no && d.status !== "void"
+            : f.status === "clash"
+              ? d.no_clash
+              : d.status === f.status)),
     );
   });
   const pg = usePage(shown);
@@ -129,11 +127,10 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
             key: "status",
             label: "Statuses",
             options: [
-              ...(["new", "delivered", "cancelled"] as const).map((s) => ({
+              ...(["new", "delivered", "void"] as const).map((s) => ({
                 value: s,
                 label: DR_STATUS[s].label,
               })),
-              { value: "void", label: "Void" },
               { value: "no_number", label: `No ${k.name} no. yet` },
               { value: "clash", label: "Number used twice" },
             ],
@@ -174,7 +171,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
             </thead>
             <tbody>
               {pg.value.rows.map((d) => (
-                <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                <tr key={d.id} class={d.status === "void" ? "text-ink-muted" : ""}>
                   <td class={[td, "whitespace-nowrap"]}>
                     <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
                       <DrNo d={d} />
@@ -182,7 +179,7 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
                   </td>
                   <td class={[td, "whitespace-nowrap"]}>
                     {formatDay(dayOf(d))}
-                    {!d.delivered_date && d.status !== "cancelled" && <span class={[hint, "block"]}>planned</span>}
+                    {!d.delivered_date && <span class={[hint, "block"]}>planned</span>}
                   </td>
                   <td class={td}>{d.client_name ?? "—"}</td>
                   <td class={[td, "whitespace-nowrap"]}>
@@ -222,13 +219,13 @@ const DrList = component$<{ kind: ReceiptKind }>(({ kind }) => {
   );
 });
 
-type Step = "deliver" | "number" | "cancel" | "void" | "restore";
+type Step = "deliver" | "number" | "delete" | "void" | "restore";
 
 const stepTitle = (step: Step, name: string) =>
   ({
     deliver: "Mark delivered",
     number: `${name === "DR" ? "DR" : "Invoice"} number`,
-    cancel: `Cancel ${name}`,
+    delete: `Delete ${name}`,
     void: `Void delivered ${name}`,
     restore: `Restore ${name}`,
   })[step];
@@ -306,9 +303,11 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
         case "number":
           unwrap(await commands.setDrNumber(id, no.value));
           break;
-        case "cancel":
-          unwrap(await commands.cancelDr(id, reason.value));
-          break;
+        case "delete":
+          unwrap(await commands.deleteDr(id));
+          open.value = false;
+          await nav(RECEIPT[kind].route);
+          return;
         case "void":
           unwrap(await commands.voidDr(id, reason.value));
           break;
@@ -339,9 +338,9 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
     rows.push(["Received by", d.received_by ?? ""]);
     rows.push(["Marked by", `${d.delivered_by_name ?? "—"}, ${formatDateTime(d.delivered_at)}`]);
   }
-  if (d.status === "cancelled") {
-    rows.push([d.voided ? "Voided" : "Cancelled", `${formatDateTime(d.cancelled_at)} by ${d.cancelled_by_name ?? "—"}`]);
-    rows.push(["Reason", d.cancel_reason ?? ""]);
+  if (d.status === "void") {
+    rows.push(["Voided", `${formatDateTime(d.voided_at)} by ${d.voided_by_name ?? "—"}`]);
+    rows.push(["Reason", d.void_reason ?? ""]);
   }
 
   const canEdit = mayDo(user, "edit");
@@ -360,19 +359,19 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
             Void
           </button>
         )}
-        {d.status === "cancelled" && mayDo(user, "delete") && (
+        {d.status === "void" && mayDo(user, "delete") && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => begin("restore")}>
             Restore
+          </button>
+        )}
+        {mayDo(user, "delete") && (
+          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("delete")}>
+            Delete
           </button>
         )}
         {canEdit && (
           <button q:slot="actions" class={btnSecondary} onClick$={() => (editOpen.value = true)}>
             Edit
-          </button>
-        )}
-        {d.status === "new" && canEdit && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("cancel")}>
-            Cancel {k.name}
           </button>
         )}
         {manual && canEdit && (
@@ -401,7 +400,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
             other. Check the booklet and correct the wrong one.
           </Alert>
         )}
-        {d.voided && <Alert tone="warning">This {k.name} is void: its stock came back.</Alert>}
+        {d.status === "void" && <Alert tone="warning">This {k.name} is void: its stock came back.</Alert>}
         {d.kind === "invoice" && d.no && d.no_series === "DR" && (
           <p class={hint}>Made before invoices had their own booklet: its number is from the DR booklet.</p>
         )}
@@ -554,26 +553,23 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
             </Field>
           )}
           {step.value === "restore" && (
+            <p class="text-sm">The {k.name} is delivered again: its stock goes out again.</p>
+          )}
+          {step.value === "delete" && (
             <p class="text-sm">
-              {d.voided
-                ? `The ${k.name} is delivered again: its stock goes out again.`
-                : `The ${k.name} goes back to new, so it can be delivered.`}
+              The {k.name} is removed on every PC. This can't be undone.
+              {d.status === "delivered" && " Its stock comes back."}
+              {d.paid_c > 0 && ` The ${formatPeso(d.paid_c)} paid on it becomes the client's credit.`}
+              {d.no && d.no_manual && ` Number ${d.no} can be used again.`}
             </p>
           )}
-          {(step.value === "cancel" || step.value === "void") && (
+          {step.value === "void" && (
             <>
               <p class="text-sm">
-                {step.value === "void"
-                  ? `Its stock comes back on every PC. The ${k.name} stays in the list, marked void. This can't be undone.`
-                  : `The ${k.name} stays in the list, marked cancelled. It can be restored later.`}
+                Its stock comes back on every PC. The {k.name} stays in the list, marked void. It can be restored later.
               </p>
               <Field label="Reason">
-                <input
-                  class={input}
-                  required={step.value === "void"}
-                  value={reason.value}
-                  onInput$={(_, el) => (reason.value = el.value)}
-                />
+                <input class={input} required value={reason.value} onInput$={(_, el) => (reason.value = el.value)} />
               </Field>
             </>
           )}
@@ -582,7 +578,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
               Back
             </button>
             <button
-              class={step.value === "cancel" || step.value === "void" ? btnDanger : btnPrimary}
+              class={step.value === "delete" || step.value === "void" ? btnDanger : btnPrimary}
               disabled={busy.value}
             >
               {step.value === "deliver"
@@ -593,7 +589,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
                     ? "Restore"
                     : step.value === "void"
                       ? `Void ${k.name}`
-                      : `Cancel ${k.name}`}
+                      : `Delete ${k.name}`}
             </button>
           </div>
         </form>

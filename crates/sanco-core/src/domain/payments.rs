@@ -692,6 +692,17 @@ pub fn restore(tx: &mut WriteTx, id: &str) -> Result<()> {
     .map(drop)
 }
 
+/// Deletes a payment, posted or void: the DRs it paid owe again. Its number
+/// is not given out again.
+pub fn delete(tx: &mut WriteTx, id: &str) -> Result<()> {
+    current_any(tx.conn(), id)?;
+    for a in crate::domain::line_ids(tx, PAYMENT_ALLOCATIONS, "payment_id", id)? {
+        tx.delete(PAYMENT_ALLOCATIONS, &a)?;
+    }
+    numbering::delete_for(tx, id)?;
+    tx.delete(PAYMENTS, id)
+}
+
 /// Voids a payment: it no longer counts, and the DRs it paid owe again.
 pub fn void(tx: &mut WriteTx, id: &str, reason: &str) -> Result<()> {
     current(tx.conn(), id)?;

@@ -215,6 +215,8 @@ export const commands = {
 	/**  Edits a stock document (posted or void): stock moves by the difference. */
 	updateStockDoc: (id: string, doc: StockDocInput) => typedError<null, string>(__TAURI_INVOKE("update_stock_doc", { id, doc })),
 	voidStockDoc: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_stock_doc", { id, reason })),
+	/**  Deletes a stock document, posted or void. */
+	deleteStockDoc: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_stock_doc", { id })),
 	/**  Posts a void stock document again. */
 	restoreStockDoc: (id: string) => typedError<null, string>(__TAURI_INVOKE("restore_stock_doc", { id })),
 	/**  Checks an import file without writing anything. */
@@ -261,11 +263,14 @@ export const commands = {
 	deliverDr: (id: string, delivery: DeliverInput, no: string | null) => typedError<null, string>(__TAURI_INVOKE("deliver_dr", { id, delivery, no })),
 	/**  Sets or corrects a receipt's typed number. */
 	setDrNumber: (id: string, no: string) => typedError<null, string>(__TAURI_INVOKE("set_dr_number", { id, no })),
-	/**  Cancels a DR or invoice that wasn't delivered. */
-	cancelDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("cancel_dr", { id, reason })),
+	/**
+	 *  Deletes a DR or invoice in any status. A delivered one's stock comes back
+	 *  and its payments become the client's credit.
+	 */
+	deleteDr: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_dr", { id })),
 	/**  Voids a delivered DR or invoice: its stock comes back. */
 	voidDr: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_dr", { id, reason })),
-	/**  Restores a cancelled one (back to new) or a void one (delivered again). */
+	/**  Restores a void one: delivered again. */
 	restoreDr: (id: string) => typedError<null, string>(__TAURI_INVOKE("restore_dr", { id })),
 	listPayments: () => typedError<PaymentInfo[], string>(__TAURI_INVOKE("list_payments")),
 	getPayment: (id: string) => typedError<{
@@ -284,6 +289,8 @@ export const commands = {
 	savePayment: (payment: PaymentInput) => typedError<string, string>(__TAURI_INVOKE("save_payment", { payment })),
 	/**  Voids a payment: the DRs it paid owe again. */
 	voidPayment: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_payment", { id, reason })),
+	/**  Deletes a payment, posted or void: the DRs it paid owe again. */
+	deletePayment: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_payment", { id })),
 	/**  Posts a void payment again: it counts, and the DRs it paid are paid again. */
 	restorePayment: (id: string) => typedError<null, string>(__TAURI_INVOKE("restore_payment", { id })),
 	/**  Deposits, clears or bounces a check, or takes it back a step. */
@@ -312,7 +319,7 @@ export const commands = {
 	/**  Creates a draft (with a new shared number) or saves a PO. Returns its id. */
 	savePo: (po: PoInput) => typedError<string, string>(__TAURI_INVOKE("save_po", { po })),
 	setPoStatus: (id: string, change: PoStatusInput) => typedError<null, string>(__TAURI_INVOKE("set_po_status", { id, change })),
-	/**  Deletes a draft PO without payments. */
+	/**  Deletes a PO in any status, with its TT payments and receiving reports. */
 	deletePo: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_po", { id })),
 	/**
 	 *  Copies the PO's prices, currency and FX into its items' cost sheets.
@@ -344,6 +351,8 @@ export const commands = {
 	 */
 	updatePoReceipt: (id: string, receipt: ReceiptInput) => typedError<null, string>(__TAURI_INVOKE("update_po_receipt", { id, receipt })),
 	voidPoReceipt: (id: string, reason: string) => typedError<null, string>(__TAURI_INVOKE("void_po_receipt", { id, reason })),
+	/**  Deletes a receiving report, posted or void. */
+	deletePoReceipt: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_po_receipt", { id })),
 	/**  Posts a void receiving report again. */
 	restorePoReceipt: (id: string) => typedError<null, string>(__TAURI_INVOKE("restore_po_receipt", { id })),
 	dashboard: () => typedError<Dashboard, string>(__TAURI_INVOKE("dashboard")),
@@ -990,8 +999,6 @@ export type DrInfo = {
 	from_location_id: string | null,
 	from_location_name: string | null,
 	status: DrStatus,
-	/**  Cancelled after it was delivered: its stock came back. */
-	voided: boolean,
 	vat: boolean,
 	vat_bp: number,
 	totals: VatAmounts,
@@ -1006,9 +1013,9 @@ export type DrInfo = {
 	delivered_at: number | null,
 	delivered_by_name: string | null,
 	received_by: string | null,
-	cancelled_at: number | null,
-	cancelled_by_name: string | null,
-	cancel_reason: string | null,
+	voided_at: number | null,
+	voided_by_name: string | null,
+	void_reason: string | null,
 	/**  Paid by counting payments (delivered DRs only). */
 	paid_c: number,
 	/**  Gross minus paid while delivered, else 0. Negative if overpaid. */
@@ -1080,7 +1087,9 @@ export type DrPayment = {
 
 export type DrStatus = 
 /**  Entered, not delivered yet. */
-"new" | "delivered" | "cancelled";
+"new" | "delivered" | 
+/**  Was delivered, then voided: its stock came back. */
+"void";
 
 export type Employee = {
 	id: string,
@@ -1606,9 +1615,7 @@ export type PoAction =
 /**  ordered, shipped or arrived → closed: nothing more will come. */
 "close" | 
 /**  closed → back to where it was. */
-"reopen" | 
-/**  → cancelled. Only before anything was received. */
-"cancel";
+"reopen";
 
 export type PoDetail = {
 	po: PoInfo,
@@ -1662,7 +1669,6 @@ export type PoInfo = {
 	arrived_date: string | null,
 	closed_at: number | null,
 	closed_by_name: string | null,
-	cancel_reason: string | null,
 };
 
 export type PoInput = {
@@ -1716,14 +1722,12 @@ export type PoLineInput = {
 	notes: string,
 };
 
-export type PoStatus = "draft" | "ordered" | "shipped" | "arrived" | "closed" | "cancelled";
+export type PoStatus = "draft" | "ordered" | "shipped" | "arrived" | "closed";
 
 export type PoStatusInput = {
 	action: PoAction,
 	/**  Shipped or arrival date for `ship`/`arrive`; blank = today. */
 	date: string,
-	/**  Why a PO is cancelled. */
-	reason: string,
 };
 
 export type PriceQuote = {
@@ -1979,7 +1983,7 @@ export type SpendRow = {
 	supplier_id: string,
 	supplier_code: string | null,
 	supplier_name: string,
-	/**  POs dated in the range, ordered or later (not drafts or cancelled). */
+	/**  POs dated in the range, ordered or later (not drafts). */
 	po_count: number,
 	/**  Their totals in PHP at each PO's FX. */
 	ordered_php_c: number,
@@ -2172,7 +2176,7 @@ export type SupplierInput = {
 
 /**
  *  The newest supplier price of an item: its first priced line on the
- *  latest placed PO (not a draft, not cancelled).
+ *  latest placed PO (not a draft).
  */
 export type SupplierPrice = {
 	po_id: string,

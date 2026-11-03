@@ -62,7 +62,7 @@ export default component$(() => {
     <>
       <PageHeader
         title="PO spend by supplier"
-        subtitle="In PHP. Ordered: POs dated in the range (not drafts or cancelled) at each PO's FX. Paid: TT payments dated in the range at their own FX."
+        subtitle="In PHP. Ordered: POs dated in the range (not drafts) at each PO's FX. Paid: TT payments dated in the range at their own FX."
       />
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar search="Search supplier" dates />

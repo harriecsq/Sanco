@@ -438,11 +438,7 @@ fn receipt_from_entry_to_delivered() {
     deliver(&a.db, &actor, &second, TODAY, None).unwrap();
     assert_eq!(on_hand(&a.db, &glv), 25);
 
-    // Voiding puts the stock back; cancelling is for new ones.
-    invalid(act(&a.db, &actor, {
-        let id = second.clone();
-        move |tx| delivery::cancel(tx, &id, "")
-    }));
+    // Voiding puts the stock back; it needs a reason.
     invalid(act(&a.db, &actor, {
         let id = second.clone();
         move |tx| delivery::void(tx, &id, " ")
@@ -452,7 +448,7 @@ fn receipt_from_entry_to_delivered() {
         move |tx| delivery::void(tx, &id, "wrong lot")
     })
     .unwrap();
-    assert!(dr(&a.db, &second).voided);
+    assert_eq!(dr(&a.db, &second).status, DrStatus::Void);
     assert_eq!(on_hand(&a.db, &glv), 35);
 
     // Used master data can't be deleted.
@@ -794,40 +790,24 @@ fn receipts_can_be_edited_in_any_status() {
     })
     .unwrap();
     let d = dr(&a.db, &id);
-    assert_eq!((d.status, d.voided), (DrStatus::Delivered, false));
+    assert_eq!(d.status, DrStatus::Delivered);
     assert_eq!(on_hand(&a.db, &glv), 45);
     assert_eq!(on_hand(&a.db, &tape), 100);
     let _ = ls;
 
-    // Cancelled: editable and restorable to New. A restore that would take
-    // the stock below zero is refused.
+    // Only a void one can be restored. A restore that would take the stock
+    // below zero is refused.
     let c = enter(
         &a.db,
         &actor,
         input(
             &client,
             ReceiptKind::Dr,
-            vec![line(&tape, 40, None, lot_now(&tape))],
+            vec![line(&tape, 41, None, lot_now(&tape))],
         ),
         None,
     )
     .unwrap();
-    act(&a.db, &actor, {
-        let id = c.clone();
-        move |tx| delivery::cancel(tx, &id, "client changed mind")
-    })
-    .unwrap();
-    assert_eq!(dr(&a.db, &c).status, DrStatus::Cancelled);
-    invalid(deliver(&a.db, &actor, &c, TODAY, Some("1")));
-    let mut edit = as_input(&a.db, &c);
-    edit.lines[0].qty = 41;
-    save(&a.db, &actor, &c, edit, None, None).unwrap();
-    act(&a.db, &actor, {
-        let id = c.clone();
-        move |tx| delivery::restore(tx, &id)
-    })
-    .unwrap();
-    assert_eq!(dr(&a.db, &c).status, DrStatus::New);
     invalid(act(&a.db, &actor, {
         let id = c.clone();
         move |tx| delivery::restore(tx, &id)
