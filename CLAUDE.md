@@ -14,6 +14,7 @@ The full plan is in `docs/PLAN.md` (the M11, M12 and M14 plans are in `docs/plan
 ## Stack (pinned)
 - Tauri 2.12 (`tauri` 2.12.4, `@tauri-apps/cli` 2.12.3, `@tauri-apps/api` 2.12.4)
 - QwikCity 1.20.2, used as a static SPA (static adapter, SSG). Vite 7.
+  - Pinned exactly: `scripts/patch-qwik-city.mjs` (npm `postinstall`) patches its router, which dropped the query string when going from one `?…` URL to another (pager, filters, `?id=` links). On an upgrade the script fails loudly; check whether the bug is fixed upstream before removing it.
 - Tailwind v4.3 via `@tailwindcss/vite`. The theme lives in `src/global.css`.
 - `@qwik-ui/headless` 0.7.7 for Select, Modal and similar. It must stay in **devDependencies**: the Vite config throws if any `qwik` package is in `dependencies`.
 - `tauri-specta =2.0.0-rc.25`, `specta =2.0.0-rc.25`, `specta-typescript =0.0.12`. These are pinned exactly and must be upgraded together.
