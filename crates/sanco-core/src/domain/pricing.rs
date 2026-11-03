@@ -98,6 +98,12 @@ pub struct VatAmounts {
     pub gross_c: i64,
 }
 
+/// VAT rate stored on new bookings, DRs and invoices: none. The price typed
+/// on a booking is the final price, for a DR and a Sales Invoice alike
+/// (user decision, 2026-11-03). Documents saved before keep the rate they
+/// stored, so delivered receipts and their payments don't change.
+pub const DOC_VAT_BP: i64 = 0;
+
 /// `gross = net × (1 + VAT)`.
 pub fn with_vat(net_c: i64, vat_bp: i64) -> VatAmounts {
     let vat_c = pct_of(net_c, vat_bp);

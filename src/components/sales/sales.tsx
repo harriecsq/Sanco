@@ -13,7 +13,10 @@ import { Badge } from "~/components/ui/ui";
 
 type Tone = "brand" | "muted" | "danger" | "warning";
 
-export const BOOKING_STATUS: Record<BookingStatus, { label: string; tone: Tone }> = {
+export const BOOKING_STATUS: Record<
+  BookingStatus,
+  { label: string; tone: Tone }
+> = {
   draft: { label: "Draft", tone: "warning" },
   confirmed: { label: "Confirmed", tone: "brand" },
   closed: { label: "Closed", tone: "muted" },
@@ -30,7 +33,14 @@ export const DR_STATUS: Record<DrStatus, { label: string; tone: Tone }> = {
 /** Words for each receipt type: a DR (no VAT) or an Invoice (VAT). */
 export const RECEIPT: Record<
   ReceiptKind,
-  { title: string; name: string; plural: string; list: string; route: string; booklet: string }
+  {
+    title: string;
+    name: string;
+    plural: string;
+    list: string;
+    route: string;
+    booklet: string;
+  }
 > = {
   dr: {
     title: "DR",
@@ -51,7 +61,8 @@ export const RECEIPT: Record<
 };
 
 /** The page of a DR or invoice. */
-export const receiptHref = (kind: ReceiptKind, id: string) => `${RECEIPT[kind].route}?id=${id}`;
+export const receiptHref = (kind: ReceiptKind, id: string) =>
+  `${RECEIPT[kind].route}?id=${id}`;
 
 /** "DR 123", "Invoice 456", or "DR (no number)". */
 export const receiptName = (kind: ReceiptKind, no: string | null) =>
@@ -71,18 +82,25 @@ export const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
   custom: "Typed in",
 };
 
-export const StatusBadge = component$<{ s: { label: string; tone: Tone } }>(({ s }) => (
-  <Badge tone={s.tone}>{s.label}</Badge>
-));
+export const StatusBadge = component$<{ s: { label: string; tone: Tone } }>(
+  ({ s }) => <Badge tone={s.tone}>{s.label}</Badge>,
+);
 
 export const DrStatusBadge = component$<{ d: DrInfo }>(({ d }) =>
-  d.voided ? <Badge tone="danger">Void</Badge> : <StatusBadge s={DR_STATUS[d.status]} />,
+  d.voided ? (
+    <Badge tone="danger">Void</Badge>
+  ) : (
+    <StatusBadge s={DR_STATUS[d.status]} />
+  ),
 );
 
 /** "Offline no." badge for numbers given while other PCs were unreachable. */
 export const OfflineBadge = component$<{ show: boolean }>(({ show }) =>
   show ? (
-    <span class="ml-2" title="Given while offline from other PCs; it may still change.">
+    <span
+      class="ml-2"
+      title="Given while offline from other PCs; it may still change."
+    >
       <Badge tone="warning">offline no.</Badge>
     </span>
   ) : null,
@@ -91,30 +109,56 @@ export const OfflineBadge = component$<{ show: boolean }>(({ show }) =>
 /** A DR's or invoice's number with its warnings, or a placeholder. */
 export const DrNo = component$<{ d: DrInfo }>(({ d }) => (
   <>
-    {d.no ?? <span class="text-ink-muted">No {RECEIPT[d.kind].name} no. yet</span>}
+    {d.no ?? (
+      <span class="text-ink-muted">No {RECEIPT[d.kind].name} no. yet</span>
+    )}
     {d.no_clash && (
-      <span class="ml-2" title={`Another ${RECEIPT[d.kind].name} has the same number. Correct the wrong one.`}>
+      <span
+        class="ml-2"
+        title={`Another ${RECEIPT[d.kind].name} has the same number. Correct the wrong one.`}
+      >
         <Badge tone="danger">used twice</Badge>
       </span>
     )}
     {d.no && !d.no_confirmed && !d.no_clash && (
-      <span class="ml-2" title="Entered while offline from other PCs: not checked against them yet.">
+      <span
+        class="ml-2"
+        title="Entered while offline from other PCs: not checked against them yet."
+      >
         <Badge tone="warning">unchecked</Badge>
       </span>
     )}
   </>
 ));
 
-/** Net, VAT and gross of a document. */
-export const Totals = component$<{ totals: VatAmounts; vat: boolean; vatBp: number }>(
-  ({ totals, vat, vatBp }) => (
+/** A document's total. Net, VAT and gross only for an older document that
+ * still had VAT added on top. */
+export const Totals = component$<{
+  totals: VatAmounts;
+  vat: boolean;
+  vatBp: number;
+}>(({ totals, vat, vatBp }) =>
+  totals.vat_c === 0 ? (
+    <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+      <dt class="font-semibold">Total</dt>
+      <dd class="text-right font-semibold tabular-nums">
+        {formatPeso(totals.gross_c)}
+      </dd>
+    </dl>
+  ) : (
     <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
       <dt class="text-ink-muted">Net</dt>
       <dd class="text-right tabular-nums">{formatPeso(totals.net_c)}</dd>
-      <dt class="text-ink-muted">{vat ? `VAT (${formatPct(vatBp)})` : "VAT"}</dt>
-      <dd class="text-right tabular-nums">{vat ? formatPeso(totals.vat_c) : "none"}</dd>
+      <dt class="text-ink-muted">
+        {vat ? `VAT (${formatPct(vatBp)})` : "VAT"}
+      </dt>
+      <dd class="text-right tabular-nums">
+        {vat ? formatPeso(totals.vat_c) : "none"}
+      </dd>
       <dt class="font-semibold">Gross</dt>
-      <dd class="text-right font-semibold tabular-nums">{formatPeso(totals.gross_c)}</dd>
+      <dd class="text-right font-semibold tabular-nums">
+        {formatPeso(totals.gross_c)}
+      </dd>
     </dl>
   ),
 );

@@ -8,7 +8,12 @@ import {
   type QRL,
   type Signal,
 } from "@builder.io/qwik";
-import { Link, useLocation, useNavigate, type DocumentHead } from "@builder.io/qwik-city";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  type DocumentHead,
+} from "@builder.io/qwik-city";
 import {
   commands,
   type BookingAction,
@@ -185,7 +190,9 @@ const BookingFormModal = component$<{
     async ({ track }) => {
       if (!track(() => open.value)) return;
       const client = track(() => form.client_id);
-      const wanted = track(() => form.lines.map((l) => l.item_id)).filter(Boolean);
+      const wanted = track(() => form.lines.map((l) => l.item_id)).filter(
+        Boolean,
+      );
       if (!client) return;
       for (const item of wanted) {
         const k = quoteKey(client, item);
@@ -205,8 +212,10 @@ const BookingFormModal = component$<{
       const lines = form.lines
         .filter((l) => l.item_id || l.qty.trim())
         .map((l) => {
-          const what = items.value.find((i) => i.id === l.item_id)?.label ?? "an item";
-          if (!l.item_id) throw new Error("choose an item on every line, or remove it");
+          const what =
+            items.value.find((i) => i.id === l.item_id)?.label ?? "an item";
+          if (!l.item_id)
+            throw new Error("choose an item on every line, or remove it");
           const qty = parseCount(l.qty, `quantity for ${what}`);
           if (!qty) throw new Error(`enter a quantity for ${what}`);
           return {
@@ -252,19 +261,33 @@ const BookingFormModal = component$<{
       /* shown on save */
     }
   }
-  const vat = form.vat ? Math.round((net * vatBp.value) / 10000) : 0;
+  // The price typed is final: nothing is added on top for either type.
+  const vat = 0;
 
   return (
     <Modal open={open} title={form.id ? "Edit booking" : "New booking"} wide>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
-        {form.client_id && <CreditWarning clientId={form.client_id} extraC={form.id ? 0 : net + vat} />}
+        {form.client_id && (
+          <CreditWarning
+            clientId={form.client_id}
+            extraC={form.id ? 0 : net + vat}
+          />
+        )}
         <div class="grid gap-3 sm:grid-cols-2">
           <Field label="Client">
-            <select class={input} required onChange$={(_, el) => (form.client_id = el.value)}>
+            <select
+              class={input}
+              required
+              onChange$={(_, el) => (form.client_id = el.value)}
+            >
               <option value="">Choose a client…</option>
               {pickable(clients.value, form.client_id).map((c) => (
-                <option key={c.id} value={c.id} selected={c.id === form.client_id}>
+                <option
+                  key={c.id}
+                  value={c.id}
+                  selected={c.id === form.client_id}
+                >
                   {c.label}
                 </option>
               ))}
@@ -299,20 +322,29 @@ const BookingFormModal = component$<{
         <div>
           <div class="mb-1 flex items-center justify-between">
             <span class="text-sm font-medium">Items</span>
-            <span class={hint}>Prices are per unit, before VAT. Blank uses the client's price.</span>
+            <span class={hint}>
+              Prices are per unit and final. Blank uses the client's price.
+            </span>
           </div>
           <div class="space-y-2">
             {form.lines.map((line, idx) => {
-              const q = form.client_id && line.item_id ? quotes[quoteKey(form.client_id, line.item_id)] : null;
+              const q =
+                form.client_id && line.item_id
+                  ? quotes[quoteKey(form.client_id, line.item_id)]
+                  : null;
               let typed: number | null = null;
               try {
                 typed = parseMoney(line.price);
               } catch {
                 typed = null;
               }
-              const kept = typed != null && line.saved?.price === typed ? line.saved.rule : null;
+              const kept =
+                typed != null && line.saved?.price === typed
+                  ? line.saved.rule
+                  : null;
               const custom = typed != null && q?.net_c !== typed;
-              const below = typed != null && q?.cost_c != null && typed < q.cost_c;
+              const below =
+                typed != null && q?.cost_c != null && typed < q.cost_c;
               return (
                 <div
                   key={line.key}
@@ -329,7 +361,11 @@ const BookingFormModal = component$<{
                   >
                     <option value="">Choose an item…</option>
                     {pickable(items.value, line.item_id).map((i) => (
-                      <option key={i.id} value={i.id} selected={i.id === line.item_id}>
+                      <option
+                        key={i.id}
+                        value={i.id}
+                        selected={i.id === line.item_id}
+                      >
                         {i.label}
                       </option>
                     ))}
@@ -349,14 +385,28 @@ const BookingFormModal = component$<{
                       class={[inputBase, "w-full text-right"]}
                       aria-label="Unit price"
                       inputMode="decimal"
-                      placeholder={q?.net_c != null ? moneyText(q.net_c) : "₱ price"}
+                      placeholder={
+                        q?.net_c != null ? moneyText(q.net_c) : "₱ price"
+                      }
                       value={line.price}
                       onInput$={(_, el) => (line.price = el.value)}
                     />
                     {q && (
-                      <span class={["block text-right text-xs", below || q.below_cost ? "text-danger" : "text-ink-muted"]}>
-                        {kept ? PRICE_SOURCE_LABEL[kept] : custom ? "Typed in" : RULE_LABELS[q.rule]}
-                        {(below || (!custom && q.below_cost)) && " · below cost"}
+                      <span
+                        class={[
+                          "block text-right text-xs",
+                          below || q.below_cost
+                            ? "text-danger"
+                            : "text-ink-muted",
+                        ]}
+                      >
+                        {kept
+                          ? PRICE_SOURCE_LABEL[kept]
+                          : custom
+                            ? "Typed in"
+                            : RULE_LABELS[q.rule]}
+                        {(below || (!custom && q.below_cost)) &&
+                          " · below cost"}
                       </span>
                     )}
                   </div>
@@ -373,22 +423,48 @@ const BookingFormModal = component$<{
               );
             })}
           </div>
-          <button type="button" class={[btnGhost, "mt-2"]} onClick$={() => form.lines.push(blankLine())}>
+          <button
+            type="button"
+            class={[btnGhost, "mt-2"]}
+            onClick$={() => form.lines.push(blankLine())}
+          >
             + Add item
           </button>
         </div>
 
         <div class="flex flex-wrap items-start justify-between gap-4">
-          <label class="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              class="accent-brand-500"
-              checked={form.vat}
-              onChange$={(_, el) => (form.vat = el.checked)}
-            />
-            VAT ({formatPct(vatBp.value)})
-          </label>
-          <Totals totals={{ net_c: net, vat_c: vat, gross_c: net + vat }} vat={form.vat} vatBp={vatBp.value} />
+          <fieldset>
+            <legend class="mb-1 text-sm font-medium">The client gets</legend>
+            <div class="flex flex-wrap gap-2">
+              {([false, true] as const).map((isInvoice) => (
+                <label
+                  key={String(isInvoice)}
+                  class={[
+                    "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm",
+                    form.vat === isInvoice
+                      ? "border-brand-500 bg-brand-50"
+                      : "border-line",
+                  ]}
+                >
+                  <input
+                    type="radio"
+                    name="booking-receipt-kind"
+                    class="accent-brand-500"
+                    checked={form.vat === isInvoice}
+                    onChange$={() => (form.vat = isInvoice)}
+                  />
+                  <span class="font-medium">
+                    {isInvoice ? "Sales Invoice" : "Delivery Receipt"}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <Totals
+            totals={{ net_c: net, vat_c: vat, gross_c: net + vat }}
+            vat={form.vat}
+            vatBp={vatBp.value}
+          />
         </div>
         <Field label="Notes">
           <textarea
@@ -404,7 +480,11 @@ const BookingFormModal = component$<{
             : "Saved as a draft with a new booking number. Confirm it to request DRs or invoices."}
         </p>
         <div class="flex justify-end gap-2">
-          <button type="button" class={btnSecondary} onClick$={() => (open.value = false)}>
+          <button
+            type="button"
+            class={btnSecondary}
+            onClick$={() => (open.value = false)}
+          >
             Cancel
           </button>
           <button class={btnPrimary} disabled={busy.value}>
@@ -460,7 +540,10 @@ const BookingList = component$(() => {
 
   return (
     <>
-      <PageHeader title="Bookings" subtitle="Confirmed client orders, delivered through DRs or invoices.">
+      <PageHeader
+        title="Bookings"
+        subtitle="Confirmed client orders, delivered through DRs or invoices."
+      >
         {can(session.user, "bookings", "create") && (
           <button
             q:slot="actions"
@@ -483,23 +566,30 @@ const BookingList = component$(() => {
             key: "status",
             label: "Statuses",
             options: [
-              ...(["draft", "confirmed", "closed", "cancelled"] as const).map((s) => ({
-                value: s,
-                label: BOOKING_STATUS[s].label,
-              })),
+              ...(["draft", "confirmed", "closed", "cancelled"] as const).map(
+                (s) => ({
+                  value: s,
+                  label: BOOKING_STATUS[s].label,
+                }),
+              ),
               { value: "to_deliver", label: "Still to deliver" },
             ],
           },
           {
             key: "client",
             label: "Clients",
-            options: clients.value.map((c) => ({ value: c.id, label: c.label })),
+            options: clients.value.map((c) => ({
+              value: c.id,
+              label: c.label,
+            })),
           },
         ]}
       />
       <section class={[card, "overflow-x-auto"]}>
         {shown.value.length === 0 ? (
-          <Empty>{bookings.value.length ? "No bookings match." : "No bookings yet."}</Empty>
+          <Empty>
+            {bookings.value.length ? "No bookings match." : "No bookings yet."}
+          </Empty>
         ) : (
           <table class={table}>
             <thead>
@@ -515,9 +605,15 @@ const BookingList = component$(() => {
             </thead>
             <tbody>
               {pg.value.rows.map((b) => (
-                <tr key={b.id} class={b.status === "cancelled" ? "text-ink-muted" : ""}>
+                <tr
+                  key={b.id}
+                  class={b.status === "cancelled" ? "text-ink-muted" : ""}
+                >
                   <td class={[td, "whitespace-nowrap"]}>
-                    <Link class="font-medium text-brand-700 hover:underline" href={`/bookings/?id=${b.id}`}>
+                    <Link
+                      class="font-medium text-brand-700 hover:underline"
+                      href={`/bookings/?id=${b.id}`}
+                    >
                       {b.no ?? "—"}
                     </Link>
                     <OfflineBadge show={!b.no_confirmed} />
@@ -525,13 +621,23 @@ const BookingList = component$(() => {
                   <td class={[td, "whitespace-nowrap"]}>{formatDay(b.date)}</td>
                   <td class={td}>
                     {b.client_name ?? "Deleted client"}
-                    {b.client_ref && <span class={[hint, "block"]}>PO {b.client_ref}</span>}
+                    {b.client_ref && (
+                      <span class={[hint, "block"]}>PO {b.client_ref}</span>
+                    )}
                   </td>
                   <td class={td}>{b.summary}</td>
-                  <td class={[td, "text-right tabular-nums"]}>{formatPeso(b.totals.gross_c)}</td>
+                  <td class={[td, "text-right tabular-nums"]}>
+                    {formatPeso(b.totals.gross_c)}
+                  </td>
                   <td class={[td, "whitespace-nowrap"]}>
-                    {b.status === "draft" || b.status === "cancelled" ? "—" : PROGRESS_LABEL[b.progress]}
-                    {b.open_drs > 0 && <span class={[hint, "block"]}>{b.open_drs} open DR(s) or invoice(s)</span>}
+                    {b.status === "draft" || b.status === "cancelled"
+                      ? "—"
+                      : PROGRESS_LABEL[b.progress]}
+                    {b.open_drs > 0 && (
+                      <span class={[hint, "block"]}>
+                        {b.open_drs} open DR(s) or invoice(s)
+                      </span>
+                    )}
                   </td>
                   <td class={td}>
                     <StatusBadge s={BOOKING_STATUS[b.status]} />
@@ -543,12 +649,19 @@ const BookingList = component$(() => {
         )}
         <Pager of={pg} />
       </section>
-      <BookingFormModal open={open} form={form} saved$={$((id: string) => nav(`/bookings/?id=${id}`))} />
+      <BookingFormModal
+        open={open}
+        form={form}
+        saved$={$((id: string) => nav(`/bookings/?id=${id}`))}
+      />
     </>
   );
 });
 
-const ACTION_TEXT: Record<BookingAction, { title: string; body: string; label: string }> = {
+const ACTION_TEXT: Record<
+  BookingAction,
+  { title: string; body: string; label: string }
+> = {
   confirm: {
     title: "Confirm this booking?",
     body: "Its lines are locked and DRs or invoices can be requested.",
@@ -638,18 +751,37 @@ const BookingView = component$<{ id: string }>(({ id }) => {
   });
 
   const rows: [string, string][] = [
-    ["Client", b.client_name ? `${b.client_name}${b.client_code ? ` (${b.client_code})` : ""}` : "Deleted client"],
+    [
+      "Client",
+      b.client_name
+        ? `${b.client_name}${b.client_code ? ` (${b.client_code})` : ""}`
+        : "Deleted client",
+    ],
     ["Date", formatDay(b.date)],
     ["Client's PO", b.client_ref ?? ""],
     ["Deliver to", b.deliver_to ?? ""],
-    ["VAT", b.vat ? formatPct(b.vat_bp) : "No VAT"],
+    ["The client gets", b.vat ? "Sales Invoice" : "Delivery Receipt"],
     ["Notes", b.notes ?? ""],
-    ["Entered", `${formatDateTime(b.created_at)} by ${b.created_by_name ?? "—"}`],
+    [
+      "Entered",
+      `${formatDateTime(b.created_at)} by ${b.created_by_name ?? "—"}`,
+    ],
   ];
-  if (b.confirmed_at) rows.push(["Confirmed", `${formatDateTime(b.confirmed_at)} by ${b.confirmed_by_name ?? "—"}`]);
-  if (b.status === "closed") rows.push(["Closed", `${formatDateTime(b.closed_at)} by ${b.closed_by_name ?? "—"}`]);
+  if (b.confirmed_at)
+    rows.push([
+      "Confirmed",
+      `${formatDateTime(b.confirmed_at)} by ${b.confirmed_by_name ?? "—"}`,
+    ]);
+  if (b.status === "closed")
+    rows.push([
+      "Closed",
+      `${formatDateTime(b.closed_at)} by ${b.closed_by_name ?? "—"}`,
+    ]);
   if (b.status === "cancelled") {
-    rows.push(["Cancelled", `${formatDateTime(b.closed_at)} by ${b.closed_by_name ?? "—"}`]);
+    rows.push([
+      "Cancelled",
+      `${formatDateTime(b.closed_at)} by ${b.closed_by_name ?? "—"}`,
+    ]);
     rows.push(["Reason", b.cancel_reason ?? ""]);
   }
 
@@ -660,29 +792,53 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           ← Bookings
         </Link>
       </p>
-      <PageHeader title={`Booking ${b.no ?? ""}`} subtitle={b.client_name ?? undefined}>
+      <PageHeader
+        title={`Booking ${b.no ?? ""}`}
+        subtitle={b.client_name ?? undefined}
+      >
         {b.status === "draft" && can(user, "bookings", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={() => (deleteOpen.value = true)}
+          >
             Delete
           </button>
         )}
-        {(b.status === "draft" || b.status === "confirmed") && can(user, "bookings", "edit") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => ask("cancel")}>
-            Cancel booking
-          </button>
-        )}
+        {(b.status === "draft" || b.status === "confirmed") &&
+          can(user, "bookings", "edit") && (
+            <button
+              q:slot="actions"
+              class={btnSecondary}
+              onClick$={() => ask("cancel")}
+            >
+              Cancel booking
+            </button>
+          )}
         {b.status === "confirmed" && can(user, "bookings", "edit") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => ask("back_to_draft")}>
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={() => ask("back_to_draft")}
+          >
             Back to draft
           </button>
         )}
         {b.status === "confirmed" && can(user, "bookings", "edit") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => ask("close")}>
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={() => ask("close")}
+          >
             Close
           </button>
         )}
         {b.status === "closed" && can(user, "bookings", "edit") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => ask("reopen")}>
+          <button
+            q:slot="actions"
+            class={btnSecondary}
+            onClick$={() => ask("reopen")}
+          >
             Reopen
           </button>
         )}
@@ -699,12 +855,20 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           </button>
         )}
         {b.status === "draft" && can(user, "bookings", "approve") && (
-          <button q:slot="actions" class={btnPrimary} onClick$={() => ask("confirm")}>
+          <button
+            q:slot="actions"
+            class={btnPrimary}
+            onClick$={() => ask("confirm")}
+          >
             Confirm
           </button>
         )}
         {canRequest && (
-          <button q:slot="actions" class={btnPrimary} onClick$={() => (drOpen.value = true)}>
+          <button
+            q:slot="actions"
+            class={btnPrimary}
+            onClick$={() => (drOpen.value = true)}
+          >
             Request DR or invoice
           </button>
         )}
@@ -712,16 +876,24 @@ const BookingView = component$<{ id: string }>(({ id }) => {
       {error.value && <Alert>{error.value}</Alert>}
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <StatusBadge s={BOOKING_STATUS[b.status]} />
-        {delivering && <span class="text-sm">{PROGRESS_LABEL[b.progress]}</span>}
+        {delivering && (
+          <span class="text-sm">{PROGRESS_LABEL[b.progress]}</span>
+        )}
         {b.client_id && (
-          <Link class="text-sm text-brand-700 hover:underline" href={`/clients/?id=${b.client_id}`}>
+          <Link
+            class="text-sm text-brand-700 hover:underline"
+            href={`/clients/?id=${b.client_id}`}
+          >
             Client details
           </Link>
         )}
       </div>
       {b.client_id && (b.status === "draft" || b.status === "confirmed") && (
         <div class="mb-4">
-          <CreditWarning clientId={b.client_id} extraC={b.status === "draft" ? b.totals.gross_c : 0} />
+          <CreditWarning
+            clientId={b.client_id}
+            extraC={b.status === "draft" ? b.totals.gross_c : 0}
+          />
         </div>
       )}
       <div class="grid gap-4 2xl:grid-cols-[22rem_minmax(0,1fr)]">
@@ -739,7 +911,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
                   <th class={[th, "text-right"]}>Amount</th>
                   {costs && <th class={[th, "text-right"]}>Cost</th>}
                   {margins && <th class={[th, "text-right"]}>Margin</th>}
-                  {delivering && <th class={[th, "text-right"]}>On receipts</th>}
+                  {delivering && (
+                    <th class={[th, "text-right"]}>On receipts</th>
+                  )}
                   {delivering && <th class={[th, "text-right"]}>Delivered</th>}
                   {delivering && <th class={[th, "text-right"]}>Left</th>}
                 </tr>
@@ -748,27 +922,60 @@ const BookingView = component$<{ id: string }>(({ id }) => {
                 {det.lines.map((l) => (
                   <tr key={l.id}>
                     <td class={[td, "min-w-48"]}>
-                      <Link class="whitespace-nowrap text-brand-700 hover:underline" href={`/items/?id=${l.item_id}`}>
+                      <Link
+                        class="whitespace-nowrap text-brand-700 hover:underline"
+                        href={`/items/?id=${l.item_id}`}
+                      >
                         {l.item_code ?? "Deleted item"}
                       </Link>{" "}
                       {l.item_name}
-                      {l.notes && <span class={[hint, "block"]}>{l.notes}</span>}
+                      {l.notes && (
+                        <span class={[hint, "block"]}>{l.notes}</span>
+                      )}
                     </td>
-                    <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                    <td
+                      class={[td, "text-right tabular-nums whitespace-nowrap"]}
+                    >
                       {formatQty(l.qty, l.unit)}
                     </td>
                     <td class={[td, "text-right tabular-nums"]}>
                       {formatPeso(l.price_c)}
-                      <span class={[hint, "block whitespace-nowrap"]}>{PRICE_SOURCE_LABEL[l.price_rule]}</span>
+                      <span class={[hint, "block whitespace-nowrap"]}>
+                        {PRICE_SOURCE_LABEL[l.price_rule]}
+                      </span>
                       {l.below_cost && <Badge tone="danger">below cost</Badge>}
                     </td>
-                    <td class={[td, "text-right tabular-nums"]}>{formatPeso(l.amount_c)}</td>
-                    {costs && <td class={[td, "text-right tabular-nums"]}>{l.cost_c == null ? "—" : formatPeso(l.cost_c)}</td>}
-                    {margins && <td class={[td, "text-right tabular-nums"]}>{formatPct(l.margin_bp)}</td>}
-                    {delivering && <td class={[td, "text-right tabular-nums"]}>{l.pending || "—"}</td>}
-                    {delivering && <td class={[td, "text-right tabular-nums"]}>{l.delivered || "—"}</td>}
+                    <td class={[td, "text-right tabular-nums"]}>
+                      {formatPeso(l.amount_c)}
+                    </td>
+                    {costs && (
+                      <td class={[td, "text-right tabular-nums"]}>
+                        {l.cost_c == null ? "—" : formatPeso(l.cost_c)}
+                      </td>
+                    )}
+                    {margins && (
+                      <td class={[td, "text-right tabular-nums"]}>
+                        {formatPct(l.margin_bp)}
+                      </td>
+                    )}
                     {delivering && (
-                      <td class={[td, "text-right tabular-nums", l.remaining < 0 && "text-danger"]}>
+                      <td class={[td, "text-right tabular-nums"]}>
+                        {l.pending || "—"}
+                      </td>
+                    )}
+                    {delivering && (
+                      <td class={[td, "text-right tabular-nums"]}>
+                        {l.delivered || "—"}
+                      </td>
+                    )}
+                    {delivering && (
+                      <td
+                        class={[
+                          td,
+                          "text-right tabular-nums",
+                          l.remaining < 0 && "text-danger",
+                        ]}
+                      >
                         {l.remaining}
                       </td>
                     )}
@@ -782,7 +989,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           </section>
           {delivering && det.drs.length === 0 && (
             <section class={card}>
-              <h2 class="border-b border-line px-4 py-3 font-semibold">Delivery receipts and invoices</h2>
+              <h2 class="border-b border-line px-4 py-3 font-semibold">
+                Delivery receipts and invoices
+              </h2>
               <Empty>No DRs or invoices yet.</Empty>
             </section>
           )}
@@ -792,7 +1001,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
               if (rows.length === 0) return null;
               return (
                 <section key={kind} class={[card, "overflow-x-auto"]}>
-                  <h2 class="border-b border-line px-4 py-3 font-semibold">{RECEIPT[kind].list}</h2>
+                  <h2 class="border-b border-line px-4 py-3 font-semibold">
+                    {RECEIPT[kind].list}
+                  </h2>
                   <table class={table}>
                     <thead>
                       <tr>
@@ -806,16 +1017,28 @@ const BookingView = component$<{ id: string }>(({ id }) => {
                     </thead>
                     <tbody>
                       {rows.map((d) => (
-                        <tr key={d.id} class={d.status === "cancelled" ? "text-ink-muted" : ""}>
+                        <tr
+                          key={d.id}
+                          class={
+                            d.status === "cancelled" ? "text-ink-muted" : ""
+                          }
+                        >
                           <td class={[td, "whitespace-nowrap"]}>
-                            <Link class="font-medium text-brand-700 hover:underline" href={receiptHref(d.kind, d.id)}>
+                            <Link
+                              class="font-medium text-brand-700 hover:underline"
+                              href={receiptHref(d.kind, d.id)}
+                            >
                               <DrNo d={d} />
                             </Link>
                           </td>
-                          <td class={[td, "whitespace-nowrap"]}>{formatDay(d.delivered_date ?? d.date)}</td>
+                          <td class={[td, "whitespace-nowrap"]}>
+                            {formatDay(d.delivered_date ?? d.date)}
+                          </td>
                           <td class={td}>{d.from_location_name ?? "—"}</td>
                           <td class={td}>{d.summary}</td>
-                          <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.totals.gross_c)}</td>
+                          <td class={[td, "text-right tabular-nums"]}>
+                            {formatPeso(d.totals.gross_c)}
+                          </td>
                           <td class={td}>
                             <DrStatusBadge d={d} />
                           </td>
@@ -833,7 +1056,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
       <DrRequestModal
         open={drOpen}
         bookingId={id}
-        saved$={$((dr: string, kind: ReceiptKind) => nav(receiptHref(kind, dr)))}
+        saved$={$((dr: string, kind: ReceiptKind) =>
+          nav(receiptHref(kind, dr)),
+        )}
       />
       <Confirm
         open={deleteOpen}
@@ -843,7 +1068,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           await nav("/bookings/");
         })}
       >
-        <p>This deletes the draft on every PC. Its number isn't given out again.</p>
+        <p>
+          This deletes the draft on every PC. Its number isn't given out again.
+        </p>
       </Confirm>
       <Modal open={actionOpen} title={actionTitle.value}>
         <form
@@ -853,7 +1080,9 @@ const BookingView = component$<{ id: string }>(({ id }) => {
             busy.value = true;
             actionError.value = "";
             try {
-              unwrap(await commands.setBookingStatus(id, action.value, reason.value));
+              unwrap(
+                await commands.setBookingStatus(id, action.value, reason.value),
+              );
               actionOpen.value = false;
             } catch (e) {
               actionError.value = errorText(e);
@@ -866,11 +1095,19 @@ const BookingView = component$<{ id: string }>(({ id }) => {
           <p class="text-sm">{ACTION_TEXT[action.value].body}</p>
           {action.value === "cancel" && (
             <Field label="Reason">
-              <input class={input} value={reason.value} onInput$={(_, el) => (reason.value = el.value)} />
+              <input
+                class={input}
+                value={reason.value}
+                onInput$={(_, el) => (reason.value = el.value)}
+              />
             </Field>
           )}
           <div class="flex justify-end gap-2">
-            <button type="button" class={btnSecondary} onClick$={() => (actionOpen.value = false)}>
+            <button
+              type="button"
+              class={btnSecondary}
+              onClick$={() => (actionOpen.value = false)}
+            >
               Back
             </button>
             <button class={btnPrimary} disabled={busy.value}>

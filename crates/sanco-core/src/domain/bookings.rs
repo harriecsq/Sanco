@@ -19,7 +19,7 @@ use crate::domain::auth::{Field, Perms};
 use crate::domain::delivery::{self, DrInfo};
 use crate::domain::pricing::{self, PriceRule, VatAmounts};
 use crate::domain::{
-    MAX_LINES, items, line_amount, line_summary, replace_lines, require_date, settings, text_opt,
+    MAX_LINES, items, line_amount, line_summary, replace_lines, require_date, text_opt,
 };
 use crate::error::{Error, Result};
 use crate::repo::WriteTx;
@@ -364,7 +364,7 @@ pub fn create(tx: &mut WriteTx, input: &BookingInput, res: &Reservation) -> Resu
         return Err(Error::Invalid("wrong number series for a booking".into()));
     }
     let (date, lines) = prepare(tx.conn(), input, &HashMap::new())?;
-    let vat_bp = settings::vat_rate_bp(tx.conn())?;
+    let vat_bp = pricing::DOC_VAT_BP;
     let id = tx.insert(
         BOOKINGS,
         json!({
@@ -414,7 +414,7 @@ pub fn update(tx: &mut WriteTx, input: &BookingInput) -> Result<()> {
         rows.collect::<Result<_, _>>()?
     };
     let (date, lines) = prepare(tx.conn(), input, &existing)?;
-    let vat_bp = settings::vat_rate_bp(tx.conn())?;
+    let vat_bp = pricing::DOC_VAT_BP;
     tx.update(
         BOOKINGS,
         &id,

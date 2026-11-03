@@ -247,9 +247,9 @@ fn dashboard_kpis_and_issues() {
         kpi("invoices_open").href,
         "/accounting/invoices/?status=requested"
     );
-    // 4 × ₱125 + 12% VAT, due 30 days after 2026-07-01: overdue.
-    assert_eq!(kpi("receivables").value, 56_000);
-    assert_eq!(kpi("overdue").value, 56_000);
+    // 4 × ₱125 (no VAT on top), due 30 days after 2026-07-01: overdue.
+    assert_eq!(kpi("receivables").value, 50_000);
+    assert_eq!(kpi("overdue").value, 50_000);
     assert_eq!(kpi("overdue").tone, Tone::Warn);
     // 96 left, reorder at 95: not low yet.
     assert_eq!(kpi("low_stock").value, 0);
@@ -305,7 +305,7 @@ fn reports_sales_margin_and_bd() {
     assert_eq!((by_client[0].drs, by_client[0].invoices), (0, 2));
     assert_eq!(
         (by_client[0].net_c, by_client[0].vat_c, by_client[0].gross_c),
-        (87_500, 10_500, 98_000)
+        (87_500, 0, 87_500)
     );
 
     let by_month = db
@@ -320,7 +320,7 @@ fn reports_sales_margin_and_bd() {
         .unwrap();
     assert_eq!(by_item.len(), 1);
     assert_eq!(by_item[0].qty, Some(3));
-    assert_eq!(by_item[0].gross_c, 42_000);
+    assert_eq!(by_item[0].gross_c, 37_500);
     let none = db
         .read(|c| reports::sales(c, &DateRange::new("2026-09-01", ""), SalesGroup::Client))
         .unwrap();

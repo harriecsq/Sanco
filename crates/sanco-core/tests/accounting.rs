@@ -317,9 +317,9 @@ fn checks_payments_and_receivables() {
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
-    let (bk, line) = booking(&a.db, &actor, &client, &tape, 10, None);
+    let (bk, line) = booking(&a.db, &actor, &client, &tape, 10, Some(14_000));
 
-    // 4 × ₱125 + 12% VAT = ₱560, delivered Aug 1 (30 days' terms: due Aug
+    // 4 × ₱140 = ₱560 (the typed price is final, no VAT on top), delivered Aug 1 (30 days' terms: due Aug
     // 31, 51 days overdue). 6 more today: ₱840, not due.
     let dr1 = delivered_dr(&a.db, &actor, &bk, &line, 4, "101", "2026-08-01");
     let dr2 = delivered_dr(&a.db, &actor, &bk, &line, 6, "102", TODAY);
@@ -554,23 +554,24 @@ fn pay_update(db: &Db, actor: &Actor, input: PaymentInput) -> Result<()> {
 }
 
 #[test]
-fn receivables_vat_matches_dr_totals() {
+fn invoice_price_is_final_and_matches_receivables() {
     let dir = tempfile::tempdir().unwrap();
     let a = TestPeer::new(dir.path(), "a", 1);
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
-    // 3 × ₱33.33 = ₱99.99; 12% = ₱11.9988 → ₱12.00.
+    // 3 × ₱33.33 = ₱99.99 on a Sales Invoice: no VAT is added on top.
     let (bk, line) = booking(&a.db, &actor, &client, &tape, 3, Some(3_333));
     let dr = delivered_dr(&a.db, &actor, &bk, &line, 3, "7", TODAY);
     let d = a.db.read(|c| delivery::get(c, &dr)).unwrap().unwrap().dr;
     assert_eq!(
         (d.totals.net_c, d.totals.vat_c, d.totals.gross_c),
-        (9_999, 1_200, 11_199)
+        (9_999, 0, 9_999)
     );
+    assert!(d.vat, "the booking asked for a Sales Invoice");
     let report = a.db.read(|c| receivables::report(c, TODAY)).unwrap();
-    assert_eq!(report.drs[0].gross_c, 11_199);
-    assert_eq!(report.outstanding_c, 11_199);
+    assert_eq!(report.drs[0].gross_c, 9_999);
+    assert_eq!(report.outstanding_c, 9_999);
 }
 
 #[test]
@@ -580,7 +581,7 @@ fn offline_payments_for_the_same_dr_show_as_overpaid() {
     let actor = setup(&a.db);
     let tape = add_item(&a.db, &actor, "TAPE");
     let client = add_client(&a.db, &actor, "Watsons");
-    let (bk, line) = booking(&a.db, &actor, &client, &tape, 4, None);
+    let (bk, line) = booking(&a.db, &actor, &client, &tape, 4, Some(14_000));
     let dr = delivered_dr(&a.db, &actor, &bk, &line, 4, "101", TODAY);
     let b = TestPeer::new(dir.path(), "b", 2);
     pull(&b.db, &a.db, 100);

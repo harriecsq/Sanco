@@ -315,7 +315,9 @@ fn booking_to_delivered_dr() {
     );
     let net = 30 * 12_000 + 20 * 12_500;
     assert_eq!(det.booking.totals.net_c, net);
-    assert_eq!(det.booking.totals.vat_c, net * 12 / 100);
+    // The price typed is final: no VAT on top, even for a Sales Invoice.
+    assert_eq!(det.booking.totals.vat_c, 0);
+    assert_eq!(det.booking.totals.gross_c, net);
 
     // No DRs before it is confirmed.
     let gl = det.lines[0].id.clone();
@@ -891,14 +893,15 @@ fn receipts_are_drs_or_invoices() {
     set_status(&a.db, &actor, &bk, BookingAction::Confirm).unwrap();
     let line = booking(&a.db, &bk).lines[0].id.clone();
 
-    // The booking has VAT: an invoice by default. 2 × ₱125 + 12%.
+    // The booking asks for a Sales Invoice: an invoice by default. 2 × ₱125,
+    // no VAT added on top.
     let inv = request_dr(&a.db, &actor, &bk, vec![(line.clone(), None, 2)]).unwrap();
     let d = dr(&a.db, &inv);
     assert_eq!(
         (d.kind, d.vat, d.no_series.as_str()),
         (ReceiptKind::Invoice, true, "SI")
     );
-    assert_eq!((d.totals.net_c, d.totals.gross_c), (25_000, 28_000));
+    assert_eq!((d.totals.net_c, d.totals.gross_c), (25_000, 25_000));
     // Picked as a DR: no VAT.
     let mut input = as_kind(&a.db, &inv, ReceiptKind::Dr);
     input.lines[0].id = None;
@@ -955,7 +958,7 @@ fn receipts_are_drs_or_invoices() {
     assert_eq!(dr(&a.db, &inv).no, None);
     typed(&a.db, &actor, &inv, "701").unwrap();
     assert_eq!(dr(&a.db, &inv).no.as_deref(), Some("701"));
-    assert_eq!(dr(&a.db, &inv).totals.gross_c, 28_000);
+    assert_eq!(dr(&a.db, &inv).totals.gross_c, 25_000);
 
     // Delivered: the type is fixed.
     deliver(&a.db, &actor, &inv, TODAY).unwrap();

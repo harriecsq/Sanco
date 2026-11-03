@@ -29,7 +29,7 @@ use crate::domain::payments::{self, DrPayment};
 use crate::domain::pricing::{self, VatAmounts};
 use crate::domain::receivables;
 use crate::domain::{
-    MAX_LINES, line_amount, line_summary, peso, replace_lines, require_date, settings, text_opt,
+    MAX_LINES, line_amount, line_summary, peso, replace_lines, require_date, text_opt,
 };
 use crate::error::{Error, Result};
 use crate::repo::WriteTx;
@@ -522,7 +522,7 @@ fn line_rows(lines: Vec<PreparedLine>) -> Vec<(Option<String>, serde_json::Value
 /// Returns its id.
 pub fn request(tx: &mut WriteTx, input: &DrRequestInput) -> Result<String> {
     let p = prepare_request(tx.conn(), input, None)?;
-    let vat_bp = settings::vat_rate_bp(tx.conn())?;
+    let vat_bp = pricing::DOC_VAT_BP;
     let id = tx.insert(
         DELIVERY_RECEIPTS,
         json!({
@@ -642,7 +642,7 @@ pub fn update(
             numbering::release(tx, id, series)?;
         }
         patch["vat"] = json!(p.vat);
-        patch["vat_bp"] = json!(settings::vat_rate_bp(tx.conn())?);
+        patch["vat_bp"] = json!(pricing::DOC_VAT_BP);
     }
     tx.update(DELIVERY_RECEIPTS, id, patch)?;
     replace_lines(tx, DR_LINES, "dr_id", id, line_rows(p.lines))
@@ -789,7 +789,7 @@ pub fn deliver(
             kind_of(tx.conn(), id)?.name()
         )));
     }
-    let vat_bp = settings::vat_rate_bp(tx.conn())?;
+    let vat_bp = pricing::DOC_VAT_BP;
     let (now, user) = (tx.now_ms(), tx.actor().user_id.clone());
     tx.update(
         DELIVERY_RECEIPTS,
