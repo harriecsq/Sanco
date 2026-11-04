@@ -50,7 +50,7 @@ jobs:
             if (tag !== `v${version}`) throw new Error(`tag ${tag} doesn't match the app version ${version}`);
             const notesFile = `.github/release-notes/${tag}.md`;
             const notes = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, "utf8").trim() : "";
-            const { data } = await github.rest.repos.createRelease({
+            const release = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
@@ -66,7 +66,23 @@ jobs:
               ].join("\n"),
               draft: true,
               prerelease: false,
+            };
+            // A draft for this tag from an earlier run is reused (its
+            // installers are replaced), so a second run doesn't make a
+            // second draft.
+            const all = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
             });
+            const draft = all.find((r) => r.draft && r.tag_name === tag);
+            if (draft) {
+              await github.rest.repos.updateRelease({ ...release, release_id: draft.id });
+              return draft.id;
+            }
+            if (all.some((r) => !r.draft && r.tag_name === tag)) {
+              throw new Error(`${tag} is already published`);
+            }
+            const { data } = await github.rest.repos.createRelease(release);
             return data.id;
 
   build:
@@ -78,7 +94,9 @@ jobs:
           - platform: windows-latest
             args: ""
             rust_targets: ""
-          - platform: macos-latest
+          # Intel Mac: GitHub's Apple Silicon (arm64) Macs are often short
+          # (jobs never start). It still builds the universal DMG.
+          - platform: macos-15-intel
             args: "--target universal-apple-darwin"
             rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
     runs-on: ${{ matrix.platform }}
