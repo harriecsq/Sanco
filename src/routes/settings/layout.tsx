@@ -15,8 +15,6 @@ const TABS = [
   { href: "/settings/conflicts/", label: "Conflicts", admin: false },
   { href: "/settings/backups/", label: "Backups", admin: false },
   { href: "/settings/audit/", label: "Audit log", admin: false },
-  { href: "/settings/import/", label: "Import stock", admin: true },
-  { href: "/settings/import-parties/", label: "Import clients and suppliers", admin: true },
 ];
 
 export default component$(() => {
