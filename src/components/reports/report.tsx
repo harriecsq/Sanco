@@ -89,12 +89,17 @@ export function toCsv(r: ReportData): string {
  *  `useComputed$`), so it updates with the filters. Extra controls can go
  *  in the default slot (left of the export button). The screen shows a page
  *  of rows; the total row and the CSV cover all of them. */
-export const ReportTable = component$<{ report: Signal<ReportData>; empty?: string }>(
-  ({ report, empty }) => {
+export const ReportTable = component$<{
+  report: Signal<ReportData>;
+  empty?: string;
+  /** Page key in the query string, for a second table on one screen. */
+  pageKey?: string;
+}>(
+  ({ report, empty, pageKey }) => {
     const saved = useSignal("");
     const error = useSignal("");
     const rows = useComputed$(() => report.value.rows);
-    const pg = usePage(rows);
+    const pg = usePage(rows, undefined, pageKey);
     const r = report.value;
     return (
       <div class="space-y-2">

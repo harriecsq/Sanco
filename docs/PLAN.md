@@ -1,3 +1,4 @@
+| Invoice discount | 🟡 Code done, UI click-through on a real PC pending | 2026-11-04 | See "Invoice discount notes" below. Discount (% or set amount) on Sales Invoices only; Reports → Discounts per client. Schema **v17** (migration `0017_invoice_discount`): every PC must update together. Version not bumped yet. |
 # Sanco Desktop App — Implementation Plan
 
 ## Context
@@ -459,6 +460,13 @@ _Update this section when each milestone is finished: set its status, the date, 
   - The approved-only KPI hint is now "N without a number yet".
 - **Verified:** `cargo test -p sanco-core -p sanco-net` (incl. `sim`), `cargo clippy --workspace`, `npm run build`. A Playwright run against the built UI with a stubbed backend covered entering a DR (Office default, lot choice, number), editing, delivering, and editing a delivered one into an invoice. **Not run on a real PC / Windows yet.**
 - **Linux build deps** (for the app crate and `npm run bindings` on Linux): `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`.
+
+**Invoice discount notes (2026-11-04)**
+- **What (user request):** a discount on the whole **Sales Invoice** (never a DR), typed as a percentage or a set peso amount, blank by default. Plus Reports → Discounts: per client, the discount given on delivered invoices in a date range, and the invoices behind it.
+- **Schema v17** (migration `0017_invoice_discount`): `delivery_receipts.discount_bp` (percent) and `discount_c` (set amount), at most one set. `v_dr_totals` (and `v_receivables`, which uses it) is recreated: new `subtotal_c` and `discount_c` columns, and `net_c` is now after the discount, so receivables, payments, client balances and sales all use the discounted total. Every PC must update together. Version not bumped yet (still 1.8.0): bump it before releasing.
+- **Rules:** `pricing::Discount` (`Percent(bp)` / `Amount(c)`); `Discount::of(subtotal)` rounds half away from zero and is clamped to `0..=subtotal`, the same as the view. Saving refuses more than 100% or more than the subtotal; 0 is no discount. A DR ignores what is sent, and switching an invoice to a DR clears both columns (user decision). VAT on older invoices comes after the discount. A delivered invoice's total (after discount) still can't go below what is paid on it.
+- **Reports:** sales by item spreads each invoice's discount over its lines by amount (`pricing::spread`, parts add up exactly), so item margin uses discounted prices (user decision). The discount report counts only delivered invoices (user decision), by delivery date; void, new and deleted ones are left out. `ReportTable` takes a `pageKey` for a second table on one screen.
+- **Not done here:** `src/lib/bindings.ts` was edited by hand (no Tauri build in the cloud container); the next debug start regenerates it, and the diff should be formatting only. No UI click-through on a real PC yet.
 
 **Delete instead of cancel notes (2026-11-03)**
 - **User decisions:** remove the Cancelled status everywhere and delete instead; anything can be deleted. Asked: "anything" means documents only (master data keeps "in use → inactive"), and Void stays alongside Delete.

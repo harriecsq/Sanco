@@ -363,6 +363,8 @@ export const commands = {
 	deleteTodo: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_todo", { id })),
 	reportSales: (range: DateRange, group: SalesGroup) => typedError<SalesRow[], string>(__TAURI_INVOKE("report_sales", { range, group })),
 	reportMargin: (range: DateRange) => typedError<MarginRow[], string>(__TAURI_INVOKE("report_margin", { range })),
+	/**  Invoice discounts per client. */
+	reportDiscounts: (range: DateRange) => typedError<DiscountReport, string>(__TAURI_INVOKE("report_discounts", { range })),
 	reportPoSpend: (range: DateRange) => typedError<SpendRow[], string>(__TAURI_INVOKE("report_po_spend", { range })),
 	reportReceivables: () => typedError<ReceivablesReport, string>(__TAURI_INVOKE("report_receivables")),
 	/**  Every payment and check: collections, PDC calendar, bounced checks. */
@@ -964,6 +966,45 @@ export type DeviceInfo = {
 	this_pc: boolean,
 };
 
+/**  An invoice's discount: a percentage of its subtotal or a set amount. */
+export type Discount = 
+/**  Basis points: 5% = 500. */
+{ kind: "percent"; value: number } | 
+/**  Centavos. */
+{ kind: "amount"; value: number };
+
+export type DiscountClientRow = {
+	client_id: string,
+	code: string | null,
+	name: string,
+	/**  Discounted invoices counted. */
+	invoices: number,
+	/**  Their lines added up, before the discount. */
+	subtotal_c: number,
+	discount_c: number,
+	/**  What the client owes on them, after the discount. */
+	total_c: number,
+};
+
+export type DiscountInvoiceRow = {
+	dr_id: string,
+	no: string | null,
+	delivered_date: string,
+	client_id: string,
+	/**  The discount as entered. */
+	discount: Discount | null,
+	subtotal_c: number,
+	discount_c: number,
+	total_c: number,
+};
+
+export type DiscountReport = {
+	/**  Most discount first. */
+	clients: DiscountClientRow[],
+	/**  Newest first. */
+	invoices: DiscountInvoiceRow[],
+};
+
 export type DrDetail = {
 	dr: DrInfo,
 	lines: DrLine[],
@@ -1001,6 +1042,13 @@ export type DrInfo = {
 	status: DrStatus,
 	vat: boolean,
 	vat_bp: number,
+	/**  The lines added up, before the discount. */
+	subtotal_c: number,
+	/**  The invoice discount as entered (invoices only). */
+	discount: Discount | null,
+	/**  What the discount takes off the subtotal. */
+	discount_c: number,
+	/**  After the discount: `net_c` is the subtotal minus `discount_c`. */
 	totals: VatAmounts,
 	deliver_to: string | null,
 	notes: string | null,
@@ -1035,6 +1083,8 @@ export type DrInput = {
 	deliver_to: string,
 	notes: string,
 	lines: DrLineInput[],
+	/**  Invoices only: a discount on the whole invoice. Ignored on a DR. */
+	discount: Discount | null,
 };
 
 export type DrLine = {

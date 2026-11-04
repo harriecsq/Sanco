@@ -156,6 +156,7 @@ fn receipt_input(order: &Order, qty: i64, line_id: Option<String>) -> DrInput {
             lot_id: Some(lots::lot_id(&order.item, lots::month_of(TODAY))),
             notes: String::new(),
         }],
+        discount: None,
     }
 }
 

@@ -35,7 +35,7 @@ use crate::domain::auth::{Field, Perms};
 use crate::domain::inventory::{self, Effect};
 use crate::domain::lots;
 use crate::domain::payments::{self, DrPayment};
-use crate::domain::pricing::{self, PriceSource, VatAmounts};
+use crate::domain::pricing::{self, Discount, PriceSource, VatAmounts};
 use crate::domain::receivables;
 use crate::domain::{
     MAX_LINES, items, line_amount, line_summary, peso, replace_lines, require_date, text_opt,
@@ -164,6 +164,8 @@ pub struct DrInput {
     pub deliver_to: String,
     pub notes: String,
     pub lines: Vec<DrLineInput>,
+    /// Invoices only: a discount on the whole invoice. Ignored on a DR.
+    pub discount: Option<Discount>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -205,6 +207,13 @@ pub struct DrInfo {
     pub status: DrStatus,
     pub vat: bool,
     pub vat_bp: i64,
+    /// The lines added up, before the discount.
+    pub subtotal_c: i64,
+    /// The invoice discount as entered (invoices only).
+    pub discount: Option<Discount>,
+    /// What the discount takes off the subtotal.
+    pub discount_c: i64,
+    /// After the discount: `net_c` is the subtotal minus `discount_c`.
     pub totals: VatAmounts,
     pub deliver_to: Option<String>,
     pub notes: Option<String>,
@@ -313,6 +322,7 @@ pub fn number_plan(conn: &Connection, id: Option<&str>, kind: ReceiptKind) -> Re
 struct Prepared {
     kind: ReceiptKind,
     date: String,
+    discount: Option<Discount>,
     lines: Vec<PreparedLine>,
 }
 
@@ -553,11 +563,70 @@ fn prepare(conn: &Connection, input: &DrInput, current: Option<&Current>) -> Res
         // Only lots the receipt takes more from than before are checked.
         inventory::check_not_negative(conn, &effects, "")?;
     }
+    let discount = check_discount(input.kind, input.discount, &lines)?;
     Ok(Prepared {
         kind: input.kind,
         date,
         lines,
+        discount,
     })
+}
+
+/// The discount an invoice keeps: none on a DR or when 0; at most 100%, or
+/// at most the subtotal.
+fn check_discount(
+    kind: ReceiptKind,
+    discount: Option<Discount>,
+    lines: &[PreparedLine],
+) -> Result<Option<Discount>> {
+    if kind != ReceiptKind::Invoice {
+        return Ok(None);
+    }
+    match discount {
+        None | Some(Discount::Percent(0)) | Some(Discount::Amount(0)) => Ok(None),
+        Some(Discount::Percent(bp)) if !(0..=pricing::BP).contains(&bp) => Err(Error::Invalid(
+            "the discount must be between 0% and 100%".into(),
+        )),
+        Some(Discount::Amount(c)) if c < 0 => {
+            Err(Error::Invalid("the discount can't be negative".into()))
+        }
+        Some(Discount::Amount(c)) => {
+            let subtotal: i64 = lines.iter().map(|l| line_amount(l.qty, l.price_c)).sum();
+            if c > subtotal {
+                return Err(Error::Invalid(format!(
+                    "the discount ({}) can't be more than the invoice's subtotal ({})",
+                    peso(c),
+                    peso(subtotal)
+                )));
+            }
+            Ok(discount)
+        }
+        Some(d) => Ok(Some(d)),
+    }
+}
+
+/// `discount_bp` and `discount_c` as stored.
+fn discount_columns(d: Option<Discount>) -> (Option<i64>, Option<i64>) {
+    match d {
+        Some(Discount::Percent(bp)) => (Some(bp), None),
+        Some(Discount::Amount(c)) => (None, Some(c)),
+        None => (None, None),
+    }
+}
+
+/// Subtotal, discount taken off, and the totals after it.
+fn totals_of(
+    subtotal_c: i64,
+    kind: ReceiptKind,
+    discount: Option<Discount>,
+    vat_bp: i64,
+) -> (i64, VatAmounts) {
+    let off = match (kind, discount) {
+        (ReceiptKind::Invoice, Some(d)) => d.of(subtotal_c),
+        _ => 0,
+    };
+    let vat_bp = if kind.vat() { vat_bp } else { 0 };
+    (off, pricing::with_vat(subtotal_c - off, vat_bp))
 }
 
 /// Checks a new receipt as [`create`] would, without writing. Call it before
@@ -606,6 +675,7 @@ pub fn create(
 ) -> Result<String> {
     let p = prepare(tx.conn(), input, None)?;
     let vat_bp = pricing::DOC_VAT_BP;
+    let (discount_bp, discount_c) = discount_columns(p.discount);
     let id = tx.insert(
         DELIVERY_RECEIPTS,
         json!({
@@ -616,6 +686,8 @@ pub fn create(
             "status": DrStatus::New.as_str(),
             "vat": p.kind.vat(),
             "vat_bp": vat_bp,
+            "discount_bp": discount_bp,
+            "discount_c": discount_c,
             "client_ref": text_opt(&input.client_ref),
             "deliver_to": text_opt(&input.deliver_to),
             "notes": text_opt(&input.notes),
@@ -686,8 +758,8 @@ pub fn check_update(
                 [id],
                 |r| r.get(0),
             )?;
-            let net = p.lines.iter().map(|l| line_amount(l.qty, l.price_c)).sum();
-            let gross = pricing::with_vat(net, if p.kind.vat() { vat_bp } else { 0 }).gross_c;
+            let subtotal = p.lines.iter().map(|l| line_amount(l.qty, l.price_c)).sum();
+            let gross = totals_of(subtotal, p.kind, p.discount, vat_bp).1.gross_c;
             if gross < paid {
                 return Err(Error::Invalid(format!(
                     "payments of {} are applied to this {}; its total can't go below that ({} now). Change the payments first",
@@ -716,7 +788,10 @@ pub fn update(
     check_update(tx.conn(), id, input, delivery, res.is_some(), &today)?;
     let cur = current(tx.conn(), id)?;
     let p = prepare(tx.conn(), input, Some(&cur))?;
+    let (discount_bp, discount_c) = discount_columns(p.discount);
     let mut patch = json!({
+        "discount_bp": discount_bp,
+        "discount_c": discount_c,
         "client_id": input.client_id,
         "date": p.date,
         "from_location_id": input.from_location_id,
@@ -1003,7 +1078,7 @@ const SELECT: &str = "
            r.status, COALESCE(r.vat, 0), COALESCE(r.vat_bp, 0), r.deliver_to, r.notes,
            r.created_at, uc.display_name, r.delivered_date,
            r.delivered_at, ud.display_name, r.received_by, r.cancelled_at, ux.display_name,
-           r.cancel_reason, c.terms_days, n.series, r.client_ref
+           r.cancel_reason, c.terms_days, n.series, r.client_ref, r.discount_bp, r.discount_c
     FROM delivery_receipts r
     LEFT JOIN v_receipt_no n ON n.dr_id = r.id
     LEFT JOIN doc_numbers bn ON bn.ref_id = r.booking_id AND bn.series = 'BK' AND bn._deleted = 0
@@ -1041,6 +1116,13 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
         status,
         vat: r.get::<_, i64>(14)? != 0,
         vat_bp: r.get(15)?,
+        subtotal_c: 0,
+        discount: if kind == ReceiptKind::Invoice {
+            Discount::from_columns(r.get(30)?, r.get(31)?)
+        } else {
+            None
+        },
+        discount_c: 0,
         deliver_to: r.get(16)?,
         notes: r.get(17)?,
         created_at: r.get(18)?,
@@ -1063,8 +1145,8 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<DrInfo> {
 }
 
 fn fill(d: &mut DrInfo, lines: &[DrLine], paid_c: i64) {
-    let net = lines.iter().map(|l| l.amount_c).sum();
-    d.totals = pricing::with_vat(net, if d.vat { d.vat_bp } else { 0 });
+    d.subtotal_c = lines.iter().map(|l| l.amount_c).sum();
+    (d.discount_c, d.totals) = totals_of(d.subtotal_c, d.kind, d.discount, d.vat_bp);
     if d.status == DrStatus::Delivered {
         d.paid_c = paid_c;
         d.balance_c = d.totals.gross_c - paid_c;

@@ -443,7 +443,14 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
             </tbody>
           </table>
           <div class="border-t border-line px-3 py-3">
-            <Totals totals={d.totals} vat={d.vat} vatBp={d.vat_bp} />
+            <Totals
+              totals={d.totals}
+              vat={d.vat}
+              vatBp={d.vat_bp}
+              subtotal={d.subtotal_c}
+              discountC={d.discount_c}
+              discount={d.discount}
+            />
           </div>
         </section>
       </div>

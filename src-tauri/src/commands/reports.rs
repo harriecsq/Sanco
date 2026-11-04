@@ -7,7 +7,9 @@ use sanco_core::domain::auth::{Action, Field, Module};
 use sanco_core::domain::inventory::{self, StockLot};
 use sanco_core::domain::payments::{self, PaymentInfo};
 use sanco_core::domain::receivables::{self, ReceivablesReport};
-use sanco_core::domain::reports::{self, DateRange, MarginRow, SalesGroup, SalesRow, SpendRow};
+use sanco_core::domain::reports::{
+    self, DateRange, DiscountReport, MarginRow, SalesGroup, SalesRow, SpendRow,
+};
 use sanco_core::time::{manila_date_string, manila_stamp};
 use tauri::{Manager, State};
 
@@ -38,6 +40,17 @@ pub async fn report_margin(
         return Err(sanco_core::Error::Forbidden("see margins".into()).to_string());
     }
     blocking(move || db.read(|c| reports::item_margin(c, &range))).await
+}
+
+/// Invoice discounts per client.
+#[tauri::command]
+#[specta::specta]
+pub async fn report_discounts(
+    state: State<'_, AppState>,
+    range: DateRange,
+) -> Result<DiscountReport, String> {
+    let (db, _) = require(&state, Module::Reports, Action::View).await?;
+    blocking(move || db.read(|c| reports::discounts(c, &range))).await
 }
 
 #[tauri::command]

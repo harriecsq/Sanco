@@ -160,6 +160,7 @@ fn input(client: &str, kind: ReceiptKind, lines: Vec<DrLineInput>) -> DrInput {
         deliver_to: String::new(),
         notes: String::new(),
         lines,
+        discount: None,
     }
 }
 
@@ -217,6 +218,7 @@ fn as_input(db: &Db, id: &str) -> DrInput {
                 notes: l.notes.clone().unwrap_or_default(),
             })
             .collect(),
+        discount: d.dr.discount,
     }
 }
 
@@ -1030,4 +1032,189 @@ fn receipts_from_before_this_change_read_as_new() {
         );
     }
     deliver(&a.db, &actor, &id, TODAY, None).unwrap();
+}
+
+#[test]
+fn invoices_take_a_discount_by_percent_or_amount() {
+    use sanco_core::domain::pricing::Discount;
+    use sanco_core::domain::reports::{self, DateRange, SalesGroup};
+
+    let dir = tempfile::tempdir().unwrap();
+    let a = TestPeer::new(dir.path(), "a", 1);
+    let actor = setup(&a.db);
+    let tape = add_item(&a.db, &actor, "TAPE", false);
+    let glv = add_item(&a.db, &actor, "GLV", false);
+    receive(&a.db, &actor, &tape, None, 20);
+    receive(&a.db, &actor, &glv, None, 20);
+    let client = add_client(&a.db, &actor, "Watsons", None);
+    // 2 × ₱125 + 1 × ₱100 = ₱350.
+    let mk = |kind, discount| {
+        let mut i = input(
+            &client,
+            kind,
+            vec![
+                line(&tape, 2, None, lot_now(&tape)),
+                line(&glv, 1, Some(10_000), lot_now(&glv)),
+            ],
+        );
+        i.discount = discount;
+        i
+    };
+
+    // 10% off: ₱35 off ₱350.
+    let inv = enter(
+        &a.db,
+        &actor,
+        mk(ReceiptKind::Invoice, Some(Discount::Percent(1_000))),
+        None,
+    )
+    .unwrap();
+    let d = dr(&a.db, &inv);
+    assert_eq!(d.discount, Some(Discount::Percent(1_000)));
+    assert_eq!(
+        (d.subtotal_c, d.discount_c, d.totals.gross_c),
+        (35_000, 3_500, 31_500)
+    );
+
+    // A DR has no discount: what is sent is ignored.
+    let plain = enter(
+        &a.db,
+        &actor,
+        mk(ReceiptKind::Dr, Some(Discount::Amount(5_000))),
+        None,
+    )
+    .unwrap();
+    let d = dr(&a.db, &plain);
+    assert_eq!(
+        (d.discount, d.discount_c, d.totals.gross_c),
+        (None, 0, 35_000)
+    );
+
+    // Over 100% or over the subtotal is refused; 0 is no discount.
+    assert!(
+        invalid(a.db.read(|c| delivery::validate(
+            c,
+            &mk(ReceiptKind::Invoice, Some(Discount::Percent(10_001)))
+        )))
+        .contains("between 0% and 100%")
+    );
+    assert!(
+        invalid(a.db.read(|c| delivery::validate(
+            c,
+            &mk(ReceiptKind::Invoice, Some(Discount::Amount(35_001)))
+        )))
+        .contains("more than")
+    );
+    let zero = enter(
+        &a.db,
+        &actor,
+        mk(ReceiptKind::Invoice, Some(Discount::Percent(0))),
+        None,
+    )
+    .unwrap();
+    assert_eq!(dr(&a.db, &zero).discount, None);
+
+    // A set amount instead: ₱50 off.
+    let mut edit = as_input(&a.db, &inv);
+    edit.discount = Some(Discount::Amount(5_000));
+    save(&a.db, &actor, &inv, edit, None, None).unwrap();
+    let d = dr(&a.db, &inv);
+    assert_eq!((d.discount_c, d.totals.gross_c), (5_000, 30_000));
+
+    // The client owes the discounted total.
+    deliver(&a.db, &actor, &inv, TODAY, Some("900")).unwrap();
+    let d = dr(&a.db, &inv);
+    assert_eq!(d.balance_c, 30_000);
+    let cb =
+        a.db.read(|c| sanco_core::domain::receivables::client_balance(c, &client, TODAY))
+            .unwrap();
+    assert_eq!(cb.outstanding_c, 30_000);
+
+    // Sales: the discount is spread over the lines by amount (₱250 : ₱100).
+    let all = DateRange::default();
+    let by_item =
+        a.db.read(|c| reports::sales(c, &all, SalesGroup::Item))
+            .unwrap();
+    let net_of = |item: &str| by_item.iter().find(|r| r.key == item).unwrap().net_c;
+    assert_eq!(
+        (net_of(&tape), net_of(&glv)),
+        (25_000 - 3_571, 10_000 - 1_429)
+    );
+    let by_client =
+        a.db.read(|c| reports::sales(c, &all, SalesGroup::Client))
+            .unwrap();
+    assert_eq!(by_client[0].gross_c, 30_000);
+
+    // The discount report: delivered invoices only (not the New ones).
+    let rep = a.db.read(|c| reports::discounts(c, &all)).unwrap();
+    assert_eq!(rep.clients.len(), 1);
+    let row = &rep.clients[0];
+    assert_eq!(
+        (
+            row.client_id.as_str(),
+            row.invoices,
+            row.subtotal_c,
+            row.discount_c,
+            row.total_c
+        ),
+        (client.as_str(), 1, 35_000, 5_000, 30_000)
+    );
+    assert_eq!(rep.invoices.len(), 1);
+    assert_eq!(rep.invoices[0].no.as_deref(), Some("900"));
+    assert_eq!(rep.invoices[0].discount, Some(Discount::Amount(5_000)));
+    let before = DateRange::new("", "2026-10-20");
+    assert!(
+        a.db.read(|c| reports::discounts(c, &before))
+            .unwrap()
+            .clients
+            .is_empty()
+    );
+
+    // Voided: left out of the report.
+    a.db.write(actor.clone(), {
+        let inv = inv.clone();
+        move |tx| delivery::void(tx, &inv, "wrong client")
+    })
+    .unwrap();
+    assert!(
+        a.db.read(|c| reports::discounts(c, &all))
+            .unwrap()
+            .clients
+            .is_empty()
+    );
+
+    // Switching an invoice to a DR clears its discount.
+    let other = enter(
+        &a.db,
+        &actor,
+        mk(ReceiptKind::Invoice, Some(Discount::Percent(500))),
+        None,
+    )
+    .unwrap();
+    let mut sw = as_input(&a.db, &other);
+    sw.kind = ReceiptKind::Dr;
+    save(&a.db, &actor, &other, sw, None, None).unwrap();
+    let d = dr(&a.db, &other);
+    assert_eq!(
+        (d.discount, d.discount_c, d.totals.gross_c),
+        (None, 0, 35_000)
+    );
+    let dump = a.db.dump().unwrap();
+    let row = dump["delivery_receipts"]
+        .iter()
+        .find(|r| r["id"] == json!(other))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (row["discount_bp"].clone(), row["discount_c"].clone()),
+        (json!(null), json!(null))
+    );
+}
+
+#[test]
+fn discount_spread_adds_up() {
+    assert_eq!(pricing::spread(5_000, &[25_000, 10_000]), [3_571, 1_429]);
+    assert_eq!(pricing::spread(1, &[1, 1, 1]).iter().sum::<i64>(), 1);
+    assert_eq!(pricing::spread(0, &[5, 5]), [0, 0]);
+    assert_eq!(pricing::spread(7, &[]), Vec::<i64>::new());
 }

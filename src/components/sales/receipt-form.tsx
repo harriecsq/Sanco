@@ -13,6 +13,7 @@ import {
   commands,
   type Choice,
   type DrDetail,
+  type Discount,
   type ItemChoice,
   type LocationInfo,
   type NumberModes,
@@ -29,6 +30,8 @@ import {
   moneyText,
   parseCount,
   parseMoney,
+  parsePct,
+  pctText,
   todayManila,
 } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
@@ -73,6 +76,10 @@ interface Form {
   delivered_date: string;
   received_by: string;
   rows: Row[];
+  /** Invoices only: the discount as a percentage or a set peso amount. */
+  discount_mode: Discount["kind"];
+  /** As typed; blank is no discount. */
+  discount: string;
 }
 
 /** A stock lot; `own` marks a lot the edited receipt already uses. */
@@ -110,6 +117,33 @@ const priceOf = (text: string) => {
   } catch {
     return null;
   }
+};
+
+/** A stored discount as input text: 500 bp → "5", ₱50 → "50.00". */
+const discountText = (d: Discount | null) =>
+  d == null ? "" : d.kind === "percent" ? pctText(d.value) : moneyText(d.value);
+
+/** The typed discount to save; blank or 0 is none. Throws on bad input. */
+const discountInput = (mode: Discount["kind"], text: string): Discount | null => {
+  const value =
+    mode === "percent"
+      ? parsePct(text, "discount percentage")
+      : parseMoney(text, "discount amount");
+  return value ? { kind: mode, value } : null;
+};
+
+/** What the typed discount takes off `subtotal`, like the backend: rounded
+ *  half away from zero, never more than the subtotal. 0 while not valid. */
+const discountOff = (mode: Discount["kind"], text: string, subtotal: number) => {
+  let d: Discount | null;
+  try {
+    d = discountInput(mode, text);
+  } catch {
+    return 0;
+  }
+  if (!d || subtotal <= 0) return 0;
+  const off = d.kind === "percent" ? Math.round((subtotal * d.value) / 10000) : d.value;
+  return Math.min(Math.max(off, 0), subtotal);
 };
 
 /** Lots of an item at a location, oldest first. */
@@ -157,6 +191,8 @@ export const ReceiptFormModal = component$<{
     delivered_date: "",
     received_by: "",
     rows: [],
+    discount_mode: "percent",
+    discount: "",
   });
 
   useLiveLoad(
@@ -232,6 +268,8 @@ export const ReceiptFormModal = component$<{
         form.no = dr.dr.no ?? "";
         form.delivered_date = dr.dr.delivered_date ?? todayManila();
         form.received_by = dr.dr.received_by ?? "";
+        form.discount_mode = dr.dr.discount?.kind ?? "percent";
+        form.discount = discountText(dr.dr.discount);
         form.rows = dr.lines.map((l) => ({
           key: newKey(),
           id: l.id,
@@ -256,6 +294,8 @@ export const ReceiptFormModal = component$<{
       form.no = "";
       form.delivered_date = "";
       form.received_by = "";
+      form.discount_mode = "percent";
+      form.discount = "";
       form.rows = [blankRow()];
     },
     { strategy: "document-ready" },
@@ -319,6 +359,10 @@ export const ReceiptFormModal = component$<{
             deliver_to: form.deliver_to,
             notes: form.notes,
             lines,
+            discount:
+              form.kind === "invoice"
+                ? discountInput(form.discount_mode, form.discount)
+                : null,
           },
           delivery,
           form.no.trim() || null,
@@ -352,12 +396,30 @@ export const ReceiptFormModal = component$<{
     dr.payments.length > 0 &&
     form.client_id !== (dr.dr.client_id ?? "");
 
-  let net = 0;
+  let subtotal = 0;
   for (const r of form.rows) {
     const typed = priceOf(r.price);
     const quoted = quotes[quoteKey(form.client_id, r.item_id)]?.net_c ?? 0;
-    net += countOf(r.qty) * (typed ?? quoted);
+    subtotal += countOf(r.qty) * (typed ?? quoted);
   }
+  const isInvoice = form.kind === "invoice";
+  const off = isInvoice
+    ? discountOff(form.discount_mode, form.discount, subtotal)
+    : 0;
+  let typedDiscount: Discount | null = null;
+  try {
+    typedDiscount = isInvoice
+      ? discountInput(form.discount_mode, form.discount)
+      : null;
+  } catch {
+    typedDiscount = null;
+  }
+  const overDiscount =
+    !!typedDiscount &&
+    (typedDiscount.kind === "percent"
+      ? typedDiscount.value > 10000
+      : typedDiscount.value > subtotal);
+  const net = subtotal - off;
   // The price typed is final. Only an older delivered invoice keeps VAT.
   const vat =
     wasDelivered && form.kind === "invoice" && dr
@@ -413,6 +475,8 @@ export const ReceiptFormModal = component$<{
                   checked={form.kind === kind}
                   onChange$={() => {
                     form.kind = kind;
+                    // Only an invoice has a discount.
+                    if (kind === "dr") form.discount = "";
                     // The number belongs to one booklet: it is freed when the
                     // type moves to the other, and back if it moves back.
                     if (dr?.dr.no)
@@ -710,16 +774,85 @@ export const ReceiptFormModal = component$<{
           />
         </Field>
         <div class="flex flex-wrap items-start justify-between gap-4">
-          <p class={hint}>
-            {formatPeso(net + vat)} in total.{" "}
-            {!dr && !manual
-              ? `The ${k.name} number is given automatically.`
-              : ""}
-          </p>
+          <div class="space-y-3">
+            {isInvoice && (
+              <fieldset class="space-y-1">
+                <legend class="mb-1 block text-sm font-medium text-ink">
+                  Discount
+                </legend>
+                <div class="flex items-center gap-2">
+                  <div
+                    class="inline-flex overflow-hidden rounded-md border border-line"
+                    role="radiogroup"
+                    aria-label="Discount as"
+                  >
+                    {(["percent", "amount"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="radio"
+                        aria-checked={form.discount_mode === mode}
+                        class={[
+                          "px-3 py-2 text-sm font-medium",
+                          form.discount_mode === mode
+                            ? "bg-brand-500 text-white"
+                            : "bg-white text-ink hover:bg-brand-50",
+                        ]}
+                        onClick$={() => {
+                          if (form.discount_mode === mode) return;
+                          form.discount_mode = mode;
+                          form.discount = "";
+                        }}
+                      >
+                        {mode === "percent" ? "%" : "₱"}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    class={[inputBase, "w-32 text-right"]}
+                    aria-label={
+                      form.discount_mode === "percent"
+                        ? "Discount percentage"
+                        : "Discount amount"
+                    }
+                    inputMode="decimal"
+                    placeholder={form.discount_mode === "percent" ? "0%" : "₱0.00"}
+                    value={form.discount}
+                    onInput$={(_, el) => (form.discount = el.value)}
+                  />
+                  {off > 0 && (
+                    <span class="text-sm text-ink-muted tabular-nums">
+                      −{formatPeso(off)}
+                    </span>
+                  )}
+                </div>
+                {overDiscount && (
+                  <span class="mt-1 block text-xs text-danger">
+                    {form.discount_mode === "percent"
+                      ? "Can't be more than 100%."
+                      : "Can't be more than the subtotal."}
+                  </span>
+                )}
+                <span class="block text-xs text-ink-muted">
+                  On the whole invoice: a percentage or a set amount. Leave
+                  blank for none.
+                </span>
+              </fieldset>
+            )}
+            <p class={hint}>
+              {formatPeso(net + vat)} in total.{" "}
+              {!dr && !manual
+                ? `The ${k.name} number is given automatically.`
+                : ""}
+            </p>
+          </div>
           <Totals
             totals={{ net_c: net, vat_c: vat, gross_c: net + vat }}
-            vat={form.kind === "invoice"}
+            vat={isInvoice}
             vatBp={dr?.dr.vat_bp ?? 0}
+            subtotal={subtotal}
+            discountC={off}
+            discount={typedDiscount}
           />
         </div>
         <div class="flex justify-end gap-2">

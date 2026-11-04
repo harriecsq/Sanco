@@ -337,6 +337,9 @@ pub static TABLES: &[TableDef] = &[
             text("cancel_reason"),
             // Added in 0015: the client's own PO / reference.
             text("client_ref"),
+            // Added in 0017: the invoice discount, % or a set amount.
+            int("discount_bp"),
+            int("discount_c"),
         ],
     },
     TableDef {

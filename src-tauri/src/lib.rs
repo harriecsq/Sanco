@@ -151,6 +151,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::dashboard::delete_todo,
             commands::reports::report_sales,
             commands::reports::report_margin,
+            commands::reports::report_discounts,
             commands::reports::report_po_spend,
             commands::reports::report_receivables,
             commands::reports::report_payments,

@@ -114,6 +114,60 @@ pub fn with_vat(net_c: i64, vat_bp: i64) -> VatAmounts {
     }
 }
 
+/// An invoice's discount: a percentage of its subtotal or a set amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Discount {
+    /// Basis points: 5% = 500.
+    Percent(i64),
+    /// Centavos.
+    Amount(i64),
+}
+
+impl Discount {
+    /// From the stored `discount_bp` / `discount_c` (the percentage wins).
+    pub fn from_columns(bp: Option<i64>, c: Option<i64>) -> Option<Self> {
+        match (bp, c) {
+            (Some(bp), _) => Some(Discount::Percent(bp)),
+            (None, Some(c)) => Some(Discount::Amount(c)),
+            _ => None,
+        }
+    }
+
+    /// What comes off `subtotal_c`: rounded half away from zero, never
+    /// below zero or above the subtotal. Same as `v_dr_totals`.
+    pub fn of(self, subtotal_c: i64) -> i64 {
+        if subtotal_c <= 0 {
+            return 0;
+        }
+        let off = match self {
+            Discount::Percent(bp) => pct_of(subtotal_c, bp),
+            Discount::Amount(c) => c,
+        };
+        off.clamp(0, subtotal_c)
+    }
+}
+
+/// Splits `total_c` over `amounts` in proportion, so the parts add up to
+/// it exactly (each part is the rounded running share minus the one
+/// before). For spreading an invoice discount over its lines.
+pub fn spread(total_c: i64, amounts: &[i64]) -> Vec<i64> {
+    let sum: i128 = amounts.iter().map(|&a| a as i128).sum();
+    if sum <= 0 || total_c == 0 {
+        return vec![0; amounts.len()];
+    }
+    let mut out = Vec::with_capacity(amounts.len());
+    let (mut run, mut prev) = (0i128, 0i64);
+    for &a in amounts {
+        run += a as i128;
+        let upto = to_i64(div_round(total_c as i128 * run, sum));
+        out.push(upto - prev);
+        prev = upto;
+    }
+    out
+}
+
 /// Parses an exchange rate (PHP per unit of the foreign currency).
 pub fn parse_fx(text: &str) -> Result<Decimal> {
     let bad = || Error::Invalid(format!("“{}” is not a valid exchange rate", text.trim()));
