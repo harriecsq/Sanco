@@ -582,3 +582,5 @@ _Update this section when each milestone is finished: set its status, the date, 
 **Additional requirements**
 - **Filters on every module list screen:** client, date range, status, location/supplier where relevant, plus text search. Use one shared `FilterBar` component; filters sync to the `?query` string.
 - **Theme (from the Sanco Medical Supply logo):** white background as the primary surface. Teal-green `#13876F` for primary elements (buttons, active nav, links, focus rings), with tints for hover/selected states and a light mint `#E8F5F1` for subtle fills. Dark text `#1F2937`. Logo: white "S" square on a green rounded pill.
+
+**Import removed (2026-11-04):** the one-time stock import and clients/suppliers import are gone (Settings tabs, Tauri commands, `domain/import.rs`, `domain/import_parties.rs`, their tests, `tools/convert-inventory.mjs`). The notes above describe them as they were; they are in git history before this change.

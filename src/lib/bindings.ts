@@ -219,20 +219,6 @@ export const commands = {
 	deleteStockDoc: (id: string) => typedError<null, string>(__TAURI_INVOKE("delete_stock_doc", { id })),
 	/**  Posts a void stock document again. */
 	restoreStockDoc: (id: string) => typedError<null, string>(__TAURI_INVOKE("restore_stock_doc", { id })),
-	/**  Checks an import file without writing anything. */
-	checkStockImport: (json: string) => typedError<ImportSummary, string>(__TAURI_INVOKE("check_stock_import", { json })),
-	/**
-	 *  Creates the items and posts the opening receipts, after a backup. Only
-	 *  runs while there are no items.
-	 */
-	runStockImport: (json: string) => typedError<ImportSummary, string>(__TAURI_INVOKE("run_stock_import", { json })),
-	/**  Checks an import file without writing anything. */
-	checkPartiesImport: (json: string) => typedError<PartiesSummary, string>(__TAURI_INVOKE("check_parties_import", { json })),
-	/**
-	 *  Creates the code groups, clients and suppliers, after a backup. Only runs
-	 *  while there are no clients or suppliers.
-	 */
-	runPartiesImport: (json: string) => typedError<PartiesSummary, string>(__TAURI_INVOKE("run_parties_import", { json })),
 	listDrs: () => typedError<DrInfo[], string>(__TAURI_INVOKE("list_drs")),
 	getDr: (id: string) => typedError<{
 	dr: DrInfo,
@@ -1208,15 +1194,6 @@ export type FieldDiff = {
 	current: string,
 };
 
-/**  What an import creates, or created. */
-export type ImportSummary = {
-	items: number,
-	documents: number,
-	lines: number,
-	/**  Quantity per location name. */
-	totals: ([string, number])[],
-};
-
 export type Issue = {
 	key: string,
 	title: string,
@@ -1460,14 +1437,6 @@ export type OpenDr = {
 	allocated_c: number,
 	/**  This payment's discount on it now (invoices only). */
 	discount: Discount | null,
-};
-
-/**  What an import creates, or created. */
-export type PartiesSummary = {
-	clients: number,
-	suppliers: number,
-	/**  Records per code group, e.g. `NCR` → 86. */
-	groups: ([string, number])[],
 };
 
 export type PayMethod = "cash" | "check" | "bank_transfer";
