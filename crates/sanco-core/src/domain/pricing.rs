@@ -114,7 +114,8 @@ pub fn with_vat(net_c: i64, vat_bp: i64) -> VatAmounts {
     }
 }
 
-/// An invoice's discount: a percentage of its subtotal or a set amount.
+/// A discount on an invoice when it is paid: a percentage of its total or a
+/// set amount.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -135,17 +136,17 @@ impl Discount {
         }
     }
 
-    /// What comes off `subtotal_c`: rounded half away from zero, never
-    /// below zero or above the subtotal. Same as `v_dr_totals`.
-    pub fn of(self, subtotal_c: i64) -> i64 {
-        if subtotal_c <= 0 {
+    /// What it takes off an invoice total `total_c`: rounded half away
+    /// from zero, never below zero or above it. Same as `v_allocations`.
+    pub fn of(self, total_c: i64) -> i64 {
+        if total_c <= 0 {
             return 0;
         }
         let off = match self {
-            Discount::Percent(bp) => pct_of(subtotal_c, bp),
+            Discount::Percent(bp) => pct_of(total_c, bp),
             Discount::Amount(c) => c,
         };
-        off.clamp(0, subtotal_c)
+        off.clamp(0, total_c)
     }
 }
 

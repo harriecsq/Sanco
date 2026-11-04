@@ -12,6 +12,11 @@
 //! Payments stay editable (amount, details, allocations); a wrong one is
 //! voided. Allocations use derived ids per DR and are cleared, never
 //! deleted. What a payment doesn't allocate is the client's credit.
+//!
+//! An allocation to an invoice (not a DR) may give a discount: a percentage
+//! of the invoice's total or a set amount. It settles that much of the
+//! invoice on top of the money allocated, without using the payment's
+//! money, and counts only while the payment counts (`v_allocations`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -20,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::domain::delivery::ReceiptKind;
+use crate::domain::pricing::{self, Discount};
 use crate::domain::{MAX_LINES, bank_accounts, peso, require_date, require_text, text_opt};
 use crate::error::{Error, Result};
 use crate::ids::derived_id;
@@ -110,7 +116,10 @@ pub struct CheckInput {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AllocationInput {
     pub dr_id: String,
+    /// Money from the payment.
     pub amount_c: i64,
+    /// Invoices only: a discount given as it is paid. `None` or 0 is none.
+    pub discount: Option<Discount>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,7 +244,12 @@ pub struct AllocationInfo {
     /// False if the DR was voided since: the amount is back as credit.
     pub delivered: bool,
     pub gross_c: i64,
+    /// Money from this payment.
     pub amount_c: i64,
+    /// The discount as entered (invoices only).
+    pub discount: Option<Discount>,
+    /// What the discount settles (0 on a DR).
+    pub discount_c: i64,
     /// What the DR still owes, after every counting payment.
     pub dr_balance_c: i64,
 }
@@ -257,12 +271,14 @@ pub struct OpenDr {
     pub delivered_date: Option<String>,
     pub due_date: Option<String>,
     pub gross_c: i64,
-    /// Paid by other counting payments.
+    /// Settled by other counting payments (money and discounts).
     pub paid_other_c: i64,
-    /// Gross minus that: the most this payment can allocate.
+    /// Gross minus that: the most this payment can settle.
     pub open_c: i64,
     /// Allocated by this payment now.
     pub allocated_c: i64,
+    /// This payment's discount on it now (invoices only).
+    pub discount: Option<Discount>,
 }
 
 /// A payment allocated to a DR, for the DR's page.
@@ -275,6 +291,8 @@ pub struct DrPayment {
     pub method: PayMethod,
     pub check_status: Option<CheckStatus>,
     pub amount_c: i64,
+    /// The discount it gave on this invoice.
+    pub discount: Option<Discount>,
     pub counts: bool,
 }
 
@@ -289,7 +307,8 @@ struct Prepared {
     check: Option<(String, String, String)>,
     bank_account: Option<String>,
     replaces: Option<String>,
-    allocations: BTreeMap<String, i64>,
+    /// Per DR: money and discount.
+    allocations: BTreeMap<String, (i64, Option<Discount>)>,
 }
 
 /// The payment as stored, for an edit.
@@ -438,13 +457,29 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
         check_replaceable(conn, r, &input.client_id, input.id.as_deref())?;
     }
 
-    let mut allocations: BTreeMap<String, i64> = BTreeMap::new();
+    let mut allocations: BTreeMap<String, (i64, Option<Discount>)> = BTreeMap::new();
     for a in &input.allocations {
         if a.amount_c < 0 {
             return Err(Error::Invalid("allocations can't be negative".into()));
         }
-        if a.amount_c > 0 {
-            *allocations.entry(a.dr_id.clone()).or_default() += a.amount_c;
+        let discount = match a.discount {
+            None | Some(Discount::Percent(0)) | Some(Discount::Amount(0)) => None,
+            Some(Discount::Percent(bp)) if !(0..=pricing::BP).contains(&bp) => {
+                return Err(Error::Invalid(
+                    "a discount must be between 0% and 100%".into(),
+                ));
+            }
+            Some(Discount::Amount(c)) if c < 0 => {
+                return Err(Error::Invalid("a discount can't be negative".into()));
+            }
+            d => d,
+        };
+        if a.amount_c > 0 || discount.is_some() {
+            let e = allocations.entry(a.dr_id.clone()).or_default();
+            e.0 += a.amount_c;
+            if discount.is_some() {
+                e.1 = discount;
+            }
         }
     }
     if allocations.len() > MAX_LINES {
@@ -452,7 +487,7 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
             "a payment can be allocated to at most {MAX_LINES} DRs"
         )));
     }
-    let total: i64 = allocations.values().sum();
+    let total: i64 = allocations.values().map(|a| a.0).sum();
     if total > input.amount_c {
         return Err(Error::Invalid(format!(
             "the allocations ({}) are more than the amount received ({})",
@@ -462,7 +497,7 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
     }
     // What other counting payments paid; this payment and the check it
     // replaces don't count against it.
-    for (dr, amount) in &allocations {
+    for (dr, (amount, discount)) in &allocations {
         type DrRow = (Option<String>, Option<String>, Option<String>, i64, i64);
         let row: Option<DrRow> = conn
             .query_row(
@@ -489,18 +524,30 @@ fn prepare(conn: &Connection, input: &PaymentInput, today: &str) -> Result<Prepa
                 "{name} isn't delivered; only delivered DRs and invoices can be paid"
             )));
         }
+        if discount.is_some() && vat == 0 {
+            return Err(Error::Invalid(format!(
+                "{name}: discounts are for invoices only"
+            )));
+        }
         let paid_other: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(amount_c), 0) FROM v_allocations
+            "SELECT COALESCE(SUM(settled_c), 0) FROM v_allocations
              WHERE dr_id = ?1 AND payment_id <> ?2 AND (?3 IS NULL OR payment_id <> ?3)",
             (dr, input.id.as_deref().unwrap_or(""), replaces.as_deref()),
             |r| r.get(0),
         )?;
         let open = gross - paid_other;
-        if *amount > open {
-            return Err(Error::Invalid(format!(
-                "{name} has only {} left to pay",
-                peso(open.max(0))
-            )));
+        let off = discount.map_or(0, |d| d.of(gross));
+        if *amount + off > open {
+            return Err(Error::Invalid(if off > 0 {
+                format!(
+                    "{name} has only {} left to pay; with the {} discount, allocate at most {}",
+                    peso(open.max(0)),
+                    peso(off),
+                    peso((open - off).max(0))
+                )
+            } else {
+                format!("{name} has only {} left to pay", peso(open.max(0)))
+            }));
         }
     }
     Ok(Prepared {
@@ -521,7 +568,7 @@ pub fn validate(conn: &Connection, input: &PaymentInput, today: &str) -> Result<
 fn write_allocations(
     tx: &mut WriteTx,
     payment: &str,
-    wanted: &BTreeMap<String, i64>,
+    wanted: &BTreeMap<String, (i64, Option<Discount>)>,
 ) -> Result<()> {
     let existing: Vec<(String, String)> = {
         let mut stmt = tx.conn().prepare(
@@ -531,16 +578,31 @@ fn write_allocations(
         let rows = stmt.query_map([payment], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect::<Result<_, _>>()?
     };
-    for (dr, amount) in wanted {
+    for (dr, (amount, discount)) in wanted {
+        let (discount_bp, discount_c) = match discount {
+            Some(Discount::Percent(bp)) => (Some(*bp), None),
+            Some(Discount::Amount(c)) => (None, Some(*c)),
+            None => (None, None),
+        };
         tx.upsert(
             PAYMENT_ALLOCATIONS,
             &allocation_id(payment, dr),
-            json!({ "payment_id": payment, "dr_id": dr, "amount_c": amount }),
+            json!({
+                "payment_id": payment,
+                "dr_id": dr,
+                "amount_c": amount,
+                "discount_bp": discount_bp,
+                "discount_c": discount_c,
+            }),
         )?;
     }
     for (id, dr) in existing {
         if !wanted.contains_key(&dr) {
-            tx.update(PAYMENT_ALLOCATIONS, &id, json!({ "amount_c": null }))?;
+            tx.update(
+                PAYMENT_ALLOCATIONS,
+                &id,
+                json!({ "amount_c": null, "discount_bp": null, "discount_c": null }),
+            )?;
         }
     }
     Ok(())
@@ -633,23 +695,30 @@ pub fn check_restore(conn: &Connection, id: &str) -> Result<()> {
     }
     // Each DR it paid must have room for it again.
     let mut stmt = conn.prepare(
-        "SELECT a.dr_id, a.amount_c, t.gross_c, t.status, n.no, COALESCE(r.vat, 0)
+        "SELECT a.dr_id, a.amount_c, t.gross_c, t.status, n.no, COALESCE(r.vat, 0),
+                a.discount_bp, a.discount_c
          FROM payment_allocations a
          JOIN v_dr_totals t ON t.dr_id = a.dr_id
          JOIN delivery_receipts r ON r.id = a.dr_id
          LEFT JOIN v_receipt_no n ON n.dr_id = a.dr_id
-         WHERE a.payment_id = ?1 AND a._deleted = 0 AND COALESCE(a.amount_c, 0) > 0",
+         WHERE a.payment_id = ?1 AND a._deleted = 0 AND a.amount_c IS NOT NULL
+           AND (a.amount_c > 0 OR a.discount_bp IS NOT NULL OR a.discount_c IS NOT NULL)",
     )?;
     type AllocRow = (String, i64, i64, Option<String>, Option<String>, i64);
     let rows: Vec<AllocRow> = stmt
         .query_map([id], |r| {
+            let (gross, vat): (i64, i64) = (r.get(2)?, r.get(5)?);
+            let off = match Discount::from_columns(r.get(6)?, r.get(7)?) {
+                Some(d) if vat != 0 => d.of(gross),
+                _ => 0,
+            };
             Ok((
                 r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
+                r.get::<_, i64>(1)? + off,
+                gross,
                 r.get(3)?,
                 r.get(4)?,
-                r.get(5)?,
+                vat,
             ))
         })?
         .collect::<Result<_, _>>()?;
@@ -661,7 +730,7 @@ pub fn check_restore(conn: &Connection, id: &str) -> Result<()> {
             )));
         }
         let paid_other: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(amount_c), 0) FROM v_allocations
+            "SELECT COALESCE(SUM(settled_c), 0) FROM v_allocations
              WHERE dr_id = ?1 AND payment_id <> ?2",
             (&dr, id),
             |r| r.get(0),
@@ -951,27 +1020,36 @@ fn allocations_of(
 ) -> Result<Vec<(String, AllocationInfo)>> {
     let mut stmt = conn.prepare_cached(
         "SELECT a.payment_id, a.dr_id, n.no, t.delivered_date, t.status, t.gross_c, a.amount_c,
-                COALESCE(v.balance_c, t.gross_c), COALESCE(r.vat, 0)
+                COALESCE(v.balance_c, t.gross_c), COALESCE(r.vat, 0), a.discount_bp, a.discount_c
          FROM payment_allocations a
          JOIN v_dr_totals t ON t.dr_id = a.dr_id
          JOIN delivery_receipts r ON r.id = a.dr_id
          LEFT JOIN v_receivables v ON v.dr_id = a.dr_id
          LEFT JOIN v_receipt_no n ON n.dr_id = a.dr_id
-         WHERE a._deleted = 0 AND a.amount_c IS NOT NULL AND a.amount_c <> 0
+         WHERE a._deleted = 0 AND a.amount_c IS NOT NULL
+           AND (a.amount_c <> 0 OR a.discount_bp IS NOT NULL OR a.discount_c IS NOT NULL)
            AND (?1 IS NULL OR a.payment_id = ?1)
          ORDER BY t.delivered_date, n.no, a.dr_id",
     )?;
     let rows = stmt.query_map([payment], |r| {
+        let kind = ReceiptKind::from_vat(r.get::<_, i64>(8)? != 0);
+        let gross: i64 = r.get(5)?;
+        let discount = match kind {
+            ReceiptKind::Invoice => Discount::from_columns(r.get(9)?, r.get(10)?),
+            ReceiptKind::Dr => None,
+        };
         Ok((
             r.get(0)?,
             AllocationInfo {
                 dr_id: r.get(1)?,
-                kind: ReceiptKind::from_vat(r.get::<_, i64>(8)? != 0),
+                kind,
                 dr_no: r.get(2)?,
                 delivered_date: r.get(3)?,
                 delivered: r.get::<_, Option<String>>(4)?.as_deref() == Some("delivered"),
-                gross_c: r.get(5)?,
+                gross_c: gross,
                 amount_c: r.get(6)?,
+                discount,
+                discount_c: discount.map_or(0, |d| d.of(gross)),
                 dr_balance_c: r.get(7)?,
             },
         ))
@@ -1059,15 +1137,15 @@ pub fn open_drs(
 ) -> Result<Vec<OpenDr>> {
     let mut stmt = conn.prepare_cached(
         "SELECT t.dr_id, n.no, t.delivered_date, c.terms_days, t.gross_c,
-                COALESCE((SELECT SUM(a.amount_c) FROM v_allocations a WHERE a.dr_id = t.dr_id
+                COALESCE((SELECT SUM(a.settled_c) FROM v_allocations a WHERE a.dr_id = t.dr_id
                           AND a.payment_id <> ?2 AND (?3 IS NULL OR a.payment_id <> ?3)), 0),
-                COALESCE((SELECT a.amount_c FROM payment_allocations a WHERE a.payment_id = ?2
-                          AND a.dr_id = t.dr_id AND a._deleted = 0), 0),
-                COALESCE(r.vat, 0)
+                COALESCE(m.amount_c, 0), COALESCE(r.vat, 0), m.discount_bp, m.discount_c
          FROM v_dr_totals t
          JOIN delivery_receipts r ON r.id = t.dr_id
          LEFT JOIN clients c ON c.id = t.client_id
          LEFT JOIN v_receipt_no n ON n.dr_id = t.dr_id
+         LEFT JOIN payment_allocations m ON m.payment_id = ?2 AND m.dr_id = t.dr_id
+                                        AND m._deleted = 0 AND m.amount_c IS NOT NULL
          WHERE t.status = 'delivered' AND t.client_id = ?1
          ORDER BY t.delivered_date, n.no, t.dr_id",
     )?;
@@ -1075,9 +1153,14 @@ pub fn open_drs(
         let delivered: Option<String> = r.get(2)?;
         let gross: i64 = r.get(4)?;
         let paid_other: i64 = r.get(5)?;
+        let kind = ReceiptKind::from_vat(r.get::<_, i64>(7)? != 0);
         Ok(OpenDr {
             dr_id: r.get(0)?,
-            kind: ReceiptKind::from_vat(r.get::<_, i64>(7)? != 0),
+            kind,
+            discount: match kind {
+                ReceiptKind::Invoice => Discount::from_columns(r.get(8)?, r.get(9)?),
+                ReceiptKind::Dr => None,
+            },
             no: r.get(1)?,
             due_date: crate::domain::receivables::due_date(delivered.as_deref(), r.get(3)?),
             delivered_date: delivered,
@@ -1090,7 +1173,7 @@ pub fn open_drs(
     let all: Vec<OpenDr> = rows.collect::<Result<_, _>>()?;
     Ok(all
         .into_iter()
-        .filter(|d| d.open_c > 0 || d.allocated_c != 0)
+        .filter(|d| d.open_c > 0 || d.allocated_c != 0 || d.discount.is_some())
         .collect())
 }
 
@@ -1099,12 +1182,16 @@ pub fn for_dr(conn: &Connection, dr_id: &str) -> Result<Vec<DrPayment>> {
     let mut stmt = conn.prepare_cached(
         "SELECT p.id, n.no, p.date, p.method, p.check_status, a.amount_c, COALESCE(v.counts, 0),
                 EXISTS (SELECT 1 FROM payments r WHERE r.replaces_id = p.id AND r._deleted = 0
-                        AND r.status = 'posted')
+                        AND r.status = 'posted'),
+                CASE WHEN COALESCE(d.vat, 0) = 0 THEN NULL ELSE a.discount_bp END,
+                CASE WHEN COALESCE(d.vat, 0) = 0 THEN NULL ELSE a.discount_c END
          FROM payment_allocations a
          JOIN payments p ON p.id = a.payment_id AND p._deleted = 0
+         LEFT JOIN delivery_receipts d ON d.id = a.dr_id
          LEFT JOIN v_payment_counts v ON v.payment_id = p.id
          LEFT JOIN doc_numbers n ON n.ref_id = p.id AND n.series = 'PAY' AND n._deleted = 0
-         WHERE a.dr_id = ?1 AND a._deleted = 0 AND a.amount_c IS NOT NULL AND a.amount_c <> 0
+         WHERE a.dr_id = ?1 AND a._deleted = 0 AND a.amount_c IS NOT NULL
+           AND (a.amount_c <> 0 OR a.discount_bp IS NOT NULL OR a.discount_c IS NOT NULL)
          ORDER BY p.date, p.created_at, p.id",
     )?;
     let rows = stmt.query_map([dr_id], |r| {
@@ -1126,6 +1213,7 @@ pub fn for_dr(conn: &Connection, dr_id: &str) -> Result<Vec<DrPayment>> {
                 })
                 .transpose()?,
             amount_c: r.get(5)?,
+            discount: Discount::from_columns(r.get(8)?, r.get(9)?),
             counts: r.get::<_, i64>(6)? != 0,
         })
     })?;

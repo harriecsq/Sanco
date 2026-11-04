@@ -135,7 +135,6 @@ fn request_dr(db: &Db, actor: &Actor, client: &str, item: &str, qty: i64) -> Str
             lot_id: Some(lots::lot_id(item, lots::month_of(TODAY))),
             notes: String::new(),
         }],
-        discount: None,
     };
     let id = db.new_id().unwrap();
     let new_id = id.clone();

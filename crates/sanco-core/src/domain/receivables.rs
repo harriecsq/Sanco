@@ -1,8 +1,9 @@
 //! Receivables: what clients owe on delivered DRs, and aging.
 //!
 //! Nothing here is stored. A delivered DR's gross (from its lines and the
-//! VAT rate stored on it) minus the allocations of counting payments is its
-//! balance (`v_receivables`). A payment counts unless it is void, or it is
+//! VAT rate stored on it) minus what counting payments settled on it (the
+//! money allocated, plus any discount given on an invoice when it was paid)
+//! is its balance (`v_receivables`). A payment counts unless it is void, or it is
 //! a check that bounced or was replaced (`v_payment_counts`); so a bounced
 //! check puts the balance back. What a counting payment doesn't allocate is
 //! the client's credit.
@@ -95,7 +96,10 @@ pub struct ReceivableDr {
     pub days_overdue: i64,
     pub bucket: AgingBucket,
     pub gross_c: i64,
+    /// Money paid.
     pub paid_c: i64,
+    /// Discount given on it when it was paid (invoices only).
+    pub discount_c: i64,
     pub balance_c: i64,
 }
 
@@ -192,20 +196,34 @@ pub fn due_date(delivered: Option<&str>, terms_days: Option<i64>) -> Option<Stri
     add_days(delivered?, terms_days.unwrap_or(0).max(0))
 }
 
-/// What counting payments have paid on a delivered DR.
+/// What counting payments have settled on a delivered DR: the money paid
+/// plus the discount given.
 pub fn dr_paid(conn: &Connection, dr_id: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COALESCE(SUM(amount_c), 0) FROM v_allocations WHERE dr_id = ?1",
+        "SELECT COALESCE(SUM(settled_c), 0) FROM v_allocations WHERE dr_id = ?1",
         [dr_id],
         |r| r.get(0),
     )?)
 }
 
-/// What counting payments have paid per delivered DR.
-pub fn paid_by_dr(conn: &Connection) -> Result<HashMap<String, i64>> {
-    let mut stmt =
-        conn.prepare_cached("SELECT dr_id, SUM(amount_c) FROM v_allocations GROUP BY dr_id")?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+/// What counting payments have settled on a delivered DR, as (settled, of
+/// which discount).
+pub fn dr_settled(conn: &Connection, dr_id: &str) -> Result<(i64, i64)> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(SUM(settled_c), 0), COALESCE(SUM(discount_c), 0)
+         FROM v_allocations WHERE dr_id = ?1",
+        [dr_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
+
+/// What counting payments have settled per delivered DR, as (settled, of
+/// which discount).
+pub fn paid_by_dr(conn: &Connection) -> Result<HashMap<String, (i64, i64)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT dr_id, SUM(settled_c), SUM(discount_c) FROM v_allocations GROUP BY dr_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
@@ -213,7 +231,7 @@ pub fn paid_by_dr(conn: &Connection) -> Result<HashMap<String, i64>> {
 fn open_drs(conn: &Connection, client: Option<&str>, today: &str) -> Result<Vec<ReceivableDr>> {
     let mut stmt = conn.prepare_cached(
         "SELECT v.dr_id, n.no, v.client_id, cn.no, c.name, v.delivered_date, c.terms_days,
-                v.gross_c, v.paid_c, v.balance_c, COALESCE(r.vat, 0)
+                v.gross_c, v.paid_c, v.balance_c, COALESCE(r.vat, 0), v.discount_c
          FROM v_receivables v
          JOIN delivery_receipts r ON r.id = v.dr_id
          LEFT JOIN v_receipt_no n ON n.dr_id = v.dr_id
@@ -242,6 +260,7 @@ fn open_drs(conn: &Connection, client: Option<&str>, today: &str) -> Result<Vec<
             bucket: AgingBucket::of(days_overdue),
             gross_c: r.get(7)?,
             paid_c: r.get(8)?,
+            discount_c: r.get(11)?,
             balance_c: r.get(9)?,
         })
     })?;

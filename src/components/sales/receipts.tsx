@@ -13,6 +13,7 @@ import {
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import { formatDateTime, formatDay, formatMonth, formatPeso, formatQty, serialSpan, todayManila } from "~/lib/format";
+import { discountAs, discountOf } from "~/lib/discount";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -443,14 +444,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
             </tbody>
           </table>
           <div class="border-t border-line px-3 py-3">
-            <Totals
-              totals={d.totals}
-              vat={d.vat}
-              vatBp={d.vat_bp}
-              subtotal={d.subtotal_c}
-              discountC={d.discount_c}
-              discount={d.discount}
-            />
+            <Totals totals={d.totals} vat={d.vat} vatBp={d.vat_bp} />
           </div>
         </section>
       </div>
@@ -470,6 +464,13 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
               <div class="text-right text-sm">
                 <span class="text-ink-muted">Paid</span>{" "}
                 <span class="tabular-nums">{formatPeso(d.paid_c)}</span>
+                {d.discount_c > 0 && (
+                  <>
+                    <span class="mx-2 text-line">|</span>
+                    <span class="text-ink-muted">Discount</span>{" "}
+                    <span class="tabular-nums">{formatPeso(d.discount_c)}</span>
+                  </>
+                )}
                 <span class="mx-2 text-line">|</span>
                 <span class="text-ink-muted">{d.balance_c < 0 ? "Overpaid" : "Balance"}</span>{" "}
                 <span class={["font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
@@ -488,6 +489,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
                   <th class={th}>Received</th>
                   <th class={th}>Method</th>
                   <th class={[th, "text-right"]}>Applied</th>
+                  {d.kind === "invoice" && <th class={[th, "text-right"]}>Discount</th>}
                 </tr>
               </thead>
               <tbody>
@@ -509,6 +511,18 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
                       {!p.counts && <span class={[hint, "block"]}>doesn't count</span>}
                     </td>
                     <td class={[td, "text-right tabular-nums"]}>{formatPeso(p.amount_c)}</td>
+                    {d.kind === "invoice" && (
+                      <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                        {p.discount ? (
+                          <>
+                            −{formatPeso(discountOf(p.discount, d.totals.gross_c))}
+                            <span class={[hint, "block"]}>{discountAs(p.discount)}</span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

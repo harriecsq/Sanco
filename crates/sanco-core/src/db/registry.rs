@@ -337,9 +337,6 @@ pub static TABLES: &[TableDef] = &[
             text("cancel_reason"),
             // Added in 0015: the client's own PO / reference.
             text("client_ref"),
-            // Added in 0017: the invoice discount, % or a set amount.
-            int("discount_bp"),
-            int("discount_c"),
         ],
     },
     TableDef {
@@ -388,7 +385,14 @@ pub static TABLES: &[TableDef] = &[
     },
     TableDef {
         name: "payment_allocations",
-        cols: &[text("payment_id"), text("dr_id"), int("amount_c")],
+        cols: &[
+            text("payment_id"),
+            text("dr_id"),
+            int("amount_c"),
+            // Added in 0017: a discount on an invoice when it is paid.
+            int("discount_bp"),
+            int("discount_c"),
+        ],
     },
     TableDef {
         name: "purchase_orders",

@@ -21,6 +21,12 @@ import {
 import { useLiveLoad } from "~/lib/events";
 import { formatDay, formatPeso, moneyText, parseMoney, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
+import {
+  discountText,
+  parseDiscount,
+  typedDiscountOf,
+  type DiscountMode,
+} from "~/lib/discount";
 import { receiptName } from "~/components/sales/sales";
 import { Alert, Badge, Field, Modal } from "~/components/ui/ui";
 import { BankAccountSelect } from "~/components/accounting/bank-account-select";
@@ -123,6 +129,9 @@ export interface PaymentForm {
   replaces_id: string;
   /** dr_id → amount text. */
   allocs: Record<string, string>;
+  /** Invoices only: dr_id → discount text, and whether it is % or ₱. */
+  disc: Record<string, string>;
+  disc_mode: Record<string, DiscountMode>;
 }
 
 export const blankPayment = (client_id = "", replaces_id = ""): PaymentForm => ({
@@ -140,6 +149,8 @@ export const blankPayment = (client_id = "", replaces_id = ""): PaymentForm => (
   bank_account_id: "",
   replaces_id,
   allocs: {},
+  disc: {},
+  disc_mode: {},
 });
 
 export const paymentForm = (d: PaymentDetail): PaymentForm => {
@@ -158,7 +169,15 @@ export const paymentForm = (d: PaymentDetail): PaymentForm => {
     check_date: p.check?.check_date ?? "",
     bank_account_id: p.method === "bank_transfer" ? (p.bank_account_id ?? "") : "",
     replaces_id: p.replaces_id ?? "",
-    allocs: Object.fromEntries(d.allocations.map((a) => [a.dr_id, moneyText(a.amount_c)])),
+    allocs: Object.fromEntries(
+      d.allocations.filter((a) => a.amount_c).map((a) => [a.dr_id, moneyText(a.amount_c)]),
+    ),
+    disc: Object.fromEntries(
+      d.allocations.filter((a) => a.discount).map((a) => [a.dr_id, discountText(a.discount)]),
+    ),
+    disc_mode: Object.fromEntries(
+      d.allocations.filter((a) => a.discount).map((a) => [a.dr_id, a.discount!.kind]),
+    ),
   };
 };
 
@@ -171,12 +190,19 @@ function amountOf(text: string | undefined): number {
   }
 }
 
-/** Spreads `amount` over the DRs and invoices, oldest first. */
-function fillOldest(amount: number, drs: OpenDr[]): Record<string, string> {
+/** What the form's discount takes off an invoice. */
+const offOf = (form: PaymentForm, d: OpenDr) =>
+  d.kind === "invoice"
+    ? typedDiscountOf(form.disc_mode[d.dr_id] ?? "percent", form.disc[d.dr_id] ?? "", d.gross_c)
+    : 0;
+
+/** Spreads `amount` over the DRs and invoices, oldest first, after their
+ *  discounts. */
+function fillOldest(amount: number, drs: OpenDr[], form: PaymentForm): Record<string, string> {
   const out: Record<string, string> = {};
   let left = amount;
   for (const d of drs) {
-    const take = Math.min(left, Math.max(d.open_c, 0));
+    const take = Math.min(left, Math.max(d.open_c - offOf(form, d), 0));
     if (take > 0) out[d.dr_id] = moneyText(take);
     left -= take;
   }
@@ -191,12 +217,89 @@ async function prefillFrom(form: PaymentForm, replaces: string) {
   const d = r.status === "ok" ? r.data : null;
   if (!d) return;
   if (!form.amount) form.amount = moneyText(d.payment.amount_c);
-  if (Object.keys(form.allocs).length === 0) {
+  if (Object.keys(form.allocs).length === 0 && Object.keys(form.disc).length === 0) {
+    const kept = d.allocations.filter((a) => a.delivered);
     form.allocs = Object.fromEntries(
-      d.allocations.filter((a) => a.delivered).map((a) => [a.dr_id, moneyText(a.amount_c)]),
+      kept.filter((a) => a.amount_c).map((a) => [a.dr_id, moneyText(a.amount_c)]),
+    );
+    form.disc = Object.fromEntries(
+      kept.filter((a) => a.discount).map((a) => [a.dr_id, discountText(a.discount)]),
+    );
+    form.disc_mode = Object.fromEntries(
+      kept.filter((a) => a.discount).map((a) => [a.dr_id, a.discount!.kind]),
     );
   }
 }
+
+/** An invoice's discount on the payment form: % or ₱, and what it takes off. */
+const DiscountCell = component$<{ form: PaymentForm; dr: OpenDr }>(({ form, dr }) => {
+  const mode = form.disc_mode[dr.dr_id] ?? "percent";
+  const text = form.disc[dr.dr_id] ?? "";
+  const off = typedDiscountOf(mode, text, dr.gross_c);
+  let bad = "";
+  try {
+    const d = parseDiscount(mode, text);
+    if (d?.kind === "percent" && d.value > 10000) bad = "Over 100%.";
+    else if (d?.kind === "amount" && d.value > dr.gross_c) bad = "Over the invoice total.";
+  } catch {
+    bad = "Not a number.";
+  }
+  return (
+    <div>
+      <div class="flex items-center gap-1">
+        <div
+          class="inline-flex shrink-0 overflow-hidden rounded-md border border-line"
+          role="radiogroup"
+          aria-label={`Discount on ${drName(dr)} as`}
+        >
+          {(["percent", "amount"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              class={[
+                "px-2 py-1 text-sm font-medium",
+                mode === m ? "bg-brand-500 text-white" : "bg-white text-ink hover:bg-brand-50",
+              ]}
+              onClick$={() => {
+                if (mode === m) return;
+                form.disc_mode = { ...form.disc_mode, [dr.dr_id]: m };
+                const next = { ...form.disc };
+                delete next[dr.dr_id];
+                form.disc = next;
+              }}
+            >
+              {m === "percent" ? "%" : "₱"}
+            </button>
+          ))}
+        </div>
+        <input
+          class={[inputBase, "w-full min-w-0 text-right"]}
+          inputMode="decimal"
+          aria-label={`Discount on ${drName(dr)}`}
+          placeholder={mode === "percent" ? "0%" : "0.00"}
+          value={text}
+          onInput$={(_, el) => {
+            const next = { ...form.disc };
+            if (el.value.trim()) next[dr.dr_id] = el.value;
+            else delete next[dr.dr_id];
+            form.disc = next;
+          }}
+        />
+      </div>
+      {bad ? (
+        <span class="block text-right text-xs text-danger">{bad}</span>
+      ) : (
+        off > 0 && (
+          <span class="block text-right text-xs text-ink-muted tabular-nums">
+            −{formatPeso(off)} · left {formatPeso(Math.max(dr.open_c - off, 0))}
+          </span>
+        )
+      )}
+    </div>
+  );
+});
 
 /** Records or edits a payment and its allocations to the client's DRs. */
 export const PaymentFormModal = component$<{
@@ -256,11 +359,17 @@ export const PaymentFormModal = component$<{
     try {
       const amount = parseMoney(form.amount, "amount");
       if (!amount) throw new Error("enter the amount received");
-      const allocations = Object.entries(form.allocs).map(([dr_id, text]) => {
+      const ids = new Set([...Object.keys(form.allocs), ...Object.keys(form.disc)]);
+      const allocations = [...ids].map((dr_id) => {
         const d = drs.value.find((x) => x.dr_id === dr_id);
+        const name = d ? drName(d) : "a DR or invoice";
         return {
           dr_id,
-          amount_c: parseMoney(text, `amount for ${d ? drName(d) : "a DR or invoice"}`) ?? 0,
+          amount_c: parseMoney(form.allocs[dr_id] ?? "", `amount for ${name}`) ?? 0,
+          discount:
+            d?.kind === "invoice"
+              ? parseDiscount(form.disc_mode[dr_id] ?? "percent", form.disc[dr_id] ?? "")
+              : null,
         };
       });
       const id = unwrap(
@@ -295,6 +404,8 @@ export const PaymentFormModal = component$<{
   const amount = amountOf(form.amount);
   const allocated = Object.values(form.allocs).reduce((s, t) => s + amountOf(t), 0);
   const left = amount - allocated;
+  const discounted = drs.value.reduce((s, d) => s + offOf(form, d), 0);
+  const anyInvoice = drs.value.some((d) => d.kind === "invoice");
   const replaceable = checks.value.filter((c) => c.client_id === form.client_id && c.id !== form.id);
   const isPdc = form.method === "check" && form.check_date > form.date;
 
@@ -311,6 +422,8 @@ export const PaymentFormModal = component$<{
                 form.client_id = el.value;
                 form.replaces_id = "";
                 form.allocs = {};
+                form.disc = {};
+                form.disc_mode = {};
               }}
             >
               <option value="">Choose a client…</option>
@@ -429,11 +542,19 @@ export const PaymentFormModal = component$<{
                 type="button"
                 class={btnGhost}
                 disabled={!amount || drs.value.length === 0}
-                onClick$={() => (form.allocs = fillOldest(amount, drs.value))}
+                onClick$={() => (form.allocs = fillOldest(amount, drs.value, form))}
               >
                 Fill oldest first
               </button>
-              <button type="button" class={btnGhost} onClick$={() => (form.allocs = {})}>
+              <button
+                type="button"
+                class={btnGhost}
+                onClick$={() => {
+                  form.allocs = {};
+                  form.disc = {};
+                  form.disc_mode = {};
+                }}
+              >
                 Clear
               </button>
             </span>
@@ -452,6 +573,7 @@ export const PaymentFormModal = component$<{
                     <th class={th}>Due</th>
                     <th class={[th, "text-right"]}>Gross</th>
                     <th class={[th, "text-right"]}>Open</th>
+                    {anyInvoice && <th class={[th, "w-44"]}>Discount</th>}
                     <th class={[th, "w-36 text-right"]}>Apply</th>
                   </tr>
                 </thead>
@@ -470,6 +592,15 @@ export const PaymentFormModal = component$<{
                       </td>
                       <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.gross_c)}</td>
                       <td class={[td, "text-right tabular-nums"]}>{formatPeso(d.open_c)}</td>
+                      {anyInvoice && (
+                        <td class={[td, "py-1"]}>
+                          {d.kind === "invoice" ? (
+                            <DiscountCell form={form} dr={d} />
+                          ) : (
+                            <span class={hint}>DRs: none</span>
+                          )}
+                        </td>
+                      )}
                       <td class={[td, "py-1"]}>
                         <input
                           class={[inputBase, "w-full text-right"]}
@@ -494,6 +625,12 @@ export const PaymentFormModal = component$<{
           <dl class="mt-2 ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
             <dt class="text-ink-muted">Applied</dt>
             <dd class="text-right tabular-nums">{formatPeso(allocated)}</dd>
+            {discounted > 0 && (
+              <>
+                <dt class="text-ink-muted">Discounts (not from the amount)</dt>
+                <dd class="text-right tabular-nums">{formatPeso(discounted)}</dd>
+              </>
+            )}
             <dt class={left < 0 ? "font-semibold text-danger" : "text-ink-muted"}>
               {left < 0 ? "Over the amount" : "Left as credit"}
             </dt>

@@ -2,7 +2,7 @@ import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
 import { useLocation, type DocumentHead } from "@builder.io/qwik-city";
 import { commands, type Choice, type DiscountReport } from "~/lib/bindings";
 import { useLiveLoadUrl } from "~/lib/events";
-import { formatPct } from "~/lib/format";
+import { discountAs } from "~/lib/discount";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
 import { FilterBar, filtersOf } from "~/components/filter-bar/filter-bar";
@@ -18,7 +18,7 @@ import { Alert, PageHeader } from "~/components/ui/ui";
 export default component$(() => {
   const session = useSession();
   const loc = useLocation();
-  const data = useSignal<DiscountReport>({ clients: [], invoices: [] });
+  const data = useSignal<DiscountReport>({ clients: [], discounts: [] });
   const clients = useSignal<Choice[]>([]);
   const error = useSignal("");
 
@@ -45,16 +45,15 @@ export default component$(() => {
     const q = loc.url.searchParams.get("q") ?? "";
     const rows: Cell[][] = data.value.clients
       .filter((r) => !client.value || r.client_id === client.value)
-      .map((r) => [r.code, r.name, r.invoices, r.subtotal_c, r.discount_c, r.total_c]);
+      .map((r) => [r.code, r.name, r.invoices, r.invoiced_c, r.discount_c]);
     return makeReport(
       "discounts-by-client",
       [
         { label: "Code" },
         { label: "Client" },
         { label: "Invoices", kind: "qty" },
-        { label: "Before discount", kind: "money" },
-        { label: "Discount", kind: "money" },
-        { label: "Total", kind: "money" },
+        { label: "Invoice totals", kind: "money" },
+        { label: "Discount given", kind: "money" },
       ],
       searchRows(rows, q),
     );
@@ -63,42 +62,45 @@ export default component$(() => {
   const invoices = useComputed$(() => {
     const q = loc.url.searchParams.get("q") ?? "";
     const names = new Map(data.value.clients.map((c) => [c.client_id, c]));
-    const rows: Cell[][] = data.value.invoices
+    const rows: Cell[][] = data.value.discounts
       .filter((r) => !client.value || r.client_id === client.value)
       .map((r) => {
         const c = names.get(r.client_id);
         return [
-          r.delivered_date,
-          r.no,
+          r.date,
+          r.payment_no,
+          r.invoice_no,
           c?.code ?? null,
           c?.name ?? "",
-          r.discount?.kind === "percent" ? formatPct(r.discount.value) : "Set amount",
-          r.subtotal_c,
+          discountAs(r.discount),
+          r.invoice_c,
           r.discount_c,
-          r.total_c,
         ];
       });
-    return makeReport(
-      "discounts-by-invoice",
+    const rep = makeReport(
+      "discounts-by-payment",
       [
-        { label: "Delivered", kind: "date" },
+        { label: "Paid on", kind: "date" },
+        { label: "Payment" },
         { label: "Invoice no." },
         { label: "Code" },
         { label: "Client" },
         { label: "Discount as" },
-        { label: "Before discount", kind: "money" },
+        { label: "Invoice total", kind: "money" },
         { label: "Discount", kind: "money" },
-        { label: "Total", kind: "money" },
       ],
       searchRows(rows, q),
     );
+    // An invoice can be discounted on more than one payment.
+    if (rep.total) rep.total[6] = null;
+    return rep;
   });
 
   return (
     <>
       <PageHeader
         title="Discounts"
-        subtitle="Discounts given on delivered invoices, by delivery date. New, void and deleted invoices are left out."
+        subtitle="Discounts given on invoices when they were paid, by payment date. Void payments and bounced or replaced checks are left out."
       />
       {error.value && <Alert>{error.value}</Alert>}
       <FilterBar
@@ -115,8 +117,8 @@ export default component$(() => {
       />
       <h2 class="mt-2 mb-2 font-semibold">By client</h2>
       <ReportTable report={byClient} empty="No discounts in this range." />
-      <h2 class="mt-6 mb-2 font-semibold">Invoices</h2>
-      <ReportTable report={invoices} pageKey="inv_page" empty="No discounted invoices in this range." />
+      <h2 class="mt-6 mb-2 font-semibold">Discounts given</h2>
+      <ReportTable report={invoices} pageKey="inv_page" empty="No discounts in this range." />
     </>
   );
 });

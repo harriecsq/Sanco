@@ -449,14 +449,22 @@ export type AllocationInfo = {
 	/**  False if the DR was voided since: the amount is back as credit. */
 	delivered: boolean,
 	gross_c: number,
+	/**  Money from this payment. */
 	amount_c: number,
+	/**  The discount as entered (invoices only). */
+	discount: Discount | null,
+	/**  What the discount settles (0 on a DR). */
+	discount_c: number,
 	/**  What the DR still owes, after every counting payment. */
 	dr_balance_c: number,
 };
 
 export type AllocationInput = {
 	dr_id: string,
+	/**  Money from the payment. */
 	amount_c: number,
+	/**  Invoices only: a discount given as it is paid. `None` or 0 is none. */
+	discount: Discount | null,
 };
 
 export type AttendanceCell = {
@@ -966,7 +974,10 @@ export type DeviceInfo = {
 	this_pc: boolean,
 };
 
-/**  An invoice's discount: a percentage of its subtotal or a set amount. */
+/**
+ *  A discount on an invoice when it is paid: a percentage of its total or a
+ *  set amount.
+ */
 export type Discount = 
 /**  Basis points: 5% = 500. */
 { kind: "percent"; value: number } | 
@@ -977,32 +988,33 @@ export type DiscountClientRow = {
 	client_id: string,
 	code: string | null,
 	name: string,
-	/**  Discounted invoices counted. */
+	/**  Invoices discounted. */
 	invoices: number,
-	/**  Their lines added up, before the discount. */
-	subtotal_c: number,
+	/**  Their totals (each invoice once), before the discount. */
+	invoiced_c: number,
 	discount_c: number,
-	/**  What the client owes on them, after the discount. */
-	total_c: number,
-};
-
-export type DiscountInvoiceRow = {
-	dr_id: string,
-	no: string | null,
-	delivered_date: string,
-	client_id: string,
-	/**  The discount as entered. */
-	discount: Discount | null,
-	subtotal_c: number,
-	discount_c: number,
-	total_c: number,
 };
 
 export type DiscountReport = {
 	/**  Most discount first. */
 	clients: DiscountClientRow[],
-	/**  Newest first. */
-	invoices: DiscountInvoiceRow[],
+	/**  One per payment and invoice, newest first. */
+	discounts: DiscountRow[],
+};
+
+export type DiscountRow = {
+	payment_id: string,
+	payment_no: string | null,
+	/**  The payment's date. */
+	date: string,
+	dr_id: string,
+	invoice_no: string | null,
+	client_id: string,
+	/**  The discount as entered. */
+	discount: Discount | null,
+	/**  The invoice's total. */
+	invoice_c: number,
+	discount_c: number,
 };
 
 export type DrDetail = {
@@ -1042,13 +1054,6 @@ export type DrInfo = {
 	status: DrStatus,
 	vat: boolean,
 	vat_bp: number,
-	/**  The lines added up, before the discount. */
-	subtotal_c: number,
-	/**  The invoice discount as entered (invoices only). */
-	discount: Discount | null,
-	/**  What the discount takes off the subtotal. */
-	discount_c: number,
-	/**  After the discount: `net_c` is the subtotal minus `discount_c`. */
 	totals: VatAmounts,
 	deliver_to: string | null,
 	notes: string | null,
@@ -1064,9 +1069,14 @@ export type DrInfo = {
 	voided_at: number | null,
 	voided_by_name: string | null,
 	void_reason: string | null,
-	/**  Paid by counting payments (delivered DRs only). */
+	/**  Money paid by counting payments (delivered DRs only). */
 	paid_c: number,
-	/**  Gross minus paid while delivered, else 0. Negative if overpaid. */
+	/**  Discount given on it when it was paid (invoices only). */
+	discount_c: number,
+	/**
+	 *  Gross minus paid and discount while delivered, else 0. Negative if
+	 *  overpaid.
+	 */
 	balance_c: number,
 	/**  Delivery date plus the client's payment terms. */
 	due_date: string | null,
@@ -1083,8 +1093,6 @@ export type DrInput = {
 	deliver_to: string,
 	notes: string,
 	lines: DrLineInput[],
-	/**  Invoices only: a discount on the whole invoice. Ignored on a DR. */
-	discount: Discount | null,
 };
 
 export type DrLine = {
@@ -1132,6 +1140,8 @@ export type DrPayment = {
 	method: PayMethod,
 	check_status: CheckStatus | null,
 	amount_c: number,
+	/**  The discount it gave on this invoice. */
+	discount: Discount | null,
 	counts: boolean,
 };
 
@@ -1442,12 +1452,14 @@ export type OpenDr = {
 	delivered_date: string | null,
 	due_date: string | null,
 	gross_c: number,
-	/**  Paid by other counting payments. */
+	/**  Settled by other counting payments (money and discounts). */
 	paid_other_c: number,
-	/**  Gross minus that: the most this payment can allocate. */
+	/**  Gross minus that: the most this payment can settle. */
 	open_c: number,
 	/**  Allocated by this payment now. */
 	allocated_c: number,
+	/**  This payment's discount on it now (invoices only). */
+	discount: Discount | null,
 };
 
 /**  What an import creates, or created. */
@@ -1953,7 +1965,10 @@ export type ReceivableDr = {
 	days_overdue: number,
 	bucket: AgingBucket,
 	gross_c: number,
+	/**  Money paid. */
 	paid_c: number,
+	/**  Discount given on it when it was paid (invoices only). */
+	discount_c: number,
 	balance_c: number,
 };
 

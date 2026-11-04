@@ -65,10 +65,11 @@ pub struct SalesRow {
     pub gross_c: i64,
 }
 
-/// Delivered DRs and invoices (voided ones left out) by delivery date, after
-/// invoice discounts. Per item, an invoice's discount is spread over its
-/// lines by amount and VAT is worked out per line, so item totals can differ
-/// from receipt totals by a centavo.
+/// Delivered DRs and invoices (voided ones left out) by delivery date, less
+/// the discounts given on them when they were paid (by counting payments).
+/// Per item, an invoice's discount is spread over its lines by amount and
+/// VAT is worked out per line, so item totals can differ from receipt totals
+/// by a centavo.
 pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<Vec<SalesRow>> {
     let mut rows: BTreeMap<String, SalesRow> = BTreeMap::new();
     // Receipts per row, as (id, is an invoice).
@@ -107,10 +108,10 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
         let mut stmt = conn.prepare(
             "SELECT r.id, r.delivered_date, l.item_id, i.code, i.name,
                     COALESCE(l.qty, 0), COALESCE(l.price_c, 0),
-                    COALESCE(r.vat, 0), COALESCE(r.vat_bp, 0), COALESCE(t.discount_c, 0)
+                    COALESCE(r.vat, 0), COALESCE(r.vat_bp, 0),
+                    COALESCE((SELECT SUM(a.discount_c) FROM v_allocations a WHERE a.dr_id = r.id), 0)
              FROM dr_lines l
              JOIN delivery_receipts r ON r.id = l.dr_id AND r._deleted = 0
-             LEFT JOIN v_dr_totals t ON t.dr_id = r.id
              LEFT JOIN items i ON i.id = l.item_id
              WHERE l._deleted = 0 AND r.status = 'delivered'
              ORDER BY r.id, l.line_no, l.id",
@@ -156,7 +157,8 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
     } else {
         let mut stmt = conn.prepare(
             "SELECT t.dr_id, t.delivered_date, t.client_id, n.no, c.name, t.net_c, t.vat_c,
-                    COALESCE(r.vat, 0)
+                    COALESCE(r.vat, 0),
+                    COALESCE((SELECT SUM(a.discount_c) FROM v_allocations a WHERE a.dr_id = t.dr_id), 0)
              FROM v_dr_totals t
              JOIN delivery_receipts r ON r.id = t.dr_id
              LEFT JOIN clients c ON c.id = t.client_id
@@ -174,13 +176,15 @@ pub fn sales(conn: &Connection, range: &DateRange, group: SalesGroup) -> Result<
                 r.get::<_, i64>(5)?,
                 r.get::<_, i64>(6)?,
                 r.get::<_, i64>(7)? != 0,
+                r.get::<_, i64>(8)?,
             ))
         })?;
         for dr in drs {
-            let (dr, date, client, code, name, net, vat, invoice) = dr?;
+            let (dr, date, client, code, name, net, vat, invoice, off) = dr?;
             if !range.contains(&date) {
                 continue;
             }
+            let net = net - off;
             if group == SalesGroup::Client {
                 add(
                     client,
@@ -226,27 +230,28 @@ pub struct DiscountClientRow {
     pub client_id: String,
     pub code: Option<String>,
     pub name: String,
-    /// Discounted invoices counted.
+    /// Invoices discounted.
     pub invoices: i64,
-    /// Their lines added up, before the discount.
-    pub subtotal_c: i64,
+    /// Their totals (each invoice once), before the discount.
+    pub invoiced_c: i64,
     pub discount_c: i64,
-    /// What the client owes on them, after the discount.
-    pub total_c: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct DiscountInvoiceRow {
+pub struct DiscountRow {
+    pub payment_id: String,
+    pub payment_no: Option<String>,
+    /// The payment's date.
+    pub date: String,
     pub dr_id: String,
-    pub no: Option<String>,
-    pub delivered_date: String,
+    pub invoice_no: Option<String>,
     pub client_id: String,
     /// The discount as entered.
     pub discount: Option<pricing::Discount>,
-    pub subtotal_c: i64,
+    /// The invoice's total.
+    pub invoice_c: i64,
     pub discount_c: i64,
-    pub total_c: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -254,64 +259,70 @@ pub struct DiscountInvoiceRow {
 pub struct DiscountReport {
     /// Most discount first.
     pub clients: Vec<DiscountClientRow>,
-    /// Newest first.
-    pub invoices: Vec<DiscountInvoiceRow>,
+    /// One per payment and invoice, newest first.
+    pub discounts: Vec<DiscountRow>,
 }
 
-/// Discounts given per client: delivered invoices with a discount (void,
-/// new and deleted ones left out), by delivery date.
+/// Discounts given on invoices when they were paid, by payment date: of
+/// counting payments (not void, bounced or replaced), to delivered invoices.
 pub fn discounts(conn: &Connection, range: &DateRange) -> Result<DiscountReport> {
     let mut stmt = conn.prepare(
-        "SELECT t.dr_id, n.no, t.delivered_date, t.client_id, cn.no, c.name,
-                r.discount_bp, r.discount_c, t.subtotal_c, t.discount_c, t.gross_c
-         FROM v_dr_totals t
-         JOIN delivery_receipts r ON r.id = t.dr_id
-         LEFT JOIN v_receipt_no n ON n.dr_id = t.dr_id
-         LEFT JOIN clients c ON c.id = t.client_id
-         LEFT JOIN doc_numbers cn ON cn.ref_id = t.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%')
+        "SELECT a.payment_id, pn.no, p.date, a.dr_id, n.no, r.client_id, cn.no, c.name,
+                pa.discount_bp, pa.discount_c, t.gross_c, a.discount_c
+         FROM v_allocations a
+         JOIN payment_allocations pa ON pa.id = a.id
+         JOIN payments p ON p.id = a.payment_id
+         JOIN delivery_receipts r ON r.id = a.dr_id
+         JOIN v_dr_totals t ON t.dr_id = a.dr_id
+         LEFT JOIN doc_numbers pn ON pn.ref_id = a.payment_id AND pn.series = 'PAY' AND pn._deleted = 0
+         LEFT JOIN v_receipt_no n ON n.dr_id = a.dr_id
+         LEFT JOIN clients c ON c.id = r.client_id
+         LEFT JOIN doc_numbers cn ON cn.ref_id = r.client_id AND (cn.series = 'CL' OR cn.series LIKE 'CL.%')
                                  AND cn.seq IS NOT NULL AND cn._deleted = 0
-         WHERE t.status = 'delivered' AND COALESCE(r.vat, 0) = 1 AND t.discount_c > 0
-         ORDER BY t.delivered_date DESC, t.dr_id DESC",
+         WHERE a.discount_c > 0
+         ORDER BY p.date DESC, p.created_at DESC, a.id",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
-            DiscountInvoiceRow {
-                dr_id: r.get(0)?,
-                no: r.get(1)?,
-                delivered_date: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                client_id: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                discount: pricing::Discount::from_columns(r.get(6)?, r.get(7)?),
-                subtotal_c: r.get(8)?,
-                discount_c: r.get(9)?,
-                total_c: r.get(10)?,
+            DiscountRow {
+                payment_id: r.get(0)?,
+                payment_no: r.get(1)?,
+                date: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                dr_id: r.get(3)?,
+                invoice_no: r.get(4)?,
+                client_id: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                discount: pricing::Discount::from_columns(r.get(8)?, r.get(9)?),
+                invoice_c: r.get(10)?,
+                discount_c: r.get(11)?,
             },
-            r.get::<_, Option<String>>(4)?,
-            r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<String>>(7)?,
         ))
     })?;
     let mut clients: BTreeMap<String, DiscountClientRow> = BTreeMap::new();
-    let mut invoices = Vec::new();
+    let mut counted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut discounts = Vec::new();
     for row in rows {
-        let (inv, code, name) = row?;
-        if !range.contains(&inv.delivered_date) {
+        let (d, code, name) = row?;
+        if !range.contains(&d.date) {
             continue;
         }
         let c = clients
-            .entry(inv.client_id.clone())
+            .entry(d.client_id.clone())
             .or_insert_with(|| DiscountClientRow {
-                client_id: inv.client_id.clone(),
+                client_id: d.client_id.clone(),
                 code,
                 name: name.unwrap_or_default(),
                 invoices: 0,
-                subtotal_c: 0,
+                invoiced_c: 0,
                 discount_c: 0,
-                total_c: 0,
             });
-        c.invoices += 1;
-        c.subtotal_c += inv.subtotal_c;
-        c.discount_c += inv.discount_c;
-        c.total_c += inv.total_c;
-        invoices.push(inv);
+        if counted.insert(d.dr_id.clone()) {
+            c.invoices += 1;
+            c.invoiced_c += d.invoice_c;
+        }
+        c.discount_c += d.discount_c;
+        discounts.push(d);
     }
     let mut clients: Vec<DiscountClientRow> = clients.into_values().collect();
     clients.sort_by(|a, b| {
@@ -319,7 +330,7 @@ pub fn discounts(conn: &Connection, range: &DateRange) -> Result<DiscountReport>
             .cmp(&a.discount_c)
             .then_with(|| a.name.cmp(&b.name))
     });
-    Ok(DiscountReport { clients, invoices })
+    Ok(DiscountReport { clients, discounts })
 }
 
 // Item margin -----------------------------------------------------------------

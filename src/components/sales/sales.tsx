@@ -1,6 +1,5 @@
 import { component$ } from "@builder.io/qwik";
 import type {
-  Discount,
   DrInfo,
   DrStatus,
   PriceSource,
@@ -109,54 +108,34 @@ export const DrNo = component$<{ d: DrInfo }>(({ d }) => (
   </>
 ));
 
-/** "Discount (5%)" or "Discount". */
-export const discountLabel = (d: Discount | null | undefined) =>
-  d?.kind === "percent" ? `Discount (${formatPct(d.value)})` : "Discount";
-
-/** A document's total. With an invoice discount: subtotal, discount, then
- * the total. Net, VAT and gross only for an older document that still had
- * VAT added on top. */
+/** A document's total. Net, VAT and gross only for an older document that
+ * still had VAT added on top. */
 export const Totals = component$<{
   totals: VatAmounts;
   vat: boolean;
   vatBp: number;
-  /** The lines before the discount; needed with `discountC`. */
-  subtotal?: number;
-  /** What the invoice discount takes off. */
-  discountC?: number;
-  discount?: Discount | null;
-}>(({ totals, vat, vatBp, subtotal, discountC, discount }) => (
-  <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
-    {!!discountC && (
-      <>
-        <dt class="text-ink-muted">Subtotal</dt>
-        <dd class="text-right tabular-nums">{formatPeso(subtotal ?? 0)}</dd>
-        <dt class="text-ink-muted">{discountLabel(discount)}</dt>
-        <dd class="text-right tabular-nums">−{formatPeso(discountC)}</dd>
-      </>
-    )}
-    {totals.vat_c === 0 ? (
-      <>
-        <dt class="font-semibold">Total</dt>
-        <dd class="text-right font-semibold tabular-nums">
-          {formatPeso(totals.gross_c)}
-        </dd>
-      </>
-    ) : (
-      <>
-        <dt class="text-ink-muted">Net</dt>
-        <dd class="text-right tabular-nums">{formatPeso(totals.net_c)}</dd>
-        <dt class="text-ink-muted">
-          {vat ? `VAT (${formatPct(vatBp)})` : "VAT"}
-        </dt>
-        <dd class="text-right tabular-nums">
-          {vat ? formatPeso(totals.vat_c) : "none"}
-        </dd>
-        <dt class="font-semibold">Gross</dt>
-        <dd class="text-right font-semibold tabular-nums">
-          {formatPeso(totals.gross_c)}
-        </dd>
-      </>
-    )}
-  </dl>
-));
+}>(({ totals, vat, vatBp }) =>
+  totals.vat_c === 0 ? (
+    <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+      <dt class="font-semibold">Total</dt>
+      <dd class="text-right font-semibold tabular-nums">
+        {formatPeso(totals.gross_c)}
+      </dd>
+    </dl>
+  ) : (
+    <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+      <dt class="text-ink-muted">Net</dt>
+      <dd class="text-right tabular-nums">{formatPeso(totals.net_c)}</dd>
+      <dt class="text-ink-muted">
+        {vat ? `VAT (${formatPct(vatBp)})` : "VAT"}
+      </dt>
+      <dd class="text-right tabular-nums">
+        {vat ? formatPeso(totals.vat_c) : "none"}
+      </dd>
+      <dt class="font-semibold">Gross</dt>
+      <dd class="text-right font-semibold tabular-nums">
+        {formatPeso(totals.gross_c)}
+      </dd>
+    </dl>
+  ),
+);

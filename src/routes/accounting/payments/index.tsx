@@ -10,6 +10,7 @@ import {
 } from "~/lib/bindings";
 import { useLiveLoad } from "~/lib/events";
 import { formatDateTime, formatDay, formatPeso } from "~/lib/format";
+import { discountAs } from "~/lib/discount";
 import { can } from "~/lib/perms";
 import { errorText, unwrap } from "~/lib/result";
 import { useSession } from "~/lib/session";
@@ -400,6 +401,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
                   <th class={th}>Delivered</th>
                   <th class={[th, "text-right"]}>Gross</th>
                   <th class={[th, "text-right"]}>Applied</th>
+                  <th class={[th, "text-right"]}>Discount</th>
                   <th class={[th, "text-right"]}>Still owes</th>
                 </tr>
               </thead>
@@ -415,6 +417,16 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
                     <td class={[td, "whitespace-nowrap"]}>{formatDay(a.delivered_date)}</td>
                     <td class={[td, "text-right tabular-nums"]}>{formatPeso(a.gross_c)}</td>
                     <td class={[td, "text-right tabular-nums"]}>{formatPeso(a.amount_c)}</td>
+                    <td class={[td, "text-right tabular-nums whitespace-nowrap"]}>
+                      {a.discount_c > 0 ? (
+                        <>
+                          −{formatPeso(a.discount_c)}
+                          <span class={[hint, "block"]}>{discountAs(a.discount)}</span>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td class={[td, "text-right tabular-nums", a.dr_balance_c < 0 && "text-danger"]}>
                       {a.delivered ? formatPeso(a.dr_balance_c) : "—"}
                     </td>
@@ -426,6 +438,14 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
           <dl class="ml-auto grid w-72 grid-cols-[1fr_auto] gap-x-4 gap-y-1 border-t border-line px-3 py-3 text-sm">
             <dt class="text-ink-muted">Applied</dt>
             <dd class="text-right tabular-nums">{formatPeso(p.applied_c)}</dd>
+            {det.allocations.some((a) => a.discount_c > 0) && (
+              <>
+                <dt class="text-ink-muted">Discounts given</dt>
+                <dd class="text-right tabular-nums">
+                  {formatPeso(det.allocations.reduce((s, a) => s + a.discount_c, 0))}
+                </dd>
+              </>
+            )}
             <dt class="text-ink-muted">Credit (not applied)</dt>
             <dd class="text-right tabular-nums">{formatPeso(p.unapplied_c)}</dd>
           </dl>
