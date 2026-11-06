@@ -275,7 +275,7 @@ const DiscountCell = component$<{ form: PaymentForm; dr: OpenDr }>(({ form, dr }
           ))}
         </div>
         <input
-          class={[inputBase, "w-full min-w-0 text-right"]}
+          class={[inputBase, "w-full min-w-24 text-right"]}
           inputMode="decimal"
           aria-label={`Discount on ${drName(dr)}`}
           placeholder={mode === "percent" ? "0%" : "0.00"}
@@ -410,7 +410,7 @@ export const PaymentFormModal = component$<{
   const isPdc = form.method === "check" && form.check_date > form.date;
 
   return (
-    <Modal open={open} title={form.id ? "Edit payment" : "Record payment"} wide>
+    <Modal open={open} title={form.id ? "Edit payment" : "Record payment"} wider>
       <form class="space-y-4" preventdefault:submit onSubmit$={save}>
         {error.value && <Alert>{error.value}</Alert>}
         <div class="grid gap-3 sm:grid-cols-3">
@@ -573,8 +573,8 @@ export const PaymentFormModal = component$<{
                     <th class={th}>Due</th>
                     <th class={[th, "text-right"]}>Gross</th>
                     <th class={[th, "text-right"]}>Open</th>
-                    {anyInvoice && <th class={[th, "w-44"]}>Discount</th>}
-                    <th class={[th, "w-36 text-right"]}>Apply</th>
+                    {anyInvoice && <th class={[th, "w-48"]}>Discount</th>}
+                    <th class={[th, "w-40 text-right"]}>Apply</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -585,7 +585,7 @@ export const PaymentFormModal = component$<{
                       <td class={[td, "whitespace-nowrap"]}>
                         {formatDay(d.due_date)}
                         {d.due_date && d.due_date < todayManila() && (
-                          <span class="ml-1">
+                          <span class="mt-0.5 block">
                             <Badge tone="danger">overdue</Badge>
                           </span>
                         )}
@@ -603,7 +603,7 @@ export const PaymentFormModal = component$<{
                       )}
                       <td class={[td, "py-1"]}>
                         <input
-                          class={[inputBase, "w-full text-right"]}
+                          class={[inputBase, "w-full min-w-32 text-right"]}
                           inputMode="decimal"
                           aria-label={`Apply to ${drName(d)}`}
                           placeholder="0.00"

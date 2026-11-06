@@ -70,7 +70,9 @@ export const Modal = component$<{
   open: Signal<boolean>;
   title: string;
   wide?: boolean;
-}>(({ open, title, wide }) => {
+  /** A little wider than `wide`, for forms with a wide table. */
+  wider?: boolean;
+}>(({ open, title, wide, wider }) => {
   const ref = useSignal<HTMLDialogElement>();
   // eslint-disable-next-line qwik/no-use-visible-task
   useVisibleTask$(
@@ -90,7 +92,7 @@ export const Modal = component$<{
       onClose$={() => (open.value = false)}
       class={[
         "m-auto w-full rounded-lg border border-line p-0 text-ink shadow-xl backdrop:bg-black/30",
-        wide ? "max-w-3xl" : "max-w-md",
+        wider ? "max-w-4xl" : wide ? "max-w-3xl" : "max-w-md",
       ]}
     >
       <div class="flex items-center justify-between border-b border-line px-5 py-3">
