@@ -1,7 +1,7 @@
 // DRs (no VAT) and invoices (VAT): their lists and pages, and where every
 // client order starts. The routes bookings/ and bookings/invoices/ show one
 // type each.
-import { $, component$, useComputed$, useSignal } from "@builder.io/qwik";
+import { $, component$, useComputed$, useSignal, useStore } from "@builder.io/qwik";
 import { Link, useLocation, useNavigate } from "@builder.io/qwik-city";
 import {
   commands,
@@ -22,7 +22,12 @@ import { ReceiptFormModal } from "~/components/sales/receipt-form";
 import { DR_STATUS, DrNo, DrStatusBadge, RECEIPT, receiptHref, Totals } from "~/components/sales/sales";
 import { Alert, Badge, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
-import { CHECK_STATUS, METHOD_LABEL } from "~/components/accounting/accounting";
+import {
+  blankPayment,
+  CHECK_STATUS,
+  METHOD_LABEL,
+  PaymentFormModal,
+} from "~/components/accounting/accounting";
 import {
   btnDanger,
   btnPrimary,
@@ -246,6 +251,8 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
   const stepError = useSignal("");
   const busy = useSignal(false);
   const editOpen = useSignal(false);
+  const payOpen = useSignal(false);
+  const pay = useStore(blankPayment());
 
   useLiveLoad(
     TABLES,
@@ -461,21 +468,34 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
               )}
             </div>
             {d.status === "delivered" && (
-              <div class="text-right text-sm">
-                <span class="text-ink-muted">Paid</span>{" "}
-                <span class="tabular-nums">{formatPeso(d.paid_c)}</span>
-                {d.discount_c > 0 && (
-                  <>
-                    <span class="mx-2 text-line">|</span>
-                    <span class="text-ink-muted">Discount</span>{" "}
-                    <span class="tabular-nums">{formatPeso(d.discount_c)}</span>
-                  </>
+              <div class="flex flex-wrap items-center justify-end gap-3">
+                <div class="text-right text-sm">
+                  <span class="text-ink-muted">Paid</span>{" "}
+                  <span class="tabular-nums">{formatPeso(d.paid_c)}</span>
+                  {d.discount_c > 0 && (
+                    <>
+                      <span class="mx-2 text-line">|</span>
+                      <span class="text-ink-muted">Discount</span>{" "}
+                      <span class="tabular-nums">{formatPeso(d.discount_c)}</span>
+                    </>
+                  )}
+                  <span class="mx-2 text-line">|</span>
+                  <span class="text-ink-muted">{d.balance_c < 0 ? "Overpaid" : "Balance"}</span>{" "}
+                  <span class={["font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
+                    {formatPeso(Math.abs(d.balance_c))}
+                  </span>
+                </div>
+                {d.client_id && can(user, "accounting", "create") && (
+                  <button
+                    class={btnSecondary}
+                    onClick$={() => {
+                      Object.assign(pay, blankPayment(detail.value?.dr.client_id ?? ""));
+                      payOpen.value = true;
+                    }}
+                  >
+                    Record payment
+                  </button>
                 )}
-                <span class="mx-2 text-line">|</span>
-                <span class="text-ink-muted">{d.balance_c < 0 ? "Overpaid" : "Balance"}</span>{" "}
-                <span class={["font-semibold tabular-nums", d.balance_c < 0 && "text-amber-800"]}>
-                  {formatPeso(Math.abs(d.balance_c))}
-                </span>
               </div>
             )}
           </div>
@@ -532,6 +552,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
       )}
 
       <ReceiptFormModal open={editOpen} dr={det} />
+      <PaymentFormModal open={payOpen} form={pay} />
       <Modal open={open} title={stepTitle(step.value, k.name)}>
         <form class="space-y-3" preventdefault:submit onSubmit$={submit}>
           {stepError.value && <Alert>{stepError.value}</Alert>}
