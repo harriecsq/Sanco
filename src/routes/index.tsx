@@ -275,7 +275,7 @@ export default component$(() => {
                     {mayDelete && (
                       <button
                         type="button"
-                        class="rounded p-1 text-ink-muted opacity-60 hover:bg-red-50 hover:text-danger hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
+                        class="rounded p-1 text-danger opacity-60 hover:bg-red-50 hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
                         aria-label={`Delete: ${t.title}`}
                         title="Delete"
                         onClick$={() => {

@@ -3,7 +3,7 @@ import { commands, type DebtInfo, type DebtKind, type DebtPlan, type Employee } 
 import { formatDay, formatPeso, InputError, moneyText, parseCount, parseMoney, todayManila } from "~/lib/format";
 import { errorText, unwrap } from "~/lib/result";
 import { Alert, Confirm, Field, Modal } from "~/components/ui/ui";
-import { btnGhost, btnPrimary, btnSecondary, hint, input } from "~/components/ui/styles";
+import { btnDangerGhost, btnPrimary, btnSecondary, hint, input } from "~/components/ui/styles";
 import { DEBT_KINDS } from "./hr";
 
 export interface DebtForm {
@@ -265,7 +265,7 @@ export const DebtModal = component$<{
               {form.id && canDelete && form.paid_c === 0 && (
                 <button
                   type="button"
-                  class={[btnGhost, "text-danger"]}
+                  class={btnDangerGhost}
                   onClick$={() => {
                     open.value = false;
                     deleteOpen.value = true;

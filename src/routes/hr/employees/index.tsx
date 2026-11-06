@@ -17,7 +17,7 @@ import { DEBT_STATUS, kindLabel, weekRange } from "~/components/hr/hr";
 import { PayslipSheets } from "~/components/hr/print";
 import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
-import { btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
+import { btnDangerGhost, btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 const TABLES = [
   "employees",
@@ -232,7 +232,7 @@ export default component$(() => {
             {form.id && canDelete && (
               <button
                 type="button"
-                class={[btnGhost, "text-danger"]}
+                class={btnDangerGhost}
                 onClick$={() => {
                   formOpen.value = false;
                   deleteOpen.value = true;

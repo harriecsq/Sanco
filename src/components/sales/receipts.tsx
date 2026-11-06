@@ -356,7 +356,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
       </p>
       <PageHeader title={d.no ? `${k.title} ${d.no}` : `${k.title} (no number yet)`} subtitle={d.client_name ?? undefined}>
         {d.status === "delivered" && mayDo(user, "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("void")}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => begin("void")}>
             Void
           </button>
         )}
@@ -366,7 +366,7 @@ const DrView = component$<{ id: string; kind: ReceiptKind }>(({ id, kind }) => {
           </button>
         )}
         {mayDo(user, "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => begin("delete")}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => begin("delete")}>
             Delete
           </button>
         )}

@@ -41,7 +41,7 @@ import {
 } from "~/components/orders/orders";
 import { Alert, Badge, Confirm, Empty, Field, InfoList, Modal, PageHeader } from "~/components/ui/ui";
 import { Pager, usePage } from "~/components/ui/pager";
-import { btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
+import { btnDanger, btnDangerGhost, btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td, th } from "~/components/ui/styles";
 
 const PoList = component$(() => {
   const session = useSession();
@@ -332,7 +332,7 @@ const PoView = component$<{ id: string }>(({ id }) => {
       </p>
       <PageHeader title={`PO ${p.no ?? ""}`} subtitle={p.supplier_name ?? undefined}>
         {can(user, "orders", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => (deleteOpen.value = true)}>
             Delete
           </button>
         )}
@@ -535,7 +535,7 @@ const PoView = component$<{ id: string }>(({ id }) => {
                           {can(user, "orders", "delete") && (
                             <button
                               type="button"
-                              class={btnGhost}
+                              class={btnDangerGhost}
                               onClick$={() => {
                                 ttDelete.value = t;
                                 ttDeleteOpen.value = true;

@@ -13,6 +13,7 @@ import { CURRENCIES } from "~/components/items/cost-sheet";
 import { Alert, Badge, Confirm, Empty, Field, Modal, NoAccess, PageHeader } from "~/components/ui/ui";
 import { isPageKey, Pager, usePage } from "~/components/ui/pager";
 import {
+  btnDangerGhost,
   btnGhost,
   btnPrimary,
   btnSecondary,
@@ -445,7 +446,7 @@ export default component$(() => {
               {form.id && canDelete && (
                 <button
                   type="button"
-                  class={[btnGhost, "text-danger"]}
+                  class={btnDangerGhost}
                   onClick$={() => {
                     formOpen.value = false;
                     deleteOpen.value = true;

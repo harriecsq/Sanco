@@ -280,7 +280,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
         {p.status === "posted" && can(user, "accounting", "delete") && (
           <button
             q:slot="actions"
-            class={btnSecondary}
+            class={btnDanger}
             onClick$={() => {
               reason.value = "";
               voidError.value = "";
@@ -334,7 +334,7 @@ const PaymentView = component$<{ id: string }>(({ id }) => {
           </button>
         )}
         {can(user, "accounting", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => (deleteOpen.value = true)}>
             Delete
           </button>
         )}

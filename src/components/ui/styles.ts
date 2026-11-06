@@ -7,6 +7,8 @@ export const btnPrimary = `${btn} bg-brand-500 text-white hover:bg-brand-600`;
 export const btnSecondary = `${btn} border border-line bg-white text-ink hover:bg-brand-50`;
 export const btnDanger = `${btn} bg-danger text-white hover:bg-red-700`;
 export const btnGhost = `${btn} text-brand-700 hover:bg-brand-50`;
+/** Void and Delete buttons that sit in a row or a form footer: red text. */
+export const btnDangerGhost = `${btn} text-danger hover:bg-red-50`;
 
 export const inputBase =
   "rounded-md border border-line bg-white px-3 py-1.5 text-sm placeholder:text-ink-muted focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100";

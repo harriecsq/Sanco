@@ -16,6 +16,7 @@ import {
   PageHeader,
 } from "~/components/ui/ui";
 import {
+  btnDangerGhost,
   btnGhost,
   btnPrimary,
   btnSecondary,
@@ -149,7 +150,7 @@ export default component$(() => {
                     )}
                     {canDelete && (
                       <button
-                        class={btnGhost}
+                        class={btnDangerGhost}
                         onClick$={() => {
                           deleting.value = l;
                           deleteOpen.value = true;

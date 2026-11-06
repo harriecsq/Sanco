@@ -9,7 +9,7 @@ import { useSession } from "~/lib/session";
 import { amountCell, DEBT_KINDS, kindLabel, useWeek, WeekNav, weekRange } from "~/components/hr/hr";
 import { PayrollSheet, PayslipSheets } from "~/components/hr/print";
 import { Alert, Badge, Confirm, Empty, Modal, PageHeader } from "~/components/ui/ui";
-import { btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td as td0, th as th0 } from "~/components/ui/styles";
+import { btnDangerGhost, btnGhost, btnPrimary, btnSecondary, card, hint, input, table, td as td0, th as th0 } from "~/components/ui/styles";
 
 // Eleven money columns: tighter cells than other tables.
 const th = `${th0.replace("px-3", "px-2")} whitespace-nowrap`;
@@ -156,7 +156,7 @@ export default component$(() => {
                         Print all payslips
                       </button>
                       {canApprove && (
-                        <button type="button" class={[btnGhost, "text-danger"]} onClick$={() => (voidOpen.value = true)}>
+                        <button type="button" class={btnDangerGhost} onClick$={() => (voidOpen.value = true)}>
                           Void
                         </button>
                       )}

@@ -218,7 +218,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
         {!d.voided && can(session.user, "inventory", "delete") && (
           <button
             q:slot="actions"
-            class={btnSecondary}
+            class={btnDanger}
             onClick$={() => {
               reason.value = "";
               voidError.value = "";
@@ -245,7 +245,7 @@ const DocDetail = component$<{ id: string }>(({ id }) => {
           </button>
         )}
         {can(session.user, "inventory", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => (deleteOpen.value = true)}>
             Delete
           </button>
         )}

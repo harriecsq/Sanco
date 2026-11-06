@@ -24,6 +24,7 @@ import {
 } from "~/components/ui/ui";
 import {
   btnDanger,
+  btnDangerGhost,
   btnGhost,
   btnPrimary,
   btnSecondary,
@@ -283,7 +284,7 @@ export default component$(() => {
               {form.id && (
                 <button
                   type="button"
-                  class={btnGhost}
+                  class={btnDangerGhost}
                   onClick$={() => {
                     open.value = false;
                     delOpen.value = true;

@@ -51,6 +51,7 @@ import {
   PageHeader,
 } from "~/components/ui/ui";
 import {
+  btnDanger,
   btnPrimary,
   btnSecondary,
   card,
@@ -501,7 +502,7 @@ const ItemDetail = component$<{ id: string }>(({ id }) => {
       </p>
       <PageHeader title={`${i.code} · ${i.name}`}>
         {can(session.user, "items", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => (deleteOpen.value = true)}>
             Delete
           </button>
         )}

@@ -15,6 +15,7 @@ import {
   PageHeader,
 } from "~/components/ui/ui";
 import {
+  btnDangerGhost,
   btnGhost,
   btnPrimary,
   btnSecondary,
@@ -205,7 +206,7 @@ export default component$(() => {
                         Edit
                       </button>
                       <button
-                        class={btnGhost}
+                        class={btnDangerGhost}
                         disabled={t.used_by > 0}
                         title={t.used_by > 0 ? "In use: deactivate it instead" : undefined}
                         onClick$={() => {

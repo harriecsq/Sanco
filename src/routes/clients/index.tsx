@@ -75,6 +75,7 @@ import { CodeGroupSelect } from "~/components/code-groups/code-group-select";
 import { Pager, usePage } from "~/components/ui/pager";
 import { TabNav } from "~/components/ui/tabs";
 import {
+  btnDanger,
   btnPrimary,
   btnSecondary,
   card,
@@ -815,7 +816,7 @@ const ClientDetail = component$<{ id: string }>(({ id }) => {
         subtitle={`${c.code ?? "No code"}${c.code_confirmed ? "" : " (given offline, may change)"}`}
       >
         {can(session.user, "clients", "delete") && (
-          <button q:slot="actions" class={btnSecondary} onClick$={() => (deleteOpen.value = true)}>
+          <button q:slot="actions" class={btnDanger} onClick$={() => (deleteOpen.value = true)}>
             Delete
           </button>
         )}
